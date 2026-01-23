@@ -85,14 +85,14 @@ class GammaAPI15mFinder:
                     if response.status == 200:
                         try:
                             return await response.json()
-                        except:
+                        except Exception:
                             return {"markets": []}
                     elif response.status == 422:
                         # API returns 422 for validation issues - try to get error details
                         try:
                             error_data = await response.json()
                             print(f"API validation error: {error_data}")
-                        except:
+                        except Exception:
                             print(f"API Error: {response.status}")
                         return {"markets": []}
                     else:
@@ -187,7 +187,7 @@ class GammaAPI15mFinder:
                             elif isinstance(token_ids_raw, list) and len(token_ids_raw) >= 2:
                                 token_id_yes = token_ids_raw[0]
                                 token_id_no = token_ids_raw[1]
-                        except:
+                        except Exception:
                             pass
                     
                     filtered_markets.append({

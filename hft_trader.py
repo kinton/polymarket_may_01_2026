@@ -35,7 +35,6 @@ import json
 import websockets
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
-from decimal import Decimal
 import os
 from dotenv import load_dotenv
 
@@ -97,7 +96,7 @@ class LastSecondTrader:
         self.client = self._init_clob_client()
         
         print(f"{'='*80}")
-        print(f"Last-Second Trader Initialized")
+        print("Last-Second Trader Initialized")
         print(f"{'='*80}")
         print(f"Mode: {'DRY RUN (Safe Mode)' if self.dry_run else '🔴 LIVE TRADING 🔴'}")
         print(f"Condition ID: {self.condition_id}")
@@ -264,13 +263,13 @@ class LastSecondTrader:
         """
         if self.dry_run:
             print(f"{'='*80}")
-            print(f"🔷 DRY RUN MODE - NO REAL TRADE EXECUTED")
+            print("🔷 DRY RUN MODE - NO REAL TRADE EXECUTED")
             print(f"{'='*80}")
-            print(f"WOULD BUY:")
+            print("WOULD BUY:")
             print(f"  Token ID: {self.token_id}")
             print(f"  Price: ${self.BUY_PRICE}")
             print(f"  Size: ${self.trade_size}")
-            print(f"  Type: Fill-or-Kill (FOK)")
+            print("  Type: Fill-or-Kill (FOK)")
             print(f"  Current Best Ask: ${self.best_ask:.4f}")
             print(f"{'='*80}\n")
             return
@@ -282,7 +281,7 @@ class LastSecondTrader:
         
         try:
             print(f"{'='*80}")
-            print(f"🔴 EXECUTING LIVE ORDER...")
+            print("🔴 EXECUTING LIVE ORDER...")
             print(f"{'='*80}")
             
             # Create FOK order at $0.99
@@ -300,7 +299,7 @@ class LastSecondTrader:
                 order_args
             )
             
-            print(f"✓ Order submitted successfully!")
+            print("✓ Order submitted successfully!")
             print(f"Response: {json.dumps(response, indent=2)}")
             print(f"{'='*80}\n")
             
@@ -326,7 +325,7 @@ class LastSecondTrader:
                     print(f"\n{'='*80}")
                     print(f"⏰ Market closed. Time remaining: {time_remaining:.2f}s")
                     if not self.order_executed:
-                        print(f"No order was executed.")
+                        print("No order was executed.")
                     print(f"{'='*80}\n")
                     break
                 
@@ -366,7 +365,7 @@ async def main():
     # Example values - REPLACE WITH ACTUAL VALUES
     EXAMPLE_CONDITION_ID = "0x1234567890abcdef"
     EXAMPLE_TOKEN_ID = "12345678"
-    EXAMPLE_END_TIME = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=300)  # 5 min from now
+    # EXAMPLE_END_TIME = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=300)  # 5 min from now
     
     # Parse command line args (simple version)
     if len(sys.argv) < 2:
