@@ -1,0 +1,13 @@
+[project]
+name = "basetrader"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.13.3",
+    "asyncio>=4.0.0",
+    "py-clob-client>=0.34.5",
+    "python-dotenv>=1.2.1",
+    "websockets>=15.0.1",
+]
