@@ -1,6 +1,59 @@
-# Polymarket Trading Bot - API Documentation
+# Polymarket Trading Bot - Documentation Reference
 
-## Важные API и endpoints
+> **⚠️ Source of Truth:** See `.github/copilot-instructions.md` for the authoritative documentation (used by VS Code Copilot Custom Instructions).
+
+## 📚 Documentation Structure
+
+All documentation follows VS Code Custom Instructions format:
+
+### Main Reference
+- **`.github/copilot-instructions.md`** - VS Code Copilot Custom Instructions
+  - System parameters and configuration
+  - Architecture overview  
+  - API integration details
+  - Troubleshooting guide
+
+### Detailed Documentation
+- **`docs/README.md`** - Documentation index
+- **`docs/ARCHITECTURE.md`** - System architecture and component details
+- **`docs/API-INTEGRATION.md`** - External API integration guide
+- **`.vscode/settings.json`** - VS Code workspace configuration
+
+---
+
+## 🚀 Quick Start Commands
+
+```bash
+# Dry run (safe, default)
+uv run python main.py
+
+# Live trading (real money)
+uv run python main.py --live
+
+# Test single poll
+uv run python main.py --once
+
+# Custom parameters
+uv run python main.py --live --size 10 --poll-interval 60
+```
+
+---
+
+## 📋 Key System Parameters
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| Search Window | 20 minutes | Find markets ending within 20min |
+| Market Types | 5m, 15m | Bitcoin/Ethereum only |
+| Poll Interval | 90 seconds | Check Gamma API frequency |
+| Trader Start Buffer | 180 seconds | Launch trader 3min before close |
+| Trigger Threshold | ≤1.0 second | Execute this close to close |
+| Winning Side Logic | price > 0.50 | YES wins if best_ask_yes > best_ask_no |
+| Buy Price | $0.99 | Maximum FOK price |
+
+---
+
+## 🔌 Important API и endpoints
 
 ### 1. Polymarket Gamma API (Market Search)
 **Endpoint:** `https://gamma-api.polymarket.com/public-search`
@@ -174,8 +227,52 @@ OrderArgs(
 
 ---
 
-## Полезные ссылки
+---
 
-- **Статья на Teletype:** https://teletype.in/@maycluben/W7FTLpduOBQ
-- **Статья на X:** https://x.com/thejayden/status/1995878076681535731
-- **Binance (resolution source):** https://www.binance.com/en/trade/BTC_USDT
+## ✅ System Implementation Status
+
+- ✅ Market discovery via Gamma API
+- ✅ Real-time monitoring via WebSocket  
+- ✅ Dynamic winning side detection (price > 0.50)
+- ✅ Live trading capability
+- ✅ Dry-run testing mode (default, safe)
+- ✅ UTC/ET timezone handling
+- ✅ Comprehensive error handling
+- ✅ Async/concurrent task management
+- ✅ --once flag for single-run testing
+
+---
+
+## 📝 File Structure
+
+```
+baseTrader/
+├── .github/
+│   └── copilot-instructions.md    ← Custom Instructions (SOURCE OF TRUTH)
+├── .vscode/
+│   └── settings.json              ← VS Code config
+├── docs/
+│   ├── README.md                  ← Documentation index
+│   ├── ARCHITECTURE.md            ← System architecture
+│   └── API-INTEGRATION.md         ← API details
+├── main.py                        ← Orchestrator
+├── gamma_15m_finder.py            ← Market discovery
+├── hft_trader.py                  ← Trading execution
+├── pyproject.toml                 ← Project config
+├── .env                           ← Configuration (NOT in git)
+└── ai/
+    └── Project.md                 ← This file (deprecated reference)
+```
+
+---
+
+## 🔗 Reference Links
+
+- **VS Code Custom Instructions:** https://code.visualstudio.com/docs/copilot/customization/custom-instructions
+- **Polymarket:** https://polymarket.com
+- **py-clob-client:** https://github.com/polymarket/py-clob-client
+- **WebSocket Docs:** https://websockets.readthedocs.io/
+
+---
+
+**For complete, authoritative documentation see `.github/copilot-instructions.md`**
