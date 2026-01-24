@@ -313,7 +313,11 @@ class LastSecondTrader:
         Runs until market closes or connection is lost.
         """
         try:
+            print(f"[DEBUG] Starting to listen for WebSocket messages...")
+            message_count = 0
             async for message in self.ws:
+                message_count += 1
+                print(f"[DEBUG] Received message #{message_count}: {message[:200]}...")
                 data = json.loads(message)
                 
                 # Process market update
