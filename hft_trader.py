@@ -27,7 +27,7 @@ Requirements:
     - py-clob-client
     - websockets
     - python-dotenv
-    - Environment variables: PRIVATE_KEY, POLYGON_CHAIN_ID, CLOB_HOST, CLOB_KEY, CLOB_SECRET
+    - Environment variables: PRIVATE_KEY, POLYGON_CHAIN_ID, CLOB_HOST, CLOB_API_KEY, CLOB_SECRET
 """
 
 import asyncio
@@ -117,7 +117,7 @@ class LastSecondTrader:
             private_key = os.getenv("PRIVATE_KEY")
             chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
             host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
-            key = os.getenv("CLOB_KEY")
+            key = os.getenv("CLOB_API_KEY")
             secret = os.getenv("CLOB_SECRET")
             
             if not all([private_key, key, secret]):
