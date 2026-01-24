@@ -42,11 +42,11 @@ class TradingBotRunner:
     """
     
     # Configuration
-    POLL_INTERVAL = 60  # Check for new markets every 60 seconds
+    POLL_INTERVAL = 90  # Check for new markets every 90 seconds (1.5 minutes)
     TRADER_START_BUFFER = 180  # Start trader 3 minutes before market ends (was 120)
     MIN_TIME_TO_START = 30  # Don't start trader if less than 30 seconds until close
     
-    def __init__(self, dry_run: bool = True, trade_size: float = 1.0, poll_interval: int = 60):
+    def __init__(self, dry_run: bool = True, trade_size: float = 1.0, poll_interval: int = 90):
         """
         Initialize the trading bot runner.
         
@@ -311,8 +311,8 @@ async def main():
     parser.add_argument(
         "--poll-interval",
         type=int,
-        default=60,
-        help="How often to poll for markets in seconds (default: 60)"
+        default=90,
+        help="How often to poll for markets in seconds (default: 90)"
     )
     
     args = parser.parse_args()

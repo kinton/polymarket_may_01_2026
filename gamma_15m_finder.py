@@ -33,9 +33,15 @@ class GammaAPI15mFinder:
     BASE_URL = "https://gamma-api.polymarket.com/public-search"
     ET_TZ = timezone(timedelta(hours=-5))  # EST (adjust to -4 for EDT if needed)
     
-    def __init__(self):
+    def __init__(self, max_minutes_ahead: int = 30):
+        """Initialize finder.
+        
+        Args:
+            max_minutes_ahead: Maximum minutes ahead to search for markets (default: 30)
+        """
         self.current_time_et = None
         self.current_window = None
+        self.max_minutes_ahead = max_minutes_ahead
     
     def get_current_time_et(self) -> datetime:
         """Get current time in ET timezone."""
@@ -269,8 +275,8 @@ class GammaAPI15mFinder:
         
         print(f"\nFound {len(all_events)} unique events total")
         
-        # Step 3: Filter for active markets ending in less than 30 minutes (was 20)
-        active_markets = self.filter_markets(all_events, window, max_minutes_ahead=30)
+        # Step 3: Filter for active markets ending in less than max_minutes_ahead
+        active_markets = self.filter_markets(all_events, window, max_minutes_ahead=self.max_minutes_ahead)
         
         if not active_markets:
             print("\nNo matching markets found ending in less than 20 minutes")
