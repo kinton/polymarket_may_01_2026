@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType
+    from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds
 except ImportError:
     print("Error: py-clob-client not installed. Run: uv pip install py-clob-client")
     exit(1)
@@ -117,17 +117,28 @@ class LastSecondTrader:
             private_key = os.getenv("PRIVATE_KEY")
             chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
             host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
-            key = os.getenv("CLOB_API_KEY")
-            secret = os.getenv("CLOB_SECRET")
+            api_key = os.getenv("CLOB_API_KEY")
+            api_secret = os.getenv("CLOB_SECRET")
+            api_passphrase = os.getenv("CLOB_PASSPHRASE")
             
-            if not all([private_key, key, secret]):
+            if not all([private_key, api_key, api_secret, api_passphrase]):
                 print("Warning: Missing CLOB credentials in .env file")
+                print(f"  PRIVATE_KEY: {'✓' if private_key else '✗'}")
+                print(f"  CLOB_API_KEY: {'✓' if api_key else '✗'}")
+                print(f"  CLOB_SECRET: {'✓' if api_secret else '✗'}")
+                print(f"  CLOB_PASSPHRASE: {'✓' if api_passphrase else '✗'}")
                 return None
+            
+            # Create ApiCreds object with all three parameters
+            creds = ApiCreds(
+                api_key=api_key,
+                api_secret=api_secret,
+                api_passphrase=api_passphrase
+            )
             
             client = ClobClient(
                 host=host,
-                key=key,
-                secret=secret,
+                creds=creds,
                 chain_id=chain_id,
                 private_key=private_key
             )
@@ -313,7 +324,7 @@ class LastSecondTrader:
         Runs until market closes or connection is lost.
         """
         try:
-            print(f"[DEBUG] Starting to listen for WebSocket messages...")
+            print("[DEBUG] Starting to listen for WebSocket messages...")
             message_count = 0
             async for message in self.ws:
                 message_count += 1
