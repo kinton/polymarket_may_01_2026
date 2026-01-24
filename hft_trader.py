@@ -70,6 +70,8 @@ class LastSecondTrader:
         end_time: datetime,
         dry_run: bool = True,
         trade_size: float = 1.0,
+        title: Optional[str] = None,
+        slug: Optional[str] = None,
     ):
         """
         Initialize the trader.
@@ -88,6 +90,8 @@ class LastSecondTrader:
         self.end_time = end_time
         self.dry_run = dry_run
         self.trade_size = trade_size
+        self.title = title
+        self.slug = slug
 
         # Market state - track both YES and NO
         self.best_ask_yes: Optional[float] = None
@@ -116,7 +120,9 @@ class LastSecondTrader:
         print(f"Trade Size: ${self.trade_size}")
         print(f"Buy Price: ${self.BUY_PRICE}")
         print(f"Trigger: <= {self.TRIGGER_THRESHOLD} second(s) remaining")
-        print(f"Strategy: Auto-detect winning side (higher ask wins)")
+        print("Strategy: Auto-detect winning side (higher ask wins)")
+        if self.slug:
+            print(f"Market Link: https://polymarket.com/market/{self.slug}")
         print(f"{'=' * 80}\n")
 
     def _init_clob_client(self) -> Optional[ClobClient]:
@@ -308,7 +314,7 @@ class LastSecondTrader:
 
     def _determine_winning_side(self):
         """Determine which token is winning based on higher ask price.
-        
+
         Logic: Higher ask = market expects that side to win.
         If best_ask_yes > best_ask_no, then YES is the winning side.
         """
@@ -348,7 +354,7 @@ class LastSecondTrader:
         1. Time remaining <= 1 second (but > 0)
         2. Winning side is determined (price > 0.50)
         3. Best ask exists for winning side
-        4. Best ask is below $0.99
+        4. Best ask is <= $0.99 (at or better than our limit)
         5. Order not already executed
         """
         # Already executed or market closed
@@ -374,10 +380,10 @@ class LastSecondTrader:
             )
             return
 
-        # Check if price is below our target
-        if winning_ask >= self.BUY_PRICE:
+        # Check if price is above our target (we can execute at BUY_PRICE or better)
+        if winning_ask > self.BUY_PRICE:
             print(
-                f"⚠️  Best ask ${winning_ask:.4f} >= ${self.BUY_PRICE} - not worth buying"
+                f"⚠️  Best ask ${winning_ask:.4f} > ${self.BUY_PRICE} - not worth buying"
             )
             return
 

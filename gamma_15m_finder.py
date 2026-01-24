@@ -199,6 +199,9 @@ class GammaAPI15mFinder:
                         except Exception:
                             pass
 
+                    # Extract slug for UI link if available
+                    slug = market.get("slug") or event.get("slug") or None
+
                     filtered_markets.append(
                         {
                             "condition_id": condition_id,
@@ -211,6 +214,7 @@ class GammaAPI15mFinder:
                             "minutes_until_end": round(time_until_end, 1),
                             "title": title,
                             "ticker": event.get("ticker", "N/A"),
+                            "slug": slug,
                         }
                     )
             except Exception as e:

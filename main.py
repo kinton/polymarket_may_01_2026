@@ -212,6 +212,8 @@ class TradingBotRunner:
                 end_time=end_time,
                 dry_run=self.dry_run,
                 trade_size=self.trade_size,
+                title=market.get("title"),
+                slug=market.get("slug"),
             )
 
             # Run trader (this will block until market closes or trader finishes)
