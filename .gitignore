@@ -14,3 +14,7 @@ wheels/
 
 # Log files
 log/
+
+# AI config / tasks
+ai/Tasks.md
+ai/Done.md
