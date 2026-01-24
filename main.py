@@ -119,7 +119,7 @@ class TradingBotRunner:
         Returns list of markets or None if none found.
         """
         try:
-            finder = GammaAPI15mFinder()
+            finder = GammaAPI15mFinder()  # Default: 20 minutes search window
             markets = await finder.find_active_market()
             return markets
         except Exception as e:
@@ -186,18 +186,17 @@ class TradingBotRunner:
             # Parse end time
             end_time = datetime.fromisoformat(end_time_utc.replace(" UTC", "+00:00"))
             
-            # Decide which token to trade (YES or NO)
-            # For now, we'll trade YES token. In production, you'd determine winning side.
-            token_id = token_id_yes if token_id_yes != "N/A" else token_id_no
-            
-            if token_id == "N/A":
-                self.trader_logger.error(f"No valid token ID found for market {condition_id}")
+            # Validate token IDs
+            if token_id_yes == "N/A" or token_id_no == "N/A":
+                self.trader_logger.error(f"Invalid token IDs for market {condition_id}")
                 return
             
-            # Create and run trader
+            # Create and run trader with both token IDs
+            # Trader will dynamically determine winning side based on prices
             trader = LastSecondTrader(
                 condition_id=condition_id,
-                token_id=token_id,
+                token_id_yes=token_id_yes,
+                token_id_no=token_id_no,
                 end_time=end_time,
                 dry_run=self.dry_run,
                 trade_size=self.trade_size

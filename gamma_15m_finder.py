@@ -33,11 +33,11 @@ class GammaAPI15mFinder:
     BASE_URL = "https://gamma-api.polymarket.com/public-search"
     ET_TZ = timezone(timedelta(hours=-5))  # EST (adjust to -4 for EDT if needed)
     
-    def __init__(self, max_minutes_ahead: int = 30):
+    def __init__(self, max_minutes_ahead: int = 20):
         """Initialize finder.
         
         Args:
-            max_minutes_ahead: Maximum minutes ahead to search for markets (default: 30)
+            max_minutes_ahead: Maximum minutes ahead to search for markets (default: 20)
         """
         self.current_time_et = None
         self.current_window = None
@@ -92,7 +92,7 @@ class GammaAPI15mFinder:
     def filter_markets(
         self,
         events: List[Dict[str, Any]],
-        max_minutes_ahead: int = 30
+        max_minutes_ahead: int = 20
     ) -> List[Dict[str, Any]]:
         """
         Filter markets to find those ending within max_minutes_ahead minutes.
@@ -144,7 +144,7 @@ class GammaAPI15mFinder:
                     else:
                         continue
                     
-                    # Check if market ends within max_minutes_ahead (requirement: less than 20 minutes)
+                    # Check if market ends within max_minutes_ahead minutes
                     time_until_end = (end_time - now).total_seconds() / 60
                     
                     if time_until_end < 0 or time_until_end > max_minutes_ahead:
@@ -192,7 +192,7 @@ class GammaAPI15mFinder:
     async def find_active_market(self) -> Optional[List[Dict[str, Any]]]:
         """
         Main function to find active 5/15-minute Bitcoin/Ethereum markets.
-        Searches for markets ending in the next max_minutes_ahead minutes (default 30).
+        Searches for markets ending in the next max_minutes_ahead minutes (default 20).
         """
         now = self.get_current_time_et()
         print(f"Current time (ET): {now.strftime('%H:%M:%S')}")

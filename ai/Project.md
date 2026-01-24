@@ -89,8 +89,9 @@ curl 'https://gamma-api.polymarket.com/public-search?q=Bitcoin%20Up%20or%20Down'
 PRIVATE_KEY=0x...
 POLYGON_CHAIN_ID=137
 CLOB_HOST=https://clob.polymarket.com
-CLOB_KEY=...
+CLOB_API_KEY=...
 CLOB_SECRET=...
+CLOB_PASSPHRASE=...
 ```
 
 **Основные операции:**
@@ -157,7 +158,7 @@ OrderArgs(
 
 ### Параметры системы:
 - **Poll Interval:** 90 секунд (как часто проверяем рынки) - оптимизировано для снижения нагрузки
-- **Search Window:** 30 минут (ищем рынки ending in < 30 min)
+- **Search Window:** 20 минут (ищем рынки ending in < 20 min) - согласно ТЗ
 - **Trader Start Buffer:** 180 секунд (запускаем трейдер за 3 мин до закрытия)
 - **Trigger Threshold:** 1.0 секунда (триггер срабатывает при ≤1s)
 - **Price Threshold:** 0.50 (winning side определяется как price > 0.50)
@@ -165,7 +166,7 @@ OrderArgs(
 
 ### Workflow:
 1. **Поиск** → Gamma API каждые 90 сек
-2. **Фильтрация** → Рынки ending in < 30 min (5/15-минутные)
+2. **Фильтрация** → Рынки ending in < 20 min (5/15-минутные) - согласно ТЗ
 3. **Запуск трейдера** → За 3 минуты до закрытия
 4. **WebSocket мониторинг** → Real-time цены
 5. **Триггер** → При ≤1 секунде
