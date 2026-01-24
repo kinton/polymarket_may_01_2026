@@ -2,9 +2,21 @@
 
 ## 📁 Documentation Structure
 
-This directory contains the source of truth for the trading bot implementation. Each component is documented separately:
+### Critical Reference Files
 
-### Core Documentation Files
+- **[.github/copilot-instructions.md](../.github/copilot-instructions.md)** - Quick start for VS Code Copilot
+- **[.github/agents.md](../.github/agents.md)** - Critical context AI must always remember
+- **[ai/Soul.md](../ai/Soul.md)** - Project vision and original constraints
+
+### Agent Skills (Specialized Tasks)
+
+AI can independently solve these problems:
+
+1. **[.github/skills/market-discovery/SKILL.md](../.github/skills/market-discovery/)** - Find active markets
+2. **[.github/skills/trading-execution/SKILL.md](../.github/skills/trading-execution/)** - Execute trades
+3. **[.github/skills/debugging/SKILL.md](../.github/skills/debugging/)** - Debug issues
+
+### Technical Documentation
 
 1. **[ARCHITECTURE.md](./ARCHITECTURE.md)** - System architecture and component overview
    - Core components (gamma_15m_finder.py, hft_trader.py, main.py)
@@ -17,23 +29,10 @@ This directory contains the source of truth for the trading bot implementation. 
    - CLOB WebSocket (real-time price monitoring)
    - Authentication and error handling
 
-3. **[TRADING-STRATEGY.md](./TRADING-STRATEGY.md)** - Trading logic and execution
-   - Market filtering criteria
-   - Winning side determination (price > 0.50)
-   - Order execution parameters
-   - Risk management
-
-4. **[ENVIRONMENT.md](./ENVIRONMENT.md)** - Configuration and environment setup
-   - Required environment variables
-   - .env file format
-   - Configuration parameters
-   - Security considerations
-
-5. **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Deployment and operational guide
-   - Running in dry-run mode
-   - Running in live trading mode
-   - Command-line arguments
-   - Monitoring and logging
+3. **[PROJECT.md](./PROJECT.md)** - Technical specifications
+   - API endpoints and message formats
+   - Market types and parameters
+   - Strategy parameters
 
 ## 🎯 Key Parameters
 

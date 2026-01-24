@@ -2,6 +2,7 @@
   "github.copilot.advanced": {
     "instructions": ".github/copilot-instructions.md"
   },
+  "github.copilot.chat.agentSkillsPath": ".github/skills",
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
