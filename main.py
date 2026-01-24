@@ -1,8 +1,8 @@
 """
-Main runner script for Polymarket 15-minute market trading bot.
+Main runner script for Polymarket 5/15-minute market trading bot.
 
 This script orchestrates the entire trading workflow:
-1. Periodically polls for active 15-minute Bitcoin/Ethereum markets
+1. Periodically polls for active 5/15-minute Bitcoin/Ethereum markets
 2. When a market is found, launches the HFT trader
 3. Manages timing to ensure trader is running before market closes
 4. Logs all activities to separate log files
@@ -115,7 +115,7 @@ class TradingBotRunner:
     
     async def find_active_markets(self) -> Optional[list]:
         """
-        Query for active 15-minute markets.
+        Query for active 5/15-minute markets.
         Returns list of markets or None if none found.
         """
         try:

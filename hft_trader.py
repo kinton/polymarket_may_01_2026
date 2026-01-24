@@ -138,9 +138,9 @@ class LastSecondTrader:
             
             client = ClobClient(
                 host=host,
-                creds=creds,
+                key=private_key,  # Fixed: use 'key' not 'private_key'
                 chain_id=chain_id,
-                private_key=private_key
+                creds=creds
             )
             print("✓ CLOB client initialized for live trading\n")
             return client

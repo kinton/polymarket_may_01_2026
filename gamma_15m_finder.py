@@ -1,11 +1,11 @@
 """
-Query Polymarket Gamma API to find currently active 15-minute Bitcoin/Ethereum markets.
+Query Polymarket Gamma API to find currently active 5/15-minute Bitcoin/Ethereum markets.
 
 Features:
 - Get current time in ET timezone
-- Calculate the current 15-minute window (e.g., 10:00–10:15)
+- Search for ALL Bitcoin/Ethereum markets ending within max_minutes_ahead (default: 30 minutes)
 - Query https://gamma-api.polymarket.com/public-search for Bitcoin/Ethereum markets
-- Filter for markets ending within the next 20 minutes (configurable)
+- Filter for markets ending within the specified time window
 - Return condition_id, token_id for YES/NO, and end_time
 
 Usage:
@@ -15,7 +15,7 @@ Or with uv:
     uv run gamma_15m_finder.py
     
 The script will output:
-- Current 15-minute trading window
+- Current time in ET
 - Any matching markets with their condition_id, token IDs, and end times
 - Returns None if no active markets are found
 """
@@ -28,7 +28,7 @@ from typing import Optional, Dict, List, Any
 
 
 class GammaAPI15mFinder:
-    """Find active 15-minute Bitcoin/Ethereum markets on Polymarket."""
+    """Find active 5/15-minute Bitcoin/Ethereum markets on Polymarket."""
     
     BASE_URL = "https://gamma-api.polymarket.com/public-search"
     ET_TZ = timezone(timedelta(hours=-5))  # EST (adjust to -4 for EDT if needed)
@@ -49,28 +49,6 @@ class GammaAPI15mFinder:
         utc_now = datetime.now(timezone.utc)
         self.current_time_et = utc_now.astimezone(self.ET_TZ)
         return self.current_time_et
-    
-    def calculate_15m_window(self) -> tuple[str, str]:
-        """
-        Calculate current 15-minute window.
-        Returns: (window_start, window_end) in format "HH:MM"
-        Example: ("10:00", "10:15")
-        """
-        now = self.get_current_time_et()
-        
-        # Round down to nearest 15-minute interval
-        minute = (now.minute // 15) * 15
-        window_start = now.replace(minute=minute, second=0, microsecond=0)
-        window_end = window_start + timedelta(minutes=15)
-        
-        start_str = window_start.strftime("%H:%M")
-        end_str = window_end.strftime("%H:%M")
-        
-        self.current_window = (start_str, end_str)
-        print(f"Current time (ET): {now.strftime('%H:%M:%S')}")
-        print(f"Current 15-min window: {start_str}–{end_str}")
-        
-        return self.current_window
     
     async def search_markets(
         self,
@@ -114,19 +92,18 @@ class GammaAPI15mFinder:
     def filter_markets(
         self,
         events: List[Dict[str, Any]],
-        target_window: tuple[str, str],
-        max_minutes_ahead: int = 20
+        max_minutes_ahead: int = 30
     ) -> List[Dict[str, Any]]:
         """
-        Filter markets to find those matching the 15-minute window
-        and ending within max_minutes_ahead.
+        Filter markets to find those ending within max_minutes_ahead minutes.
         Works with Polymarket 'events' objects from Gamma API.
+        Searches for ALL 5/15-minute markets, not restricted to a specific time window.
         """
         now = self.get_current_time_et()
         filtered_markets = []
         
         print(f"\nFiltering {len(events)} events...")
-        print(f"Target window: {target_window[0]}–{target_window[1]} ET")
+        print(f"Searching for markets ending within {max_minutes_ahead} minutes")
         print(f"Current time: {now.strftime('%H:%M:%S %Z')}")
         print()
         
@@ -214,19 +191,19 @@ class GammaAPI15mFinder:
     
     async def find_active_market(self) -> Optional[List[Dict[str, Any]]]:
         """
-        Main function to find active 15-minute Bitcoin/Ethereum markets.
-        Searches for 'Bitcoin Up or Down' and 'Ethereum Up or Down' matching current window.
+        Main function to find active 5/15-minute Bitcoin/Ethereum markets.
+        Searches for markets ending in the next max_minutes_ahead minutes (default 30).
         """
-        # Step 1: Calculate current 15-minute window
-        window = self.calculate_15m_window()
+        now = self.get_current_time_et()
+        print(f"Current time (ET): {now.strftime('%H:%M:%S')}")
+        print(f"Searching for markets ending in the next {self.max_minutes_ahead} minutes...")
         print()
         
         # Step 2: Query API for Bitcoin/Ethereum markets
         print("Querying Polymarket Gamma API...")
         
-        # Build time-specific queries to find 15-minute markets
+        # Build time-specific queries to cover the search window
         # API search works better with specific time patterns
-        now = self.get_current_time_et()
         current_hour_24 = now.hour
         current_date = now.strftime("January %d")
         
@@ -235,22 +212,29 @@ class GammaAPI15mFinder:
         if hour_12 == 0:
             hour_12 = 12
         
-        # Try current and next hour in 12-hour format
-        # 15-minute markets use format like "7:15PM-7:30PM ET"
+        # Calculate how many hours ahead we need to search
+        # Since max_minutes_ahead can be up to 30 minutes, we might need current and next hour
+        hours_to_search = []
+        
+        # Current hour
+        current_hour_12 = hour_12
+        hours_to_search.append(current_hour_12)
+        
+        # Next hour (to catch markets that start in current hour but end in next)
+        next_hour_24 = (current_hour_24 + 1) % 24
+        next_hour_12 = next_hour_24 % 12
+        if next_hour_12 == 0:
+            next_hour_12 = 12
+        hours_to_search.append(next_hour_12)
+        
+        # Build queries for both cryptocurrencies and all relevant hours
         queries = []
         for crypto in ["Bitcoin", "Ethereum"]:
-            # Current hour patterns
-            queries.append(f"{crypto} Up or Down - {current_date}, {hour_12}:")
+            for hour in hours_to_search:
+                queries.append(f"{crypto} Up or Down - {current_date}, {hour}:")
             
-            # Next hour
-            next_hour_24 = (current_hour_24 + 1) % 24
-            next_hour_12 = next_hour_24 % 12
-            if next_hour_12 == 0:
-                next_hour_12 = 12
-            queries.append(f"{crypto} Up or Down - {current_date}, {next_hour_12}:")
-        
-        # Also try generic search as fallback
-        queries.extend(["Bitcoin Up or Down", "Ethereum Up or Down"])
+            # Also add general query as fallback
+            queries.append(f"{crypto} Up or Down")
         
         all_events = []
         seen_ids = set()
@@ -276,10 +260,10 @@ class GammaAPI15mFinder:
         print(f"\nFound {len(all_events)} unique events total")
         
         # Step 3: Filter for active markets ending in less than max_minutes_ahead
-        active_markets = self.filter_markets(all_events, window, max_minutes_ahead=self.max_minutes_ahead)
+        active_markets = self.filter_markets(all_events, max_minutes_ahead=self.max_minutes_ahead)
         
         if not active_markets:
-            print("\nNo matching markets found ending in less than 20 minutes")
+            print(f"\nNo matching markets found ending in the next {self.max_minutes_ahead} minutes")
             return None
         
         print(f"\nFound {len(active_markets)} matching market(s):")
