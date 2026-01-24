@@ -218,29 +218,59 @@ class GammaAPI15mFinder:
         # Step 2: Query API for Bitcoin/Ethereum markets
         print("Querying Polymarket Gamma API...")
         
-        # Try different query variations as per requirements
-        queries = [
-            "Bitcoin Up or Down",
-            "Ethereum Up or Down",
-        ]
+        # Build time-specific queries to find 15-minute markets
+        # API search works better with specific time patterns
+        now = self.get_current_time_et()
+        current_hour_24 = now.hour
+        current_date = now.strftime("January %d")
         
-        markets_data = {"markets": []}
+        # Convert to 12-hour format for matching market titles
+        hour_12 = current_hour_24 % 12
+        if hour_12 == 0:
+            hour_12 = 12
+        
+        # Try current and next hour in 12-hour format
+        # 15-minute markets use format like "7:15PM-7:30PM ET"
+        queries = []
+        for crypto in ["Bitcoin", "Ethereum"]:
+            # Current hour patterns
+            queries.append(f"{crypto} Up or Down - {current_date}, {hour_12}:")
+            
+            # Next hour
+            next_hour_24 = (current_hour_24 + 1) % 24
+            next_hour_12 = next_hour_24 % 12
+            if next_hour_12 == 0:
+                next_hour_12 = 12
+            queries.append(f"{crypto} Up or Down - {current_date}, {next_hour_12}:")
+        
+        # Also try generic search as fallback
+        queries.extend(["Bitcoin Up or Down", "Ethereum Up or Down"])
+        
+        all_events = []
+        seen_ids = set()
+        
         for query in queries:
             markets_data = await self.search_markets(query=query)
-            if markets_data.get("events") or markets_data.get("markets"):
-                print(f"Got results for query: '{query}'")
-                break
+            events = markets_data.get("events", [])
+            
+            if events:
+                print(f"Query '{query[:50]}...' returned {len(events)} events")
+                
+                # Deduplicate events by ID
+                for event in events:
+                    event_id = event.get("id")
+                    if event_id and event_id not in seen_ids:
+                        seen_ids.add(event_id)
+                        all_events.append(event)
         
-        if not markets_data.get("events") and not markets_data.get("markets"):
+        if not all_events:
             print("No markets found with any query")
             return None
         
-        # API returns 'events', not 'markets'
-        events = markets_data.get("events", markets_data.get("markets", []))
-        print(f"Found {len(events)} events total")
+        print(f"\nFound {len(all_events)} unique events total")
         
-        # Step 3: Filter for active markets ending in less than 20 minutes
-        active_markets = self.filter_markets(events, window, max_minutes_ahead=20)
+        # Step 3: Filter for active markets ending in less than 30 minutes (was 20)
+        active_markets = self.filter_markets(all_events, window, max_minutes_ahead=30)
         
         if not active_markets:
             print("\nNo matching markets found ending in less than 20 minutes")
