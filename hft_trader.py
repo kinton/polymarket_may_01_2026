@@ -173,22 +173,18 @@ class LastSecondTrader:
         """Connect to Polymarket WebSocket and subscribe to both YES and NO tokens."""
         try:
             # Connect to YES token
-            self.ws_yes = await websockets.connect(self.WS_URL)
+            self.ws_yes = await websockets.connect(self.WS_URL, ping_interval=20, ping_timeout=10)
             subscribe_msg_yes = {
-                "auth": {},
-                "markets": [self.token_id_yes],
                 "assets_ids": [self.token_id_yes],
-                "type": "market"
+                "type": "MARKET"  # Must be uppercase per official docs
             }
             await self.ws_yes.send(json.dumps(subscribe_msg_yes))
             
             # Connect to NO token
-            self.ws_no = await websockets.connect(self.WS_URL)
+            self.ws_no = await websockets.connect(self.WS_URL, ping_interval=20, ping_timeout=10)
             subscribe_msg_no = {
-                "auth": {},
-                "markets": [self.token_id_no],
                 "assets_ids": [self.token_id_no],
-                "type": "market"
+                "type": "MARKET"
             }
             await self.ws_no.send(json.dumps(subscribe_msg_no))
             
@@ -206,34 +202,75 @@ class LastSecondTrader:
         """
         Process incoming market data from WebSocket for YES or NO token.
         
-        Expected format:
+        Expected format from official docs:
         {
+            "event_type": "book" or "price_change" or "best_bid_ask",
             "asset_id": "<token_id>",
-            "market": "<market_type>",
-            "price": "0.75",  # Last trade price
-            "bids": [["0.74", "100"], ...],  # [price, size]
-            "asks": [["0.76", "100"], ...]
+            "market": "<condition_id>",
+            "bids": [{"price": "0.74", "size": "100"}, ...],  # for book event
+            "asks": [{"price": "0.76", "size": "100"}, ...],  # for book event
+            "best_bid": "0.74",  # for price_change/best_bid_ask
+            "best_ask": "0.76",  # for price_change/best_bid_ask
+            "timestamp": "123456789000"
         }
         
+        Note: WebSocket sends data as an array [{}], so we extract first element
+        
         Args:
-            data: Market data from WebSocket
+            data: Market data from WebSocket (can be array or dict)
             is_yes_token: True if this is YES token data, False for NO token
         """
         try:
-            # Extract best bid and ask for the appropriate token
-            if "asks" in data and len(data["asks"]) > 0:
-                best_ask = float(data["asks"][0][0])
-                if is_yes_token:
-                    self.best_ask_yes = best_ask
-                else:
-                    self.best_ask_no = best_ask
+            # Skip empty confirmation messages
+            if not data:
+                return
+                
+            # Handle array response - extract first element
+            if isinstance(data, list):
+                if len(data) == 0:
+                    return
+                data = data[0]  # Get first element
+                
+            event_type = data.get("event_type")
             
-            if "bids" in data and len(data["bids"]) > 0:
-                best_bid = float(data["bids"][0][0])
-                if is_yes_token:
-                    self.best_bid_yes = best_bid
-                else:
-                    self.best_bid_no = best_bid
+            # Extract best bid and ask based on event type
+            if event_type == "book":
+                # Full orderbook snapshot
+                asks = data.get("asks", [])
+                bids = data.get("bids", [])
+                
+                if asks and len(asks) > 0:
+                    best_ask = float(asks[0]["price"]) if isinstance(asks[0], dict) else float(asks[0][0])
+                    if is_yes_token:
+                        self.best_ask_yes = best_ask
+                    else:
+                        self.best_ask_no = best_ask
+                
+                if bids and len(bids) > 0:
+                    best_bid = float(bids[0]["price"]) if isinstance(bids[0], dict) else float(bids[0][0])
+                    if is_yes_token:
+                        self.best_bid_yes = best_bid
+                    else:
+                        self.best_bid_no = best_bid
+                        
+            elif event_type in ["price_change", "best_bid_ask"]:
+                # Price update with best bid/ask
+                best_ask = data.get("best_ask")
+                best_bid = data.get("best_bid")
+                
+                if best_ask:
+                    best_ask = float(best_ask)
+                    if is_yes_token:
+                        self.best_ask_yes = best_ask
+                    else:
+                        self.best_ask_no = best_ask
+                        
+                if best_bid:
+                    best_bid = float(best_bid)
+                    if is_yes_token:
+                        self.best_bid_yes = best_bid
+                    else:
+                        self.best_bid_no = best_bid
             
             # Determine winning side (price > 0.50)
             self._determine_winning_side()
@@ -243,10 +280,12 @@ class LastSecondTrader:
             
             # Log current state (throttled to avoid spam)
             if int(time_remaining) % 10 == 0 or time_remaining <= 5:
+                yes_price = self.best_ask_yes if self.best_ask_yes else 0.0
+                no_price = self.best_ask_no if self.best_ask_no else 0.0
                 print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
                       f"Time: {time_remaining:.2f}s | "
-                      f"YES ask: ${self.best_ask_yes:.4f if self.best_ask_yes else 0:.4f} | "
-                      f"NO ask: ${self.best_ask_no:.4f if self.best_ask_no else 0:.4f} | "
+                      f"YES ask: ${yes_price:.4f} | "
+                      f"NO ask: ${no_price:.4f} | "
                       f"Winner: {self._get_winning_side_name()}")
             
             # Check trigger conditions
@@ -399,12 +438,30 @@ class LastSecondTrader:
                 message_count = 0
                 async for message in ws:
                     message_count += 1
-                    if message_count <= 5:  # Only show first few messages
-                        print(f"[DEBUG] {token_name} message #{message_count}: {message[:150]}...")
-                    data = json.loads(message)
                     
-                    # Process market update
-                    await self.process_market_update(data, is_yes_token)
+                    # Parse JSON message
+                    try:
+                        data = json.loads(message)
+                    except:
+                        # Skip non-JSON messages
+                        continue
+                    
+                    # Skip empty confirmation messages
+                    if not data or (isinstance(data, list) and len(data) == 0):
+                        if message_count <= 2:
+                            print(f"[{token_name}] Subscription confirmed")
+                        continue
+                    
+                    if message_count <= 3:
+                        print(f"[DEBUG] {token_name} message #{message_count}: {json.dumps(data)[:200]}...")
+                    
+                    # Process market update(s)
+                    # WebSocket can return an array of updates
+                    if isinstance(data, list):
+                        for update in data:
+                            await self.process_market_update(update, is_yes_token)
+                    else:
+                        await self.process_market_update(data, is_yes_token)
                     
                     # Check if market closed
                     time_remaining = self.get_time_remaining()

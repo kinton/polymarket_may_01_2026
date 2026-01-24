@@ -107,6 +107,11 @@ class GammaAPI15mFinder:
         print(f"Current time: {now.strftime('%H:%M:%S %Z')}")
         print()
         
+        markets_checked = 0
+        markets_skipped_inactive = 0
+        markets_skipped_no_endtime = 0
+        markets_skipped_time_window = 0
+        
         for event in events:
             try:
                 # Skip inactive or closed events
@@ -121,13 +126,17 @@ class GammaAPI15mFinder:
                     markets_in_event = [event]
                 
                 for market in markets_in_event:
+                    markets_checked += 1
+                    
                     # Skip inactive or closed markets
                     if not market.get("active", False) or market.get("closed", False):
+                        markets_skipped_inactive += 1
                         continue
                     
                     # Get end time from the market
                     end_time_str = market.get("endDate") or market.get("endTime") or market.get("end_time")
                     if not end_time_str:
+                        markets_skipped_no_endtime += 1
                         continue
                     
                     # Parse end_time (usually ISO format)
@@ -135,19 +144,25 @@ class GammaAPI15mFinder:
                         # Handle ISO format with 'Z' or timezone info
                         end_time_str = end_time_str.replace("Z", "+00:00")
                         try:
-                            end_time = datetime.fromisoformat(end_time_str)
-                            # Convert to ET if in UTC
-                            if end_time.tzinfo is None or end_time.tzinfo == timezone.utc:
-                                end_time = end_time.replace(tzinfo=timezone.utc).astimezone(self.ET_TZ)
+                            end_time_utc = datetime.fromisoformat(end_time_str)
+                            # Ensure it's in UTC
+                            if end_time_utc.tzinfo is None:
+                                end_time_utc = end_time_utc.replace(tzinfo=timezone.utc)
+                            elif end_time_utc.tzinfo != timezone.utc:
+                                end_time_utc = end_time_utc.astimezone(timezone.utc)
+                            
+                            # Convert to ET for time calculations
+                            end_time_et = end_time_utc.astimezone(self.ET_TZ)
                         except ValueError:
                             continue
                     else:
                         continue
                     
-                    # Check if market ends within max_minutes_ahead minutes
-                    time_until_end = (end_time - now).total_seconds() / 60
+                    # Check if market ends within max_minutes_ahead minutes (using ET)
+                    time_until_end = (end_time_et - now).total_seconds() / 60
                     
                     if time_until_end < 0 or time_until_end > max_minutes_ahead:
+                        markets_skipped_time_window += 1
                         continue
                     
                     # Market is ending within the time window - add it
@@ -177,8 +192,8 @@ class GammaAPI15mFinder:
                         "condition_id": condition_id,
                         "token_id_yes": token_id_yes or "N/A",
                         "token_id_no": token_id_no or "N/A",
-                        "end_time": end_time.strftime("%H:%M:%S %Z"),
-                        "end_time_utc": end_time.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                        "end_time": end_time_et.strftime("%H:%M:%S %Z"),
+                        "end_time_utc": end_time_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
                         "minutes_until_end": round(time_until_end, 1),
                         "title": title,
                         "ticker": event.get("ticker", "N/A"),
@@ -186,6 +201,14 @@ class GammaAPI15mFinder:
             except Exception as e:
                 print(f"Error processing market: {e}")
                 continue
+        
+        print(f"\nFilter statistics:")
+        print(f"  Markets checked: {markets_checked}")
+        print(f"  Skipped (inactive/closed): {markets_skipped_inactive}")
+        print(f"  Skipped (no end time): {markets_skipped_no_endtime}")
+        print(f"  Skipped (outside time window): {markets_skipped_time_window}")
+        print(f"  Found: {len(filtered_markets)}")
+        print()
         
         return filtered_markets
     

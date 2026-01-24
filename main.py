@@ -43,10 +43,10 @@ class TradingBotRunner:
     
     # Configuration
     POLL_INTERVAL = 90  # Check for new markets every 90 seconds (1.5 minutes)
-    TRADER_START_BUFFER = 180  # Start trader 3 minutes before market ends (was 120)
+    TRADER_START_BUFFER = 180  # Start trader 3 minutes before market ends
     MIN_TIME_TO_START = 30  # Don't start trader if less than 30 seconds until close
     
-    def __init__(self, dry_run: bool = True, trade_size: float = 1.0, poll_interval: int = 90):
+    def __init__(self, dry_run: bool = True, trade_size: float = 1.0, poll_interval: int = 90, run_once: bool = False):
         """
         Initialize the trading bot runner.
         
@@ -54,10 +54,12 @@ class TradingBotRunner:
             dry_run: If True, run in simulation mode (no real trades)
             trade_size: Size of trades in dollars
             poll_interval: How often to poll for new markets (seconds)
+            run_once: If True, run once and exit (default: continuous loop)
         """
         self.dry_run = dry_run
         self.trade_size = trade_size
         self.poll_interval = poll_interval
+        self.run_once = run_once
         
         # Active traders (track running tasks)
         self.active_traders = {}  # condition_id -> asyncio.Task
@@ -256,6 +258,11 @@ class TradingBotRunner:
                         f"Currently running {len(self.active_traders)} trader(s)"
                     )
                 
+                # Exit if run_once mode
+                if self.run_once:
+                    self.finder_logger.info("Run-once mode: exiting after single poll")
+                    break
+                
                 # Wait before next poll
                 await asyncio.sleep(self.poll_interval)
                 
@@ -313,6 +320,11 @@ async def main():
         default=90,
         help="How often to poll for markets in seconds (default: 90)"
     )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run once and exit (default: continuous loop)"
+    )
     
     args = parser.parse_args()
     
@@ -330,7 +342,8 @@ async def main():
     runner = TradingBotRunner(
         dry_run=not args.live,
         trade_size=args.size,
-        poll_interval=args.poll_interval
+        poll_interval=args.poll_interval,
+        run_once=args.once
     )
     
     await runner.run()
