@@ -56,9 +56,10 @@ class LastSecondTrader:
     # Configuration
     DRY_RUN = True  # Safety: Default to dry run mode
     TRADE_SIZE = 1  # Default trade size in dollars
-    TRIGGER_THRESHOLD = 1.0  # Trigger when <= 1 second remaining
+    TRIGGER_THRESHOLD = 60.0  # Trigger when <= 60 seconds remaining
     PRICE_THRESHOLD = 0.50  # Winning side threshold
     BUY_PRICE = 0.99  # Target buy price
+    PRICE_TIE_EPS = 1e-6  # Treat nearly-equal asks as a tie (no winner)
 
     WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
@@ -239,54 +240,102 @@ class LastSecondTrader:
                     return
                 data = data[0]  # Get first element
 
+            # DEBUG: Log received token_id and best_ask to verify data is actually different
+            token_label = "YES" if is_yes_token else "NO"
+            received_asset_id = data.get("asset_id")
+            expected_token_id = self.token_id_yes if is_yes_token else self.token_id_no
+            if received_asset_id and received_asset_id != expected_token_id:
+                print(
+                    f"⚠️  {token_label} token mismatch! Expected {expected_token_id[:16]}..., got {received_asset_id[:16]}..."
+                )
+
             event_type = data.get("event_type")
 
             # Extract best bid and ask based on event type
             if event_type == "book":
-                # Full orderbook snapshot
+                # Full orderbook snapshot — compute best_ask=min(asks), best_bid=max(bids)
                 asks = data.get("asks", [])
                 bids = data.get("bids", [])
 
-                if asks and len(asks) > 0:
-                    best_ask = (
-                        float(asks[0]["price"])
-                        if isinstance(asks[0], dict)
-                        else float(asks[0][0])
-                    )
-                    if is_yes_token:
-                        self.best_ask_yes = best_ask
-                    else:
-                        self.best_ask_no = best_ask
+                if asks:
+                    try:
+                        best_ask = min(
+                            float(a["price"]) if isinstance(a, dict) else float(a[0])
+                            for a in asks
+                        )
+                        if is_yes_token:
+                            self.best_ask_yes = best_ask
+                        else:
+                            self.best_ask_no = best_ask
+                    except Exception:
+                        pass
 
-                if bids and len(bids) > 0:
-                    best_bid = (
-                        float(bids[0]["price"])
-                        if isinstance(bids[0], dict)
-                        else float(bids[0][0])
-                    )
-                    if is_yes_token:
-                        self.best_bid_yes = best_bid
-                    else:
-                        self.best_bid_no = best_bid
+                if bids:
+                    try:
+                        best_bid = max(
+                            float(b["price"]) if isinstance(b, dict) else float(b[0])
+                            for b in bids
+                        )
+                        if is_yes_token:
+                            self.best_bid_yes = best_bid
+                        else:
+                            self.best_bid_no = best_bid
+                    except Exception:
+                        pass
 
-            elif event_type in ["price_change", "best_bid_ask"]:
-                # Price update with best bid/ask
+            elif event_type == "price_change":
+                # Price update — values are inside price_changes list per asset
+                changes = data.get("price_changes", [])
+                if isinstance(changes, list) and changes:
+                    expected_token_id = (
+                        self.token_id_yes if is_yes_token else self.token_id_no
+                    )
+                    for ch in changes:
+                        try:
+                            ch_asset = ch.get("asset_id")
+                            if ch_asset and ch_asset != expected_token_id:
+                                continue
+                            ch_best_ask = ch.get("best_ask")
+                            ch_best_bid = ch.get("best_bid")
+                            if ch_best_ask is not None and ch_best_ask != "":
+                                val = float(ch_best_ask)
+                                if is_yes_token:
+                                    self.best_ask_yes = val
+                                else:
+                                    self.best_ask_no = val
+                            if ch_best_bid is not None and ch_best_bid != "":
+                                val = float(ch_best_bid)
+                                if is_yes_token:
+                                    self.best_bid_yes = val
+                                else:
+                                    self.best_bid_no = val
+                        except Exception:
+                            continue
+
+            elif event_type == "best_bid_ask":
+                # Some events may provide top-level best_bid/best_ask
                 best_ask = data.get("best_ask")
                 best_bid = data.get("best_bid")
 
-                if best_ask:
-                    best_ask = float(best_ask)
-                    if is_yes_token:
-                        self.best_ask_yes = best_ask
-                    else:
-                        self.best_ask_no = best_ask
+                if best_ask is not None and best_ask != "":
+                    try:
+                        val = float(best_ask)
+                        if is_yes_token:
+                            self.best_ask_yes = val
+                        else:
+                            self.best_ask_no = val
+                    except Exception:
+                        pass
 
-                if best_bid:
-                    best_bid = float(best_bid)
-                    if is_yes_token:
-                        self.best_bid_yes = best_bid
-                    else:
-                        self.best_bid_no = best_bid
+                if best_bid is not None and best_bid != "":
+                    try:
+                        val = float(best_bid)
+                        if is_yes_token:
+                            self.best_bid_yes = val
+                        else:
+                            self.best_bid_no = val
+                    except Exception:
+                        pass
 
             # Determine winning side (price > 0.50)
             self._determine_winning_side()
@@ -298,11 +347,13 @@ class LastSecondTrader:
             if int(time_remaining) % 10 == 0 or time_remaining <= 5:
                 yes_price = self.best_ask_yes if self.best_ask_yes else 0.0
                 no_price = self.best_ask_no if self.best_ask_no else 0.0
+                price_sum = yes_price + no_price
                 print(
                     f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
                     f"Time: {time_remaining:.2f}s | "
                     f"YES ask: ${yes_price:.4f} | "
                     f"NO ask: ${no_price:.4f} | "
+                    f"Sum: ${price_sum:.4f} | "
                     f"Winner: {self._get_winning_side_name()}"
                 )
 
@@ -319,6 +370,11 @@ class LastSecondTrader:
         If best_ask_yes > best_ask_no, then YES is the winning side.
         """
         if self.best_ask_yes and self.best_ask_no:
+            # If asks are nearly equal, treat as tie (no winner)
+            if abs(self.best_ask_yes - self.best_ask_no) < self.PRICE_TIE_EPS:
+                self.winning_token_id = None
+                return
+
             # Compare asks: higher ask wins
             self.winning_token_id = (
                 self.token_id_yes
@@ -434,20 +490,27 @@ class LastSecondTrader:
             print(f"{'=' * 80}")
 
             # Create FOK order at $0.99 for winning side
+            # Step 1: Create the order
             order_args = OrderArgs(
                 token_id=self.winning_token_id,
                 price=self.BUY_PRICE,
                 size=self.trade_size,
                 side="BUY",
-                order_type=OrderType.FOK,  # Fill-or-Kill
             )
 
-            # Submit order
+            created_order = await asyncio.to_thread(
+                self.client.create_order, order_args
+            )
+            print(f"✓ Order created: {created_order}")
+
+            # Step 2: Post the order as FOK (Fill-or-Kill)
             response = await asyncio.to_thread(
-                self.client.create_and_post_order, order_args
+                self.client.post_order,
+                created_order,
+                OrderType.FOK
             )
 
-            print("✓ Order submitted successfully!")
+            print("✓ Order posted as FOK successfully!")
             print(f"Response: {json.dumps(response, indent=2)}")
             print(f"{'=' * 80}\n")
 
@@ -465,8 +528,9 @@ class LastSecondTrader:
             """Listen to a single WebSocket connection."""
             try:
                 token_name = "YES" if is_yes_token else "NO"
+                token_id = self.token_id_yes if is_yes_token else self.token_id_no
                 print(
-                    f"[DEBUG] Starting to listen for {token_name} WebSocket messages..."
+                    f"[DEBUG] Starting to listen for {token_name} WebSocket messages (token_id: {token_id[:16]}...)"
                 )
                 message_count = 0
                 async for message in ws:
@@ -475,7 +539,7 @@ class LastSecondTrader:
                     # Parse JSON message
                     try:
                         data = json.loads(message)
-                    except:
+                    except json.JSONDecodeError:
                         # Skip non-JSON messages
                         continue
 
@@ -485,10 +549,10 @@ class LastSecondTrader:
                             print(f"[{token_name}] Subscription confirmed")
                         continue
 
-                    if message_count <= 3:
-                        print(
-                            f"[DEBUG] {token_name} message #{message_count}: {json.dumps(data)[:200]}..."
-                        )
+                    # DEBUG: Show first 5 messages with full details
+                    if message_count <= 5:
+                        print(f"\n[DEBUG {token_name} MSG #{message_count}] FULL:")
+                        print(json.dumps(data, indent=2))
 
                     # Process market update(s)
                     # WebSocket can return an array of updates

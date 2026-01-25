@@ -1,12 +1,12 @@
 """
-Query Polymarket Gamma API to find currently active 5/15-minute Bitcoin/Ethereum markets.
+Query Polymarket Gamma API to find currently active short-duration "Up or Down" markets.
 
 Features:
 - Get current time in ET timezone
-- Search for ALL Bitcoin/Ethereum markets ending within max_minutes_ahead (default: 20 minutes)
-- Query https://gamma-api.polymarket.com/public-search for Bitcoin/Ethereum markets
+- Search for markets ending within max_minutes_ahead (default: 20 minutes)
+- Query https://gamma-api.polymarket.com/public-search for "Up or Down" markets (overridable via env)
 - Filter for markets ending within the specified time window
-- Return condition_id, token_id for YES/NO, and end_time
+- Return condition_id, token_id for YES/NO, end_time, title, slug
 
 Usage:
     python gamma_15m_finder.py
@@ -22,6 +22,7 @@ The script will output:
 
 import asyncio
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -29,7 +30,7 @@ import aiohttp
 
 
 class GammaAPI15mFinder:
-    """Find active 5/15-minute Bitcoin/Ethereum markets on Polymarket."""
+    """Find active short-duration "Up or Down" markets on Polymarket."""
 
     BASE_URL = "https://gamma-api.polymarket.com/public-search"
     ET_TZ = timezone(timedelta(hours=-5))  # EST (adjust to -4 for EDT if needed)
@@ -43,6 +44,31 @@ class GammaAPI15mFinder:
         self.current_time_et = None
         self.current_window = None
         self.max_minutes_ahead = max_minutes_ahead
+        # Allow overriding base queries via env; default to broad "Up or Down"
+        self.base_queries = self._load_base_queries()
+
+    def _load_base_queries(self) -> List[str]:
+        """Load base queries from env or use broad defaults for binary markets.
+
+        Env format: MARKET_QUERIES="Query1;Query2;Query3"
+        Default: Wide range of binary market queries (Up or Down, Will, yes, by, etc)
+        """
+        env_val = os.getenv("MARKET_QUERIES")
+        if env_val:
+            queries = [q.strip() for q in env_val.split(";") if q.strip()]
+            return queries or self._default_queries()
+        return self._default_queries()
+
+    def _default_queries(self) -> List[str]:
+        """Default broad binary market queries."""
+        return [
+            "Up or Down",
+            "Will",
+            "by",
+            "yes",
+            "no",
+            "binary",
+        ]
 
     def get_current_time_et(self) -> datetime:
         """Get current time in ET timezone."""
@@ -52,7 +78,7 @@ class GammaAPI15mFinder:
         return self.current_time_et
 
     async def search_markets(
-        self, query: str = "Bitcoin Up or Down", limit: int = 100, offset: int = 0
+        self, query: str = "Up or Down", limit: int = 100, offset: int = 0
     ) -> Dict[str, Any]:
         """
         Query Gamma API public search endpoint.
@@ -111,6 +137,7 @@ class GammaAPI15mFinder:
         markets_skipped_inactive = 0
         markets_skipped_no_endtime = 0
         markets_skipped_time_window = 0
+        markets_skipped_non_binary = 0
 
         for event in events:
             try:
@@ -179,6 +206,7 @@ class GammaAPI15mFinder:
                     title = market.get("question") or market.get("title", "N/A")
 
                     # Extract token IDs from clobTokenIds if available
+                    # Only accept strictly binary markets (exactly 2 outcomes: YES/NO)
                     token_ids_raw = market.get("clobTokenIds")
                     token_id_yes = None
                     token_id_no = None
@@ -187,17 +215,29 @@ class GammaAPI15mFinder:
                         try:
                             if isinstance(token_ids_raw, str):
                                 token_ids = json.loads(token_ids_raw)
-                                if len(token_ids) >= 2:
-                                    token_id_yes = token_ids[0]
-                                    token_id_no = token_ids[1]
-                            elif (
-                                isinstance(token_ids_raw, list)
-                                and len(token_ids_raw) >= 2
-                            ):
+                                # Require exactly 2 outcomes (YES/NO)
+                                if len(token_ids) != 2:
+                                    markets_skipped_non_binary += 1
+                                    continue
+                                token_id_yes = token_ids[0]
+                                token_id_no = token_ids[1]
+                            elif isinstance(token_ids_raw, list):
+                                # Require exactly 2 outcomes (YES/NO)
+                                if len(token_ids_raw) != 2:
+                                    markets_skipped_non_binary += 1
+                                    continue
                                 token_id_yes = token_ids_raw[0]
                                 token_id_no = token_ids_raw[1]
+                            else:
+                                markets_skipped_non_binary += 1
+                                continue
                         except Exception:
-                            pass
+                            markets_skipped_non_binary += 1
+                            continue
+                    else:
+                        # No token IDs = not binary
+                        markets_skipped_non_binary += 1
+                        continue
 
                     # Extract slug for UI link if available
                     slug = market.get("slug") or event.get("slug") or None
@@ -226,6 +266,7 @@ class GammaAPI15mFinder:
         print(f"  Skipped (inactive/closed): {markets_skipped_inactive}")
         print(f"  Skipped (no end time): {markets_skipped_no_endtime}")
         print(f"  Skipped (outside time window): {markets_skipped_time_window}")
+        print(f"  Skipped (non-binary): {markets_skipped_non_binary}")
         print(f"  Found: {len(filtered_markets)}")
         print()
 
@@ -233,7 +274,7 @@ class GammaAPI15mFinder:
 
     async def find_active_market(self) -> Optional[List[Dict[str, Any]]]:
         """
-        Main function to find active 5/15-minute Bitcoin/Ethereum markets.
+        Main function to find active short-duration "Up or Down" markets.
         Searches for markets ending in the next max_minutes_ahead minutes (default 20).
         """
         now = self.get_current_time_et()
@@ -243,42 +284,28 @@ class GammaAPI15mFinder:
         )
         print()
 
-        # Step 2: Query API for Bitcoin/Ethereum markets
+        # Step 2: Query API for markets
         print("Querying Polymarket Gamma API...")
 
         # Build time-specific queries to cover the search window
-        # API search works better with specific time patterns
+        # API search works better with specific time patterns for hourly “Up or Down” markets
         current_hour_24 = now.hour
         current_date = now.strftime("January %d")
 
-        # Convert to 12-hour format for matching market titles
-        hour_12 = current_hour_24 % 12
-        if hour_12 == 0:
-            hour_12 = 12
+        hour_12 = current_hour_24 % 12 or 12
 
-        # Calculate how many hours ahead we need to search
-        # Since max_minutes_ahead can be up to 30 minutes, we might need current and next hour
-        hours_to_search = []
+        # Current and next hour to catch near-cutoff markets
+        hours_to_search = [hour_12, ((current_hour_24 + 1) % 24) % 12 or 12]
 
-        # Current hour
-        current_hour_12 = hour_12
-        hours_to_search.append(current_hour_12)
-
-        # Next hour (to catch markets that start in current hour but end in next)
-        next_hour_24 = (current_hour_24 + 1) % 24
-        next_hour_12 = next_hour_24 % 12
-        if next_hour_12 == 0:
-            next_hour_12 = 12
-        hours_to_search.append(next_hour_12)
-
-        # Build queries for both cryptocurrencies and all relevant hours
         queries = []
-        for crypto in ["Bitcoin", "Ethereum"]:
-            for hour in hours_to_search:
-                queries.append(f"{crypto} Up or Down - {current_date}, {hour}:")
 
-            # Also add general query as fallback
-            queries.append(f"{crypto} Up or Down")
+        for base in self.base_queries:
+            # Hourly pattern only if it looks like an Up or Down template
+            if "Up or Down" in base:
+                for hour in hours_to_search:
+                    queries.append(f"{base} - {current_date}, {hour}:")
+            # Always add the plain base query
+            queries.append(base)
 
         all_events = []
         seen_ids = set()
