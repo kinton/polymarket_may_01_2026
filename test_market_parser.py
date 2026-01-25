@@ -1,11 +1,12 @@
 """Tests for market_parser module (parsing utilities and business logic)."""
 
 import pytest
+
 from market_parser import (
+    determine_winning_side,
     extract_best_ask_from_book,
     extract_best_bid_from_book,
     extract_prices_from_price_change,
-    determine_winning_side,
     get_winning_token_id,
     validate_price_sum,
 )

@@ -1,7 +1,8 @@
 """Tests for clob_types module (data structures and constants)."""
 
 import pytest
-from clob_types import Market, OrderBook, BUY_PRICE, TRIGGER_THRESHOLD, PRICE_TIE_EPS
+
+from clob_types import BUY_PRICE, PRICE_TIE_EPS, TRIGGER_THRESHOLD, Market, OrderBook
 
 
 class TestMarketDataclass:
@@ -10,6 +11,7 @@ class TestMarketDataclass:
     def test_market_creation(self):
         """Test creating a Market instance."""
         from datetime import datetime, timezone
+
         end_time = datetime(2026, 1, 26, 12, 0, 0, tzinfo=timezone.utc)
         market = Market(
             condition_id="test_condition",
@@ -27,6 +29,7 @@ class TestMarketDataclass:
     def test_market_all_fields(self):
         """Test Market with all required fields."""
         from datetime import datetime, timezone
+
         end_time = datetime(2026, 1, 26, 12, 0, 0, tzinfo=timezone.utc)
         market = Market(
             condition_id="cond_123",
