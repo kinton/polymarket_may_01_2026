@@ -57,10 +57,10 @@ async def run_book_test():
     }
     await trader.process_market_update(no_book, is_yes_token=False)
 
-    assert abs(trader.best_ask_yes - 0.95) < 1e-9
-    assert abs(trader.best_ask_no - 0.06) < 1e-9
-    assert abs(trader.best_bid_yes - 0.93) < 1e-9
-    assert abs(trader.best_bid_no - 0.05) < 1e-9
+    assert abs(trader.orderbook.best_ask_yes - 0.95) < 1e-9
+    assert abs(trader.orderbook.best_ask_no - 0.06) < 1e-9
+    assert abs(trader.orderbook.best_bid_yes - 0.93) < 1e-9
+    assert abs(trader.orderbook.best_bid_no - 0.05) < 1e-9
 
 
 async def run_price_change_test():
@@ -90,10 +90,10 @@ async def run_price_change_test():
     await trader.process_market_update(price_change_yes, is_yes_token=True)
     await trader.process_market_update(price_change_no, is_yes_token=False)
 
-    assert abs(trader.best_ask_yes - 0.95) < 1e-9
-    assert abs(trader.best_ask_no - 0.07) < 1e-9
-    assert abs(trader.best_bid_yes - 0.93) < 1e-9
-    assert abs(trader.best_bid_no - 0.05) < 1e-9
+    assert abs(trader.orderbook.best_ask_yes - 0.95) < 1e-9
+    assert abs(trader.orderbook.best_ask_no - 0.07) < 1e-9
+    assert abs(trader.orderbook.best_bid_yes - 0.93) < 1e-9
+    assert abs(trader.orderbook.best_bid_no - 0.05) < 1e-9
 
 
 def main():

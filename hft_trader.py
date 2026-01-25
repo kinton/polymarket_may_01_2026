@@ -7,7 +7,7 @@ and executes a last-second trading strategy.
 Strategy:
 - Monitor Level 1 order book (best bid/ask) via WebSocket
 - Track the winning side (price > 0.50)
-- When time remaining <= 1 second (but > 0):
+- When time remaining <= 60 seconds (but > 0):
   - Check if winning side is available below $0.99
   - Execute Fill-or-Kill (FOK) order at $0.99
 
@@ -39,6 +39,15 @@ from typing import Any, Dict, Optional
 import websockets
 from dotenv import load_dotenv
 
+from clob_types import OrderBook, BUY_PRICE, TRIGGER_THRESHOLD, PRICE_TIE_EPS, CLOB_WS_URL
+from market_parser import (
+    extract_best_ask_from_book,
+    extract_best_bid_from_book,
+    extract_prices_from_price_change,
+    determine_winning_side,
+    get_winning_token_id,
+)
+
 try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
@@ -50,18 +59,18 @@ except ImportError:
 class LastSecondTrader:
     """
     High-frequency trader that monitors market data via WebSocket
-    and executes trades in the final second before market close.
+    and executes trades in the final seconds before market close.
     """
 
     # Configuration
     DRY_RUN = True  # Safety: Default to dry run mode
     TRADE_SIZE = 1  # Default trade size in dollars
-    TRIGGER_THRESHOLD = 60.0  # Trigger when <= 60 seconds remaining
+    TRIGGER_THRESHOLD = TRIGGER_THRESHOLD
     PRICE_THRESHOLD = 0.50  # Winning side threshold
-    BUY_PRICE = 0.99  # Target buy price
-    PRICE_TIE_EPS = 1e-6  # Treat nearly-equal asks as a tie (no winner)
+    BUY_PRICE = BUY_PRICE
+    PRICE_TIE_EPS = PRICE_TIE_EPS
 
-    WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    WS_URL = CLOB_WS_URL
 
     def __init__(
         self,
@@ -95,11 +104,8 @@ class LastSecondTrader:
         self.slug = slug
 
         # Market state - track both YES and NO
-        self.best_ask_yes: Optional[float] = None
-        self.best_bid_yes: Optional[float] = None
-        self.best_ask_no: Optional[float] = None
-        self.best_bid_no: Optional[float] = None
-        self.winning_token_id: Optional[str] = None  # Will be determined dynamically
+        self.orderbook = OrderBook()
+        self.winning_side: Optional[str] = None  # "YES" or "NO"
         self.order_executed = False
         self.ws_yes = None
         self.ws_no = None
@@ -253,64 +259,43 @@ class LastSecondTrader:
 
             # Extract best bid and ask based on event type
             if event_type == "book":
-                # Full orderbook snapshot — compute best_ask=min(asks), best_bid=max(bids)
+                # Full orderbook snapshot
                 asks = data.get("asks", [])
                 bids = data.get("bids", [])
+                best_ask = extract_best_ask_from_book(asks)
+                best_bid = extract_best_bid_from_book(bids)
 
-                if asks:
-                    try:
-                        best_ask = min(
-                            float(a["price"]) if isinstance(a, dict) else float(a[0])
-                            for a in asks
-                        )
-                        if is_yes_token:
-                            self.best_ask_yes = best_ask
-                        else:
-                            self.best_ask_no = best_ask
-                    except Exception:
-                        pass
+                if best_ask is not None:
+                    if is_yes_token:
+                        self.orderbook.best_ask_yes = best_ask
+                    else:
+                        self.orderbook.best_ask_no = best_ask
 
-                if bids:
-                    try:
-                        best_bid = max(
-                            float(b["price"]) if isinstance(b, dict) else float(b[0])
-                            for b in bids
-                        )
-                        if is_yes_token:
-                            self.best_bid_yes = best_bid
-                        else:
-                            self.best_bid_no = best_bid
-                    except Exception:
-                        pass
+                if best_bid is not None:
+                    if is_yes_token:
+                        self.orderbook.best_bid_yes = best_bid
+                    else:
+                        self.orderbook.best_bid_no = best_bid
 
             elif event_type == "price_change":
                 # Price update — values are inside price_changes list per asset
                 changes = data.get("price_changes", [])
-                if isinstance(changes, list) and changes:
-                    expected_token_id = (
-                        self.token_id_yes if is_yes_token else self.token_id_no
-                    )
-                    for ch in changes:
-                        try:
-                            ch_asset = ch.get("asset_id")
-                            if ch_asset and ch_asset != expected_token_id:
-                                continue
-                            ch_best_ask = ch.get("best_ask")
-                            ch_best_bid = ch.get("best_bid")
-                            if ch_best_ask is not None and ch_best_ask != "":
-                                val = float(ch_best_ask)
-                                if is_yes_token:
-                                    self.best_ask_yes = val
-                                else:
-                                    self.best_ask_no = val
-                            if ch_best_bid is not None and ch_best_bid != "":
-                                val = float(ch_best_bid)
-                                if is_yes_token:
-                                    self.best_bid_yes = val
-                                else:
-                                    self.best_bid_no = val
-                        except Exception:
-                            continue
+                expected_token_id = (
+                    self.token_id_yes if is_yes_token else self.token_id_no
+                )
+                ask, bid = extract_prices_from_price_change(changes, expected_token_id)
+
+                if ask is not None:
+                    if is_yes_token:
+                        self.orderbook.best_ask_yes = ask
+                    else:
+                        self.orderbook.best_ask_no = ask
+
+                if bid is not None:
+                    if is_yes_token:
+                        self.orderbook.best_bid_yes = bid
+                    else:
+                        self.orderbook.best_bid_no = bid
 
             elif event_type == "best_bid_ask":
                 # Some events may provide top-level best_bid/best_ask
@@ -321,40 +306,40 @@ class LastSecondTrader:
                     try:
                         val = float(best_ask)
                         if is_yes_token:
-                            self.best_ask_yes = val
+                            self.orderbook.best_ask_yes = val
                         else:
-                            self.best_ask_no = val
-                    except Exception:
+                            self.orderbook.best_ask_no = val
+                    except (ValueError, TypeError):
                         pass
 
                 if best_bid is not None and best_bid != "":
                     try:
                         val = float(best_bid)
                         if is_yes_token:
-                            self.best_bid_yes = val
+                            self.orderbook.best_bid_yes = val
                         else:
-                            self.best_bid_no = val
-                    except Exception:
+                            self.orderbook.best_bid_no = val
+                    except (ValueError, TypeError):
                         pass
 
-            # Determine winning side (price > 0.50)
-            self._determine_winning_side()
+            # Update derived values and determine winning side
+            self.orderbook.update()
+            self._update_winning_side()
 
             # Get time remaining
             time_remaining = self.get_time_remaining()
 
             # Log current state (throttled to avoid spam)
             if int(time_remaining) % 10 == 0 or time_remaining <= 5:
-                yes_price = self.best_ask_yes if self.best_ask_yes else 0.0
-                no_price = self.best_ask_no if self.best_ask_no else 0.0
-                price_sum = yes_price + no_price
+                yes_price = self.orderbook.best_ask_yes or 0.0
+                no_price = self.orderbook.best_ask_no or 0.0
                 print(
                     f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
                     f"Time: {time_remaining:.2f}s | "
                     f"YES ask: ${yes_price:.4f} | "
                     f"NO ask: ${no_price:.4f} | "
-                    f"Sum: ${price_sum:.4f} | "
-                    f"Winner: {self._get_winning_side_name()}"
+                    f"Sum: ${self.orderbook.sum_asks or 0.0:.4f} | "
+                    f"Winner: {self.winning_side or 'None'}"
                 )
 
             # Check trigger conditions
@@ -363,44 +348,29 @@ class LastSecondTrader:
         except Exception as e:
             print(f"Error processing market update: {e}")
 
-    def _determine_winning_side(self):
-        """Determine which token is winning based on higher ask price.
+    def _update_winning_side(self) -> None:
+        """Update winning side based on current orderbook state."""
+        self.winning_side = determine_winning_side(
+            self.orderbook.best_ask_yes,
+            self.orderbook.best_ask_no,
+            self.PRICE_TIE_EPS,
+        )
 
-        Logic: Higher ask = market expects that side to win.
-        If best_ask_yes > best_ask_no, then YES is the winning side.
-        """
-        if self.best_ask_yes and self.best_ask_no:
-            # If asks are nearly equal, treat as tie (no winner)
-            if abs(self.best_ask_yes - self.best_ask_no) < self.PRICE_TIE_EPS:
-                self.winning_token_id = None
-                return
-
-            # Compare asks: higher ask wins
-            self.winning_token_id = (
-                self.token_id_yes
-                if self.best_ask_yes > self.best_ask_no
-                else self.token_id_no
-            )
-        else:
-            self.winning_token_id = None
-
-    def _get_winning_side_name(self) -> str:
-        """Get human-readable name of winning side."""
-        if self.winning_token_id == self.token_id_yes:
-            return "YES"
-        elif self.winning_token_id == self.token_id_no:
-            return "NO"
-        else:
-            return "None"
+    def _get_winning_token_id(self) -> Optional[str]:
+        """Get token ID for the winning side."""
+        if self.winning_side is None:
+            return None
+        return get_winning_token_id(
+            self.winning_side, self.token_id_yes, self.token_id_no
+        )
 
     def _get_winning_ask(self) -> Optional[float]:
         """Get best ask price for winning side."""
-        if self.winning_token_id == self.token_id_yes:
-            return self.best_ask_yes
-        elif self.winning_token_id == self.token_id_no:
-            return self.best_ask_no
-        else:
-            return None
+        if self.winning_side == "YES":
+            return self.orderbook.best_ask_yes
+        elif self.winning_side == "NO":
+            return self.orderbook.best_ask_no
+        return None
 
     async def check_trigger(self, time_remaining: float):
         """
@@ -422,7 +392,7 @@ class LastSecondTrader:
             return
 
         # Check if winning side is determined
-        if self.winning_token_id is None:
+        if self.winning_side is None:
             print(
                 f"⚠️  Warning: No winning side determined at {time_remaining:.3f}s remaining"
             )
@@ -444,11 +414,10 @@ class LastSecondTrader:
             return
 
         # All conditions met - execute trade!
-        winning_side_name = self._get_winning_side_name()
         print(f"\n{'=' * 80}")
         print(f"🎯 TRIGGER ACTIVATED at {time_remaining:.3f}s remaining!")
         print(f"{'=' * 80}")
-        print(f"Winning Side: {winning_side_name}")
+        print(f"Winning Side: {self.winning_side}")
         print(f"Best Ask: ${winning_ask:.4f}")
         print(f"Target Price: ${self.BUY_PRICE}")
         print(f"Trade Size: ${self.trade_size}")
@@ -457,21 +426,21 @@ class LastSecondTrader:
         await self.execute_order()
         self.order_executed = True
 
-    async def execute_order(self):
+    async def execute_order(self) -> None:
         """
         Execute Fill-or-Kill (FOK) order on the winning side.
         In dry run mode, only prints the intended action.
         """
         winning_ask = self._get_winning_ask()
-        winning_side_name = self._get_winning_side_name()
+        winning_token_id = self._get_winning_token_id()
 
         if self.dry_run:
             print(f"{'=' * 80}")
             print("🔷 DRY RUN MODE - NO REAL TRADE EXECUTED")
             print(f"{'=' * 80}")
             print("WOULD BUY:")
-            print(f"  Side: {winning_side_name}")
-            print(f"  Token ID: {self.winning_token_id}")
+            print(f"  Side: {self.winning_side}")
+            print(f"  Token ID: {winning_token_id}")
             print(f"  Price: ${self.BUY_PRICE}")
             print(f"  Size: ${self.trade_size}")
             print("  Type: Fill-or-Kill (FOK)")
@@ -492,7 +461,7 @@ class LastSecondTrader:
             # Create FOK order at $0.99 for winning side
             # Step 1: Create the order
             order_args = OrderArgs(
-                token_id=self.winning_token_id,
+                token_id=winning_token_id,
                 price=self.BUY_PRICE,
                 size=self.trade_size,
                 side="BUY",
@@ -505,9 +474,7 @@ class LastSecondTrader:
 
             # Step 2: Post the order as FOK (Fill-or-Kill)
             response = await asyncio.to_thread(
-                self.client.post_order,
-                created_order,
-                OrderType.FOK
+                self.client.post_order, created_order, OrderType.FOK
             )
 
             print("✓ Order posted as FOK successfully!")
