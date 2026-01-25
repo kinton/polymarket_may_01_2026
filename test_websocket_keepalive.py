@@ -60,7 +60,7 @@ async def test_websocket_with_ping():
                         try:
                             data = json.loads(message)
                             print(json.dumps(data, indent=2)[:500])
-                        except:
+                        except (json.JSONDecodeError, ValueError):
                             print(message[:500])
 
                         if message_count >= 10:

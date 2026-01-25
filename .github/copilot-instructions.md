@@ -10,6 +10,21 @@ uv run python main.py --live       # Live trading (real money)
 uv run python main.py --once       # Single poll (testing)
 ```
 
+## 🧪 Testing
+
+After implementing a feature, run tests to validate:
+
+```bash
+uv run pytest test_*.py -v         # Run all tests
+uv run pytest test_clob_types.py -v          # Test types & constants
+uv run pytest test_market_parser.py -v       # Test parsing logic
+```
+
+Before committing:
+```bash
+uv run pytest test_*.py -v && uv run ruff check *.py && git add -A && git commit -m "message"
+```
+
 ## 📚 Documentation
 
 - **[.github/agents.md](.github/agents.md)** — Critical context (always relevant)

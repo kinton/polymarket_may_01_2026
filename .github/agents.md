@@ -81,11 +81,13 @@ Can be array or object - handle both cases.
 
 ## ✅ Before Committing
 
-- [ ] Test with `--once` flag (single poll test)
+- [ ] Run `uv run pytest test_*.py -v` to verify all tests pass
+- [ ] Run `uv run ruff check *.py` to check linting
+- [ ] Test with `--once` flag (single poll test) for integration validation
 - [ ] Verify logs show expected behavior
 - [ ] Check all parameter values match table above
 - [ ] Ensure no environment variables leaked in code
-- [ ] Confirm both dry-run and live modes work
+- [ ] Confirm both dry-run and live modes work (if modified)
 
 ## 📚 Documentation Files
 
