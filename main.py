@@ -49,7 +49,7 @@ class TradingBotRunner:
     def __init__(
         self,
         dry_run: bool = True,
-        trade_size: float = 2.0,
+        trade_size: float = 1.0,
         poll_interval: int = 90,
         run_once: bool = False,
     ):
@@ -58,7 +58,7 @@ class TradingBotRunner:
 
         Args:
             dry_run: If True, run in simulation mode (no real trades)
-            trade_size: Size of trades in dollars
+            trade_size: Size of trades in dollars (will buy trade_size/price tokens)
             poll_interval: How often to poll for new markets (seconds)
             run_once: If True, run once and exit (default: continuous loop)
         """
@@ -322,7 +322,7 @@ async def main():
         help="Enable live trading mode (default: dry run)",
     )
     parser.add_argument(
-        "--size", type=float, default=2.0, help="Trade size in tokens (default: 2, equals ~$2 at $0.99/token)"
+        "--size", type=float, default=1.0, help="Trade size in dollars (default: $1, buys 1.01 tokens at $0.99/token)"
     )
     parser.add_argument(
         "--poll-interval",

@@ -84,7 +84,7 @@ class LastSecondTrader:
         token_id_no: str,
         end_time: datetime,
         dry_run: bool = True,
-        trade_size: float = 2.0,
+        trade_size: float = 1.0,
         title: Optional[str] = None,
         slug: Optional[str] = None,
     ):
@@ -97,14 +97,14 @@ class LastSecondTrader:
             token_id_no: The NO token ID
             end_time: Market end time (timezone-aware datetime)
             dry_run: If True, only print actions without executing
-            trade_size: Size of trade in dollars
+            trade_size: Size of trade in dollars (will buy trade_size/price tokens)
         """
         self.condition_id = condition_id
         self.token_id_yes = token_id_yes
         self.token_id_no = token_id_no
         self.end_time = end_time
         self.dry_run = dry_run
-        self.trade_size = trade_size
+        self.trade_size = trade_size  # dollars to spend
         self.title = title
         self.slug = slug
 
@@ -527,10 +527,13 @@ class LastSecondTrader:
 
             # Create FOK order at $0.99 for winning side
             # Step 1: Create the order
+            # Convert dollars to tokens: size = dollars / price
+            tokens_to_buy = self.trade_size / self.BUY_PRICE
+            
             order_args = OrderArgs(
                 token_id=winning_token_id,
                 price=self.BUY_PRICE,
-                size=self.trade_size,
+                size=tokens_to_buy,  # size is in tokens, not dollars
                 side="BUY",
             )
 
