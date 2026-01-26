@@ -84,7 +84,7 @@ class LastSecondTrader:
         token_id_no: str,
         end_time: datetime,
         dry_run: bool = True,
-        trade_size: float = 1.0,
+        trade_size: float = 2.0,
         title: Optional[str] = None,
         slug: Optional[str] = None,
     ):
@@ -297,25 +297,25 @@ class LastSecondTrader:
                 # Price update — price_changes array contains data for BOTH tokens
                 # We must process ALL elements, not just the one matching received_asset_id
                 changes = data.get("price_changes", [])
-                
+
                 # Process all price changes in this event
                 for change in changes:
                     change_asset_id = change.get("asset_id")
                     if not change_asset_id:
                         continue
-                    
+
                     # Determine which token this change is for
                     is_yes_change = change_asset_id == self.token_id_yes
                     is_no_change = change_asset_id == self.token_id_no
-                    
+
                     if not is_yes_change and not is_no_change:
                         # Not our market
                         continue
-                    
+
                     # Extract best_ask and best_bid from this change
                     best_ask = change.get("best_ask")
                     best_bid = change.get("best_bid")
-                    
+
                     if best_ask is not None and best_ask != "":
                         try:
                             ask_val = float(best_ask)
@@ -325,7 +325,7 @@ class LastSecondTrader:
                                 self.orderbook.best_ask_no = ask_val
                         except (ValueError, TypeError):
                             pass
-                    
+
                     if best_bid is not None and best_bid != "":
                         try:
                             bid_val = float(best_bid)
