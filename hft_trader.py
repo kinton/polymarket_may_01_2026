@@ -108,6 +108,9 @@ class LastSecondTrader:
         self.title = title
         self.slug = slug
 
+        # Extract short market name for logging (e.g. "BTC", "ETH", "SOL")
+        self.market_name = self._extract_market_name(title)
+
         # Market state - track both YES and NO
         self.orderbook = OrderBook()
         self.winning_side: Optional[str] = None  # "YES" or "NO"
@@ -140,6 +143,25 @@ class LastSecondTrader:
         if self.slug:
             print(f"Market Link: https://polymarket.com/market/{self.slug}")
         print(f"{'=' * 80}\n")
+
+    def _extract_market_name(self, title: Optional[str]) -> str:
+        """Extract short market name from title for logging."""
+        if not title:
+            return "UNKNOWN"
+        
+        # Extract cryptocurrency name (e.g., "Bitcoin" -> "BTC")
+        title_lower = title.lower()
+        if "bitcoin" in title_lower or "btc" in title_lower:
+            return "BTC"
+        elif "ethereum" in title_lower or "eth" in title_lower:
+            return "ETH"
+        elif "solana" in title_lower or "sol" in title_lower:
+            return "SOL"
+        elif "xrp" in title_lower or "ripple" in title_lower:
+            return "XRP"
+        else:
+            # Fallback: use first word of title
+            return title.split()[0][:8].upper()
 
     def _init_clob_client(self) -> Optional[ClobClient]:
         """Initialize the CLOB client for order execution."""
@@ -393,6 +415,7 @@ class LastSecondTrader:
                 no_price = self.orderbook.best_ask_no or 0.0
                 print(
                     f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
+                    f"[{self.market_name}] "
                     f"Time: {time_remaining:.2f}s | "
                     f"YES ask: ${yes_price:.4f} | "
                     f"NO ask: ${no_price:.4f} | "
@@ -456,7 +479,7 @@ class LastSecondTrader:
             # Don't spam warnings - only log once when we enter trigger window
             if not hasattr(self, "_logged_no_winner"):
                 print(
-                    f"⚠️  Warning: No winning side determined at {time_remaining:.3f}s remaining"
+                    f"⚠️  [{self.market_name}] Warning: No winning side determined at {time_remaining:.3f}s remaining"
                 )
                 self._logged_no_winner = True
             return
@@ -466,7 +489,7 @@ class LastSecondTrader:
         if winning_ask is None:
             if not hasattr(self, "_logged_no_ask"):
                 print(
-                    f"⚠️  Warning: No ask price available for winning side at {time_remaining:.3f}s remaining"
+                    f"⚠️  [{self.market_name}] Warning: No ask price available for winning side at {time_remaining:.3f}s remaining"
                 )
                 self._logged_no_ask = True
             return
@@ -475,15 +498,16 @@ class LastSecondTrader:
         if winning_ask > self.BUY_PRICE:
             if not hasattr(self, "_logged_price_high"):
                 print(
-                    f"⚠️  Best ask ${winning_ask:.4f} > ${self.BUY_PRICE} - not worth buying"
+                    f"⚠️  [{self.market_name}] Best ask ${winning_ask:.4f} > ${self.BUY_PRICE} - not worth buying"
                 )
                 self._logged_price_high = True
             return
 
         # All conditions met - execute trade!
         print(f"\n{'=' * 80}")
-        print(f"🎯 TRIGGER ACTIVATED at {time_remaining:.3f}s remaining!")
+        print(f"🎯 [{self.market_name}] TRIGGER ACTIVATED at {time_remaining:.3f}s remaining!")
         print(f"{'=' * 80}")
+        print(f"Market: {self.title}")
         print(f"Winning Side: {self.winning_side}")
         print(f"Best Ask: ${winning_ask:.4f}")
         print(f"Target Price: ${self.BUY_PRICE}")
@@ -503,9 +527,10 @@ class LastSecondTrader:
 
         if self.dry_run:
             print(f"{'=' * 80}")
-            print("🔷 DRY RUN MODE - NO REAL TRADE EXECUTED")
+            print(f"🔷 [{self.market_name}] DRY RUN MODE - NO REAL TRADE EXECUTED")
             print(f"{'=' * 80}")
             print("WOULD BUY:")
+            print(f"  Market: {self.title}")
             print(f"  Side: {self.winning_side}")
             print(f"  Token ID: {winning_token_id}")
             print(f"  Price: ${self.BUY_PRICE}")
@@ -517,19 +542,19 @@ class LastSecondTrader:
 
         # Live trading mode
         if not self.client:
-            print("❌ Error: CLOB client not initialized. Cannot execute order.")
+            print(f"❌ [{self.market_name}] Error: CLOB client not initialized. Cannot execute order.")
             return
 
         try:
             print(f"{'=' * 80}")
-            print("🔴 EXECUTING LIVE ORDER...")
+            print(f"🔴 [{self.market_name}] EXECUTING LIVE ORDER...")
             print(f"{'=' * 80}")
 
             # Create FOK order at $0.99 for winning side
             # Step 1: Create the order
             # Convert dollars to tokens: size = dollars / price
             tokens_to_buy = self.trade_size / self.BUY_PRICE
-            
+
             order_args = OrderArgs(
                 token_id=winning_token_id,
                 price=self.BUY_PRICE,
@@ -552,7 +577,7 @@ class LastSecondTrader:
             print(f"{'=' * 80}\n")
 
         except Exception as e:
-            print(f"❌ Error executing order: {e}")
+            print(f"❌ [{self.market_name}] Error executing order: {e}")
             print(f"{'=' * 80}\n")
 
     async def listen_to_market(self):
@@ -604,7 +629,7 @@ class LastSecondTrader:
                     if time_remaining <= 0:
                         print(f"\n{'=' * 80}")
                         print(
-                            f"⏰ Market closed. Time remaining: {time_remaining:.2f}s"
+                            f"⏰ [{self.market_name}] Market closed. Time remaining: {time_remaining:.2f}s"
                         )
                         if not self.order_executed:
                             print("No order was executed.")
@@ -612,9 +637,9 @@ class LastSecondTrader:
                         break
 
             except websockets.exceptions.ConnectionClosed:
-                print(f"\n⚠️  {token_name} WebSocket connection closed")
+                print(f"\n⚠️  [{self.market_name}] {token_name} WebSocket connection closed")
             except Exception as e:
-                print(f"\n❌ Error in {token_name} market listener: {e}")
+                print(f"\n❌ [{self.market_name}] Error in {token_name} market listener: {e}")
 
         # Listen to both WebSockets concurrently
         try:

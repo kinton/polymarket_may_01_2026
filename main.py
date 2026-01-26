@@ -322,7 +322,10 @@ async def main():
         help="Enable live trading mode (default: dry run)",
     )
     parser.add_argument(
-        "--size", type=float, default=1.0, help="Trade size in dollars (default: $1, buys 1.01 tokens at $0.99/token)"
+        "--size",
+        type=float,
+        default=1.0,
+        help="Trade size in dollars (default: $1, buys 1.01 tokens at $0.99/token)",
     )
     parser.add_argument(
         "--poll-interval",
