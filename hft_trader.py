@@ -148,7 +148,7 @@ class LastSecondTrader:
         """Extract short market name from title for logging."""
         if not title:
             return "UNKNOWN"
-        
+
         # Extract cryptocurrency name (e.g., "Bitcoin" -> "BTC")
         title_lower = title.lower()
         if "bitcoin" in title_lower or "btc" in title_lower:
@@ -505,7 +505,9 @@ class LastSecondTrader:
 
         # All conditions met - execute trade!
         print(f"\n{'=' * 80}")
-        print(f"🎯 [{self.market_name}] TRIGGER ACTIVATED at {time_remaining:.3f}s remaining!")
+        print(
+            f"🎯 [{self.market_name}] TRIGGER ACTIVATED at {time_remaining:.3f}s remaining!"
+        )
         print(f"{'=' * 80}")
         print(f"Market: {self.title}")
         print(f"Winning Side: {self.winning_side}")
@@ -542,7 +544,9 @@ class LastSecondTrader:
 
         # Live trading mode
         if not self.client:
-            print(f"❌ [{self.market_name}] Error: CLOB client not initialized. Cannot execute order.")
+            print(
+                f"❌ [{self.market_name}] Error: CLOB client not initialized. Cannot execute order."
+            )
             return
 
         try:
@@ -553,8 +557,13 @@ class LastSecondTrader:
             # Create FOK order at $0.99 for winning side
             # Step 1: Create the order
             # Convert dollars to tokens: size = dollars / price
-            # Round to 4 decimals (Polymarket requirement: max 4 decimals for token amount)
-            tokens_to_buy = round(self.trade_size / self.BUY_PRICE, 4)
+            # Polymarket requirements:
+            #   - taker_amount (tokens): max 4 decimals
+            #   - maker_amount (dollars): max 2 decimals
+            # To ensure maker_amount = price × size has 2 decimals,
+            # first round trade_size to 2 decimals (cents), then divide
+            rounded_trade_size = round(self.trade_size, 2)
+            tokens_to_buy = round(rounded_trade_size / self.BUY_PRICE, 4)
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
@@ -638,9 +647,13 @@ class LastSecondTrader:
                         break
 
             except websockets.exceptions.ConnectionClosed:
-                print(f"\n⚠️  [{self.market_name}] {token_name} WebSocket connection closed")
+                print(
+                    f"\n⚠️  [{self.market_name}] {token_name} WebSocket connection closed"
+                )
             except Exception as e:
-                print(f"\n❌ [{self.market_name}] Error in {token_name} market listener: {e}")
+                print(
+                    f"\n❌ [{self.market_name}] Error in {token_name} market listener: {e}"
+                )
 
         # Listen to both WebSockets concurrently
         try:
