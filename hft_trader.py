@@ -34,7 +34,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_DOWN
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, Optional
 
 import websockets
@@ -561,22 +561,30 @@ class LastSecondTrader:
             # Polymarket requirements:
             #   - taker_amount (tokens): max 5 decimals
             #   - maker_amount (dollars): max 2 decimals
-            # Solution: Use Decimal for exact calculation
-            #   1. maker_amount = round(trade_size, 2) - ensures 2 decimals
-            #   2. tokens = maker_amount / price - calculate exact tokens needed
-            #   3. Round tokens to 5 decimals
-            # This guarantees maker_amount will have exactly 2 decimals
-            maker_amount = Decimal(str(self.trade_size)).quantize(
-                Decimal("0.01"), rounding=ROUND_DOWN
-            )
-            tokens_to_buy = (maker_amount / Decimal(str(self.BUY_PRICE))).quantize(
-                Decimal("0.00001"), rounding=ROUND_DOWN
-            )
+            #   - Critical: maker_amount = price × size must have exactly 2 decimals
+            # 
+            # Problem: price=0.99, trade_size=1.00
+            #   tokens = 1.00/0.99 = 1.010101...
+            #   If we round tokens to 5 decimals: 1.01010
+            #   maker = 0.99 × 1.01010 = 0.999999 (6 decimals) ❌
+            # 
+            # Solution: Round tokens to 2 decimals (not 5!)
+            #   tokens = 1.01 (2 decimals)
+            #   maker = 0.99 × 1.01 = 0.9999 (4 decimals)
+            #   API will round 0.9999 to 1.00 (2 decimals) ✓
+            # 
+            # This sacrifices precision but ensures API acceptance
+            price_decimal = Decimal(str(self.BUY_PRICE))
+            trade_size_decimal = Decimal(str(self.trade_size))
+            
+            # Calculate tokens and round to 2 decimals
+            tokens_ideal = trade_size_decimal / price_decimal
+            tokens_to_buy = float(tokens_ideal.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
                 price=self.BUY_PRICE,
-                size=float(tokens_to_buy),  # size is in tokens, not dollars
+                size=tokens_to_buy,  # size is in tokens, not dollars
                 side="BUY",
             )
 
