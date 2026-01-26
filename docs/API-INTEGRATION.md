@@ -194,34 +194,38 @@ if event_type == "book":
 
 **Required Environment Variables:**
 ```bash
-CLOB_API_KEY=your_api_key        # API key from Polymarket
-CLOB_PASSPHRASE=your_passphrase  # Passphrase from Polymarket
 PRIVATE_KEY=0x...                # Your wallet private key
-POLYGON_CHAIN_ID=137             # Polygon mainnet
+POLYGON_CHAIN_ID=137             # Polygon mainnet (default)
 ```
+
+**Important:** CLOB_API_KEY, CLOB_PASSPHRASE, and CLOB_SECRET are **NO LONGER NEEDED**. The new authentication method uses only the private key.
 
 **Implementation** (hft_trader.py):
 ```python
-def init_clob_client(self):
+def _init_clob_client(self):
     """Initialize authenticated CLOB client for live trading."""
     try:
         from py_clob_client.client import ClobClient
-        from py_clob_client.credentials import Credentials
         
         private_key = os.getenv("PRIVATE_KEY")
         chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
-        creds = Credentials(
-            api_key=os.getenv("CLOB_API_KEY"),
-            api_passphrase=os.getenv("CLOB_PASSPHRASE"),
-            wallet_address=eth_account.Account.from_key(private_key).address
-        )
-        
+        host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
+
+        if not private_key:
+            print("Warning: Missing PRIVATE_KEY in .env file")
+            return None
+
+        # Initialize client with just private key, host, and chain_id
         client = ClobClient(
-            "https://clob.polymarket.com",
+            host=host,
             key=private_key,
             chain_id=chain_id,
-            creds=creds
         )
+        
+        # Create or derive API credentials from private key
+        # This is REQUIRED - without it, you get 403 errors
+        client.set_api_creds(client.create_or_derive_api_creds())
+        
         return client
 ```
 
@@ -229,21 +233,20 @@ def init_clob_client(self):
 
 **Order Parameters:**
 ```python
-from py_clob_client.order_args import OrderArgs
-from py_clob_client.order_type import OrderType
+from py_clob_client.clob_types import OrderArgs, OrderType
 
 order_args = OrderArgs(
     token_id=token_id,                    # YES or NO token
     price=0.99,                           # Buy price
     size=1.0,                             # Size in dollars
     side="BUY",                           # BUY or SELL
-    order_type=OrderType.FOK              # Fill-or-Kill
 )
 
-response = await asyncio.to_thread(
-    self.client.create_and_post_order,
-    order_args
-)
+# Step 1: Create the order
+created_order = client.create_order(order_args)
+
+# Step 2: Post the order with type
+response = client.post_order(created_order, OrderType.FOK)
 ```
 
 **Order Types:**

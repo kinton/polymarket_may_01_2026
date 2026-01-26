@@ -44,7 +44,7 @@ class TradingBotRunner:
     # Configuration
     POLL_INTERVAL = 90  # Check for new markets every 90 seconds (1.5 minutes)
     TRADER_START_BUFFER = 180  # Start trader 3 minutes before market ends
-    MIN_TIME_TO_START = 30  # Don't start trader if less than 30 seconds until close
+    MIN_TIME_TO_START = 0  # Don't start trader if less than 30 seconds until close
 
     def __init__(
         self,

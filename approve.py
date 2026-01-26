@@ -21,15 +21,14 @@ def main():
 
     try:
         # Initialize ClobClient on Polygon Mainnet (Chain ID 137)
-        # signature_type=0 for EOA/MetaMask wallets
+        # signature_type=0 for EOA/MetaMask wallets (default)
         client = ClobClient(
             host="https://clob.polymarket.com",
             key=private_key,
             chain_id=POLYGON,  # Chain ID 137
-            signature_type=0,  # 0 for EOA (MetaMask, hardware wallets)
         )
 
-        # Create or derive API credentials
+        # Create or derive API credentials - REQUIRED for authentication
         client.set_api_creds(client.create_or_derive_api_creds())
 
         # Update balance and allowance for the user

@@ -56,7 +56,7 @@ from market_parser import (
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
+    from py_clob_client.clob_types import OrderArgs, OrderType
 except ImportError:
     print("Error: py-clob-client not installed. Run: uv pip install py-clob-client")
     exit(1)
@@ -148,29 +148,22 @@ class LastSecondTrader:
             private_key = os.getenv("PRIVATE_KEY")
             chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
             host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
-            api_key = os.getenv("CLOB_API_KEY")
-            api_secret = os.getenv("CLOB_SECRET")
-            api_passphrase = os.getenv("CLOB_PASSPHRASE")
 
-            if not all([private_key, api_key, api_secret, api_passphrase]):
-                print("Warning: Missing CLOB credentials in .env file")
-                print(f"  PRIVATE_KEY: {'✓' if private_key else '✗'}")
-                print(f"  CLOB_API_KEY: {'✓' if api_key else '✗'}")
-                print(f"  CLOB_SECRET: {'✓' if api_secret else '✗'}")
-                print(f"  CLOB_PASSPHRASE: {'✓' if api_passphrase else '✗'}")
+            if not private_key:
+                print("Warning: Missing PRIVATE_KEY in .env file")
                 return None
 
-            # Create ApiCreds object with all three parameters
-            creds = ApiCreds(
-                api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase
-            )
-
+            # Initialize client with just private key, host, and chain_id
             client = ClobClient(
                 host=host,
-                key=private_key,  # Fixed: use 'key' not 'private_key'
+                key=private_key,
                 chain_id=chain_id,
-                creds=creds,
             )
+            
+            # Create or derive API credentials from private key
+            # This is REQUIRED for authentication - without it, you get 403 errors
+            client.set_api_creds(client.create_or_derive_api_creds())
+            
             print("✓ CLOB client initialized for live trading\n")
             return client
 
