@@ -553,7 +553,8 @@ class LastSecondTrader:
             # Create FOK order at $0.99 for winning side
             # Step 1: Create the order
             # Convert dollars to tokens: size = dollars / price
-            tokens_to_buy = self.trade_size / self.BUY_PRICE
+            # Round to 4 decimals (Polymarket requirement: max 4 decimals for token amount)
+            tokens_to_buy = round(self.trade_size / self.BUY_PRICE, 4)
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
