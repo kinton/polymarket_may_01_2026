@@ -34,6 +34,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, Optional
 
 import websockets
@@ -558,17 +559,24 @@ class LastSecondTrader:
             # Step 1: Create the order
             # Convert dollars to tokens: size = dollars / price
             # Polymarket requirements:
-            #   - taker_amount (tokens): max 4 decimals
+            #   - taker_amount (tokens): max 5 decimals
             #   - maker_amount (dollars): max 2 decimals
-            # To ensure maker_amount = price × size has 2 decimals,
-            # first round trade_size to 2 decimals (cents), then divide
-            rounded_trade_size = round(self.trade_size, 2)
-            tokens_to_buy = round(rounded_trade_size / self.BUY_PRICE, 4)
+            # Solution: Use Decimal for exact calculation
+            #   1. maker_amount = round(trade_size, 2) - ensures 2 decimals
+            #   2. tokens = maker_amount / price - calculate exact tokens needed
+            #   3. Round tokens to 5 decimals
+            # This guarantees maker_amount will have exactly 2 decimals
+            maker_amount = Decimal(str(self.trade_size)).quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
+            )
+            tokens_to_buy = (maker_amount / Decimal(str(self.BUY_PRICE))).quantize(
+                Decimal("0.00001"), rounding=ROUND_DOWN
+            )
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
                 price=self.BUY_PRICE,
-                size=tokens_to_buy,  # size is in tokens, not dollars
+                size=float(tokens_to_buy),  # size is in tokens, not dollars
                 side="BUY",
             )
 
