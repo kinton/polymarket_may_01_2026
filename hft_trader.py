@@ -115,6 +115,10 @@ class LastSecondTrader:
         self.order_executed = False
         self.ws_yes = None
         self.ws_no = None
+        
+        # Track last log time to avoid spam
+        self.last_log_time = 0.0
+        self.last_logged_state = None
 
         # Initialize CLOB client
         load_dotenv()
@@ -159,11 +163,11 @@ class LastSecondTrader:
                 key=private_key,
                 chain_id=chain_id,
             )
-            
+
             # Create or derive API credentials from private key
             # This is REQUIRED for authentication - without it, you get 403 errors
             client.set_api_creds(client.create_or_derive_api_creds())
-            
+
             print("✓ CLOB client initialized for live trading\n")
             return client
 
@@ -328,8 +332,25 @@ class LastSecondTrader:
             # Get time remaining
             time_remaining = self.get_time_remaining()
 
-            # Log current state (throttled to avoid spam)
-            if int(time_remaining) % 10 == 0 or time_remaining <= 5:
+            # Log current state (with deduplication to avoid spam from dual WebSocket streams)
+            current_time = time_remaining
+            current_state = (
+                self.orderbook.best_ask_yes,
+                self.orderbook.best_ask_no,
+                self.winning_side,
+            )
+            
+            # Only log if:
+            # 1. Time changed by at least 0.5s OR
+            # 2. State actually changed (winning side or prices) OR
+            # 3. We're in final 5 seconds and time changed
+            time_changed = abs(current_time - self.last_log_time) >= 0.5
+            state_changed = current_state != self.last_logged_state
+            in_final_seconds = time_remaining <= 5.0
+            
+            should_log = (time_changed and (in_final_seconds or state_changed)) or state_changed
+            
+            if should_log:
                 yes_price = self.orderbook.best_ask_yes or 0.0
                 no_price = self.orderbook.best_ask_no or 0.0
                 print(
@@ -340,6 +361,8 @@ class LastSecondTrader:
                     f"Sum: ${self.orderbook.sum_asks or 0.0:.4f} | "
                     f"Winner: {self.winning_side or 'None'}"
                 )
+                self.last_log_time = current_time
+                self.last_logged_state = current_state
 
             # Check trigger conditions
             await self.check_trigger(time_remaining)
@@ -392,24 +415,31 @@ class LastSecondTrader:
 
         # Check if winning side is determined
         if self.winning_side is None:
-            print(
-                f"⚠️  Warning: No winning side determined at {time_remaining:.3f}s remaining"
-            )
+            # Don't spam warnings - only log once when we enter trigger window
+            if not hasattr(self, '_logged_no_winner'):
+                print(
+                    f"⚠️  Warning: No winning side determined at {time_remaining:.3f}s remaining"
+                )
+                self._logged_no_winner = True
             return
 
         # Get best ask for winning side
         winning_ask = self._get_winning_ask()
         if winning_ask is None:
-            print(
-                f"⚠️  Warning: No ask price available for winning side at {time_remaining:.3f}s remaining"
-            )
+            if not hasattr(self, '_logged_no_ask'):
+                print(
+                    f"⚠️  Warning: No ask price available for winning side at {time_remaining:.3f}s remaining"
+                )
+                self._logged_no_ask = True
             return
 
         # Check if price is above our target (we can execute at BUY_PRICE or better)
         if winning_ask > self.BUY_PRICE:
-            print(
-                f"⚠️  Best ask ${winning_ask:.4f} > ${self.BUY_PRICE} - not worth buying"
-            )
+            if not hasattr(self, '_logged_price_high'):
+                print(
+                    f"⚠️  Best ask ${winning_ask:.4f} > ${self.BUY_PRICE} - not worth buying"
+                )
+                self._logged_price_high = True
             return
 
         # All conditions met - execute trade!

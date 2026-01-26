@@ -4,9 +4,10 @@ Approve USDC allowance for Polymarket trading on Polygon mainnet.
 """
 
 import os
+
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
 from py_clob_client.constants import POLYGON
 
 
