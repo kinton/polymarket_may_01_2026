@@ -136,3 +136,40 @@ client.set_api_creds(client.create_or_derive_api_creds())  # ОБЯЗАТЕЛЬ�
 **Commit:** `fix: increase trade size from 1 to 2 tokens to meet Polymarket $1 minimum`
 
 **Тестирование:** 34/37 тестов прошли, ruff checks passed
+
+---
+
+## 12. Исправлен параметр trade_size (доллары vs токены) ✅
+**Дата:** 26 января 2026  
+**Проблема:** Предыдущий фикс был неправильным - изменил размер с 1 на 2 ТОКЕНА, но:
+- `OrderArgs.size` означает **количество токенов**, а не доллары
+- При `size=2.0` и `price=0.99` мы покупали 2 токена = **$1.98 total**
+- Пользователь хотел торговать на $1, $2, $3... (шаг в долларах)
+
+**Анализ документации Polymarket:**
+```python
+@dataclass
+class OrderArgs:
+    size: float  # Size in terms of the ConditionalToken (TOKENS)
+
+@dataclass  
+class MarketOrderArgs:
+    amount: float  # BUY: $$$ Amount, SELL: Shares (ТОЛЬКО для market orders!)
+```
+
+**Решение:**
+- `trade_size` теперь означает **доллары** (как пользователь и ожидал)
+- При создании ордера добавлен пересчёт: `tokens_to_buy = trade_size / BUY_PRICE`
+- При `trade_size=1.0` и `BUY_PRICE=0.99`: покупаем `1.0/0.99 ≈ 1.01` токена = **$1.00 total**
+- Default вернул обратно на `1.0` (означает $1)
+
+**Формула:**
+```python
+tokens_to_buy = self.trade_size / self.BUY_PRICE
+# $1 / $0.99 = 1.0101... токенов
+# 1.0101 токенов × $0.99 = $1.00 ✓
+```
+
+**Commit:** `fix: trade_size now represents dollars, not tokens - converts to tokens when creating order`
+
+**Тестирование:** 33/33 core тестов passed, ruff checks passed
