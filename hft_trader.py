@@ -236,7 +236,7 @@ class LastSecondTrader:
 
         Args:
             data: Market data from WebSocket (can be array or dict)
-            is_yes_token: True if this is YES token data, False for NO token
+            is_yes_token: True if this is the YES WebSocket connection (used for debugging only)
         """
         try:
             # Skip empty confirmation messages
@@ -249,13 +249,27 @@ class LastSecondTrader:
                     return
                 data = data[0]  # Get first element
 
-            # DEBUG: Log received token_id and best_ask to verify data is actually different
-            token_label = "YES" if is_yes_token else "NO"
+            # CRITICAL: Determine which token this data is for based on asset_id in the data itself
+            # NOT based on which WebSocket connection it came from!
             received_asset_id = data.get("asset_id")
-            expected_token_id = self.token_id_yes if is_yes_token else self.token_id_no
-            if received_asset_id and received_asset_id != expected_token_id:
+            if not received_asset_id:
+                # No asset_id in message - skip
+                return
+            
+            # Determine if this is YES or NO token data based on actual asset_id
+            is_yes_data = received_asset_id == self.token_id_yes
+            is_no_data = received_asset_id == self.token_id_no
+            
+            if not is_yes_data and not is_no_data:
+                # Data for a different market/token - ignore
+                return
+            
+            # DEBUG: Log if data came from unexpected WebSocket
+            ws_label = "YES" if is_yes_token else "NO"
+            data_label = "YES" if is_yes_data else "NO"
+            if is_yes_token != is_yes_data:
                 print(
-                    f"⚠️  {token_label} token mismatch! Expected {expected_token_id[:16]}..., got {received_asset_id[:16]}..."
+                    f"[DEBUG] {ws_label} WebSocket received {data_label} token data (asset_id: {received_asset_id[:16]}...)"
                 )
 
             event_type = data.get("event_type")
@@ -269,13 +283,13 @@ class LastSecondTrader:
                 best_bid = extract_best_bid_from_book(bids)
 
                 if best_ask is not None:
-                    if is_yes_token:
+                    if is_yes_data:
                         self.orderbook.best_ask_yes = best_ask
                     else:
                         self.orderbook.best_ask_no = best_ask
 
                 if best_bid is not None:
-                    if is_yes_token:
+                    if is_yes_data:
                         self.orderbook.best_bid_yes = best_bid
                     else:
                         self.orderbook.best_bid_no = best_bid
@@ -283,19 +297,17 @@ class LastSecondTrader:
             elif event_type == "price_change":
                 # Price update — values are inside price_changes list per asset
                 changes = data.get("price_changes", [])
-                expected_token_id = (
-                    self.token_id_yes if is_yes_token else self.token_id_no
-                )
-                ask, bid = extract_prices_from_price_change(changes, expected_token_id)
+                # Use actual asset_id from data to find prices
+                ask, bid = extract_prices_from_price_change(changes, received_asset_id)
 
                 if ask is not None:
-                    if is_yes_token:
+                    if is_yes_data:
                         self.orderbook.best_ask_yes = ask
                     else:
                         self.orderbook.best_ask_no = ask
 
                 if bid is not None:
-                    if is_yes_token:
+                    if is_yes_data:
                         self.orderbook.best_bid_yes = bid
                     else:
                         self.orderbook.best_bid_no = bid
@@ -308,7 +320,7 @@ class LastSecondTrader:
                 if best_ask is not None and best_ask != "":
                     try:
                         val = float(best_ask)
-                        if is_yes_token:
+                        if is_yes_data:
                             self.orderbook.best_ask_yes = val
                         else:
                             self.orderbook.best_ask_no = val
@@ -318,7 +330,7 @@ class LastSecondTrader:
                 if best_bid is not None and best_bid != "":
                     try:
                         val = float(best_bid)
-                        if is_yes_token:
+                        if is_yes_data:
                             self.orderbook.best_bid_yes = val
                         else:
                             self.orderbook.best_bid_no = val
