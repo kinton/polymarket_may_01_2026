@@ -50,7 +50,6 @@ from market_parser import (
     determine_winning_side,
     extract_best_ask_from_book,
     extract_best_bid_from_book,
-    extract_prices_from_price_change,
     get_winning_token_id,
 )
 
@@ -115,7 +114,7 @@ class LastSecondTrader:
         self.order_executed = False
         self.ws_yes = None
         self.ws_no = None
-        
+
         # Track last log time to avoid spam
         self.last_log_time = 0.0
         self.last_logged_state = None
@@ -255,15 +254,15 @@ class LastSecondTrader:
             if not received_asset_id:
                 # No asset_id in message - skip
                 return
-            
+
             # Determine if this is YES or NO token data based on actual asset_id
             is_yes_data = received_asset_id == self.token_id_yes
             is_no_data = received_asset_id == self.token_id_no
-            
+
             if not is_yes_data and not is_no_data:
                 # Data for a different market/token - ignore
                 return
-            
+
             # DEBUG: Log if data came from unexpected WebSocket
             ws_label = "YES" if is_yes_token else "NO"
             data_label = "YES" if is_yes_data else "NO"
@@ -295,22 +294,47 @@ class LastSecondTrader:
                         self.orderbook.best_bid_no = best_bid
 
             elif event_type == "price_change":
-                # Price update — values are inside price_changes list per asset
+                # Price update — price_changes array contains data for BOTH tokens
+                # We must process ALL elements, not just the one matching received_asset_id
                 changes = data.get("price_changes", [])
-                # Use actual asset_id from data to find prices
-                ask, bid = extract_prices_from_price_change(changes, received_asset_id)
-
-                if ask is not None:
-                    if is_yes_data:
-                        self.orderbook.best_ask_yes = ask
-                    else:
-                        self.orderbook.best_ask_no = ask
-
-                if bid is not None:
-                    if is_yes_data:
-                        self.orderbook.best_bid_yes = bid
-                    else:
-                        self.orderbook.best_bid_no = bid
+                
+                # Process all price changes in this event
+                for change in changes:
+                    change_asset_id = change.get("asset_id")
+                    if not change_asset_id:
+                        continue
+                    
+                    # Determine which token this change is for
+                    is_yes_change = change_asset_id == self.token_id_yes
+                    is_no_change = change_asset_id == self.token_id_no
+                    
+                    if not is_yes_change and not is_no_change:
+                        # Not our market
+                        continue
+                    
+                    # Extract best_ask and best_bid from this change
+                    best_ask = change.get("best_ask")
+                    best_bid = change.get("best_bid")
+                    
+                    if best_ask is not None and best_ask != "":
+                        try:
+                            ask_val = float(best_ask)
+                            if is_yes_change:
+                                self.orderbook.best_ask_yes = ask_val
+                            else:
+                                self.orderbook.best_ask_no = ask_val
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    if best_bid is not None and best_bid != "":
+                        try:
+                            bid_val = float(best_bid)
+                            if is_yes_change:
+                                self.orderbook.best_bid_yes = bid_val
+                            else:
+                                self.orderbook.best_bid_no = bid_val
+                        except (ValueError, TypeError):
+                            pass
 
             elif event_type == "best_bid_ask":
                 # Some events may provide top-level best_bid/best_ask
@@ -351,7 +375,7 @@ class LastSecondTrader:
                 self.orderbook.best_ask_no,
                 self.winning_side,
             )
-            
+
             # Only log if:
             # 1. Time changed by at least 0.5s OR
             # 2. State actually changed (winning side or prices) OR
@@ -359,9 +383,11 @@ class LastSecondTrader:
             time_changed = abs(current_time - self.last_log_time) >= 0.5
             state_changed = current_state != self.last_logged_state
             in_final_seconds = time_remaining <= 5.0
-            
-            should_log = (time_changed and (in_final_seconds or state_changed)) or state_changed
-            
+
+            should_log = (
+                time_changed and (in_final_seconds or state_changed)
+            ) or state_changed
+
             if should_log:
                 yes_price = self.orderbook.best_ask_yes or 0.0
                 no_price = self.orderbook.best_ask_no or 0.0
@@ -428,7 +454,7 @@ class LastSecondTrader:
         # Check if winning side is determined
         if self.winning_side is None:
             # Don't spam warnings - only log once when we enter trigger window
-            if not hasattr(self, '_logged_no_winner'):
+            if not hasattr(self, "_logged_no_winner"):
                 print(
                     f"⚠️  Warning: No winning side determined at {time_remaining:.3f}s remaining"
                 )
@@ -438,7 +464,7 @@ class LastSecondTrader:
         # Get best ask for winning side
         winning_ask = self._get_winning_ask()
         if winning_ask is None:
-            if not hasattr(self, '_logged_no_ask'):
+            if not hasattr(self, "_logged_no_ask"):
                 print(
                     f"⚠️  Warning: No ask price available for winning side at {time_remaining:.3f}s remaining"
                 )
@@ -447,7 +473,7 @@ class LastSecondTrader:
 
         # Check if price is above our target (we can execute at BUY_PRICE or better)
         if winning_ask > self.BUY_PRICE:
-            if not hasattr(self, '_logged_price_high'):
+            if not hasattr(self, "_logged_price_high"):
                 print(
                     f"⚠️  Best ask ${winning_ask:.4f} > ${self.BUY_PRICE} - not worth buying"
                 )
