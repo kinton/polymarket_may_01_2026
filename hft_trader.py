@@ -556,10 +556,12 @@ class LastSecondTrader:
             print(f"{'=' * 80}")
 
             # Calculate order size with API precision: maker max 2 decimals, taker max 4 decimals
-            # Use string formatting to guarantee exact decimal places
             price_decimal = Decimal(str(self.BUY_PRICE))
             trade_decimal = Decimal(str(self.trade_size))
-            
+
+            print(f"[DEBUG] INPUT: BUY_PRICE={self.BUY_PRICE}, trade_size={self.trade_size}")
+            print(f"[DEBUG] AS_DECIMAL: price_decimal={price_decimal}, trade_decimal={trade_decimal}")
+
             # Ensure maker >= $1.00 minimum
             if trade_decimal < Decimal("1.00"):
                 print(
@@ -571,17 +573,32 @@ class LastSecondTrader:
             tokens_decimal = (trade_decimal / price_decimal).quantize(
                 Decimal("0.0001"), rounding=ROUND_DOWN
             )
-            
+
             # Verify maker_amount has exactly 2 decimals
             maker_check = (price_decimal * tokens_decimal).quantize(
                 Decimal("0.01"), rounding=ROUND_DOWN
             )
+
+            print(f"[DEBUG] DECIMAL_CALC: tokens_decimal={tokens_decimal} (type={type(tokens_decimal).__name__})")
+            print(f"[DEBUG] DECIMAL_CALC: maker_check={maker_check}")
+
+            # CRITICAL: Use string formatting to guarantee EXACT decimal places in API request
+            # round() doesn't guarantee trailing zeros (e.g. 0.9 instead of 0.90)
+            price_str = f"{float(price_decimal):.2f}"
+            tokens_str = f"{float(tokens_decimal):.4f}"
+
+            print(f"[DEBUG] STRING_FORMAT: price_str='{price_str}' (len={len(price_str.split('.')[-1])}), tokens_str='{tokens_str}' (len={len(tokens_str.split('.')[-1])})")
+
+            # Convert back to float for OrderArgs
+            price_float = float(price_str)
+            tokens_float = float(tokens_str)
+
+            print(f"[DEBUG] AS_FLOAT: price_float={price_float} (repr={repr(price_float)}), tokens_float={tokens_float} (repr={repr(tokens_float)})")
             
-            # Convert to float with explicit rounding to prevent float precision issues
-            price_float = round(float(price_decimal), 2)
-            tokens_float = round(float(tokens_decimal), 4)
-            
-            print(f"[DEBUG] Order params: price={price_float}, size={tokens_float}, maker_amount={float(maker_check)}")
+            # Test JSON serialization
+            import json
+            test_json = json.dumps({"price": price_float, "size": tokens_float})
+            print(f"[DEBUG] JSON_SERIALIZED: {test_json}")
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
@@ -590,10 +607,19 @@ class LastSecondTrader:
                 side="BUY",
             )
 
+            print(f"[DEBUG] ORDER_ARGS: price={order_args.price}, size={order_args.size}")
+
             created_order = await asyncio.to_thread(
                 self.client.create_order, order_args
             )
             print(f"✓ Order created: {created_order}")
+            
+            # Debug: check what's in the created order
+            if hasattr(created_order, 'order'):
+                order_obj = created_order.order
+                print(f"[DEBUG] CREATED_ORDER: price={order_obj.price}, size={order_obj.size}")
+            else:
+                print(f"[DEBUG] CREATED_ORDER object: {created_order}")
 
             response = await asyncio.to_thread(
                 self.client.post_order, created_order, OrderType.FOK
