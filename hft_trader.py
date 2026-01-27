@@ -495,7 +495,8 @@ class LastSecondTrader:
             return
 
         # Check if price is above our target (we can execute at BUY_PRICE or better)
-        if winning_ask > self.BUY_PRICE:
+        # Use PRICE_TIE_EPS tolerance to handle float precision issues
+        if winning_ask > self.BUY_PRICE + self.PRICE_TIE_EPS:
             if not hasattr(self, "_logged_price_high"):
                 print(
                     f"⚠️  [{self.market_name}] Best ask ${winning_ask:.4f} > ${self.BUY_PRICE} - not worth buying"
@@ -558,7 +559,7 @@ class LastSecondTrader:
             # OrderBuilder will apply proper rounding via ROUNDING_CONFIG
             # (supports up to 6 decimals for maker amount)
             size = self.trade_size / self.BUY_PRICE
-            
+
             print(
                 f"Order: price=${self.BUY_PRICE:.2f}, size={size:.4f} tokens, "
                 f"amount=${self.trade_size:.2f}"
