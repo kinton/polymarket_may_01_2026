@@ -33,10 +33,8 @@ Requirements:
 import asyncio
 import json
 import os
-import math
 from datetime import datetime, timezone
-from decimal import ROUND_DOWN, Decimal
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import websockets
 from dotenv import load_dotenv
@@ -457,50 +455,6 @@ class LastSecondTrader:
             return self.orderbook.best_ask_no
         return None
 
-    def _compute_valid_amounts(
-        self, price_decimal: Decimal, trade_decimal: Decimal
-    ) -> Tuple[float, float, Decimal]:
-        """
-        Compute (price, size, maker) such that:
-        - price has 2 decimals
-        - size has 4 decimals
-        - maker (price * size) has exactly 2 decimals (server expects this)
-
-        For price P (cents) and tokens T (1e-4 units), maker_cents = (P*T)/10000 must be integer.
-        T must be a multiple of L = 10000 / gcd(P, 10000).
-        We choose minimal maker >= max($1.00, trade_decimal) that satisfies this.
-        """
-        # Enforce minimum maker
-        maker_min = trade_decimal
-        if maker_min < Decimal("1.00"):
-            maker_min = Decimal("1.00")
-
-        # Price in cents integer
-        P = int((price_decimal * 100).to_integral_value())
-        g = math.gcd(P, 10000)
-        L = 10000 // g
-
-        # Compute minimal T in 1e-4 units
-        maker_min_cents = int((maker_min * 100).to_integral_value(rounding=ROUND_DOWN))
-        if maker_min_cents < int(maker_min * 100):
-            maker_min_cents += 1
-        numerator = maker_min_cents * 10000
-        T_min = (numerator + P - 1) // P
-        if T_min % L != 0:
-            T_min += (L - (T_min % L))
-
-        tokens_decimal = (Decimal(T_min) / Decimal(10000)).quantize(
-            Decimal("0.0001"), rounding=ROUND_DOWN
-        )
-        maker_cents = (P * T_min) // 10000
-        maker_decimal = (Decimal(maker_cents) / Decimal(100)).quantize(
-            Decimal("0.01"), rounding=ROUND_DOWN
-        )
-
-        price_str = str(price_decimal.quantize(Decimal("0.01")))
-        tokens_str = str(tokens_decimal)
-        return float(price_str), float(tokens_str), maker_decimal
-
     async def check_trigger(self, time_remaining: float):
         """
         Check if trigger conditions are met and execute trade if appropriate.
@@ -600,30 +554,20 @@ class LastSecondTrader:
             print(f"🔴 [{self.market_name}] EXECUTING LIVE ORDER...")
             print(f"{'=' * 80}")
 
-            price_decimal = Decimal(str(self.BUY_PRICE))
-            trade_decimal = Decimal(str(self.trade_size))
-
+            # Simple calculation: size = trade_size / price
+            # OrderBuilder will apply proper rounding via ROUNDING_CONFIG
+            # (supports up to 6 decimals for maker amount)
+            size = self.trade_size / self.BUY_PRICE
+            
             print(
-                f"[DEBUG] INPUT: BUY_PRICE={self.BUY_PRICE}, trade_size={self.trade_size}"
-            )
-
-            price_float, tokens_float, maker_decimal = self._compute_valid_amounts(
-                price_decimal, trade_decimal
-            )
-
-            if maker_decimal > trade_decimal.quantize(Decimal("0.01")):
-                print(
-                    f"⚠️  [{self.market_name}] Adjusted maker from ${trade_decimal} to ${maker_decimal} to satisfy 2dp/4dp constraints"
-                )
-
-            print(
-                f"[DEBUG] FINAL ORDER: price={price_float:.2f}, size={tokens_float:.4f}, maker=${maker_decimal}"
+                f"Order: price=${self.BUY_PRICE:.2f}, size={size:.4f} tokens, "
+                f"amount=${self.trade_size:.2f}"
             )
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
-                price=price_float,
-                size=tokens_float,
+                price=self.BUY_PRICE,
+                size=size,
                 side="BUY",
             )
 
