@@ -33,9 +33,10 @@ Requirements:
 import asyncio
 import json
 import os
+import math
 from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import websockets
 from dotenv import load_dotenv
@@ -456,6 +457,50 @@ class LastSecondTrader:
             return self.orderbook.best_ask_no
         return None
 
+    def _compute_valid_amounts(
+        self, price_decimal: Decimal, trade_decimal: Decimal
+    ) -> Tuple[float, float, Decimal]:
+        """
+        Compute (price, size, maker) such that:
+        - price has 2 decimals
+        - size has 4 decimals
+        - maker (price * size) has exactly 2 decimals (server expects this)
+
+        For price P (cents) and tokens T (1e-4 units), maker_cents = (P*T)/10000 must be integer.
+        T must be a multiple of L = 10000 / gcd(P, 10000).
+        We choose minimal maker >= max($1.00, trade_decimal) that satisfies this.
+        """
+        # Enforce minimum maker
+        maker_min = trade_decimal
+        if maker_min < Decimal("1.00"):
+            maker_min = Decimal("1.00")
+
+        # Price in cents integer
+        P = int((price_decimal * 100).to_integral_value())
+        g = math.gcd(P, 10000)
+        L = 10000 // g
+
+        # Compute minimal T in 1e-4 units
+        maker_min_cents = int((maker_min * 100).to_integral_value(rounding=ROUND_DOWN))
+        if maker_min_cents < int(maker_min * 100):
+            maker_min_cents += 1
+        numerator = maker_min_cents * 10000
+        T_min = (numerator + P - 1) // P
+        if T_min % L != 0:
+            T_min += (L - (T_min % L))
+
+        tokens_decimal = (Decimal(T_min) / Decimal(10000)).quantize(
+            Decimal("0.0001"), rounding=ROUND_DOWN
+        )
+        maker_cents = (P * T_min) // 10000
+        maker_decimal = (Decimal(maker_cents) / Decimal(100)).quantize(
+            Decimal("0.01"), rounding=ROUND_DOWN
+        )
+
+        price_str = str(price_decimal.quantize(Decimal("0.01")))
+        tokens_str = str(tokens_decimal)
+        return float(price_str), float(tokens_str), maker_decimal
+
     async def check_trigger(self, time_remaining: float):
         """
         Check if trigger conditions are met and execute trade if appropriate.
@@ -555,50 +600,25 @@ class LastSecondTrader:
             print(f"🔴 [{self.market_name}] EXECUTING LIVE ORDER...")
             print(f"{'=' * 80}")
 
-            # Calculate order size with API precision: maker max 2 decimals, taker max 4 decimals
             price_decimal = Decimal(str(self.BUY_PRICE))
             trade_decimal = Decimal(str(self.trade_size))
 
-            print(f"[DEBUG] INPUT: BUY_PRICE={self.BUY_PRICE}, trade_size={self.trade_size}")
-            print(f"[DEBUG] AS_DECIMAL: price_decimal={price_decimal}, trade_decimal={trade_decimal}")
+            print(
+                f"[DEBUG] INPUT: BUY_PRICE={self.BUY_PRICE}, trade_size={self.trade_size}"
+            )
 
-            # Ensure maker >= $1.00 minimum
-            if trade_decimal < Decimal("1.00"):
+            price_float, tokens_float, maker_decimal = self._compute_valid_amounts(
+                price_decimal, trade_decimal
+            )
+
+            if maker_decimal > trade_decimal.quantize(Decimal("0.01")):
                 print(
-                    f"⚠️  [{self.market_name}] Raised trade size to $1.00 (API minimum) from ${self.trade_size}"
+                    f"⚠️  [{self.market_name}] Adjusted maker from ${trade_decimal} to ${maker_decimal} to satisfy 2dp/4dp constraints"
                 )
-                trade_decimal = Decimal("1.00")
 
-            # Calculate tokens needed, round to 4 decimals
-            tokens_decimal = (trade_decimal / price_decimal).quantize(
-                Decimal("0.0001"), rounding=ROUND_DOWN
+            print(
+                f"[DEBUG] FINAL ORDER: price={price_float:.2f}, size={tokens_float:.4f}, maker=${maker_decimal}"
             )
-
-            # Verify maker_amount has exactly 2 decimals
-            maker_check = (price_decimal * tokens_decimal).quantize(
-                Decimal("0.01"), rounding=ROUND_DOWN
-            )
-
-            print(f"[DEBUG] DECIMAL_CALC: tokens_decimal={tokens_decimal} (type={type(tokens_decimal).__name__})")
-            print(f"[DEBUG] DECIMAL_CALC: maker_check={maker_check}")
-
-            # CRITICAL: Use string formatting to guarantee EXACT decimal places in API request
-            # round() doesn't guarantee trailing zeros (e.g. 0.9 instead of 0.90)
-            price_str = f"{float(price_decimal):.2f}"
-            tokens_str = f"{float(tokens_decimal):.4f}"
-
-            print(f"[DEBUG] STRING_FORMAT: price_str='{price_str}' (len={len(price_str.split('.')[-1])}), tokens_str='{tokens_str}' (len={len(tokens_str.split('.')[-1])})")
-
-            # Convert back to float for OrderArgs
-            price_float = float(price_str)
-            tokens_float = float(tokens_str)
-
-            print(f"[DEBUG] AS_FLOAT: price_float={price_float} (repr={repr(price_float)}), tokens_float={tokens_float} (repr={repr(tokens_float)})")
-            
-            # Test JSON serialization
-            import json
-            test_json = json.dumps({"price": price_float, "size": tokens_float})
-            print(f"[DEBUG] JSON_SERIALIZED: {test_json}")
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
@@ -607,19 +627,10 @@ class LastSecondTrader:
                 side="BUY",
             )
 
-            print(f"[DEBUG] ORDER_ARGS: price={order_args.price}, size={order_args.size}")
-
             created_order = await asyncio.to_thread(
                 self.client.create_order, order_args
             )
             print(f"✓ Order created: {created_order}")
-            
-            # Debug: check what's in the created order
-            if hasattr(created_order, 'order'):
-                order_obj = created_order.order
-                print(f"[DEBUG] CREATED_ORDER: price={order_obj.price}, size={order_obj.size}")
-            else:
-                print(f"[DEBUG] CREATED_ORDER object: {created_order}")
 
             response = await asyncio.to_thread(
                 self.client.post_order, created_order, OrderType.FOK
