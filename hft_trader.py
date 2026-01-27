@@ -34,7 +34,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from decimal import ROUND_DOWN, ROUND_UP, Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, Optional
 
 import websockets
@@ -555,38 +555,38 @@ class LastSecondTrader:
             print(f"🔴 [{self.market_name}] EXECUTING LIVE ORDER...")
             print(f"{'=' * 80}")
 
-            # Enforce API precision and min maker amount ($1.00); keep limit price at BUY_PRICE
+            # Calculate order size with API precision: maker max 2 decimals, taker max 4 decimals
+            # Use string formatting to guarantee exact decimal places
             price_decimal = Decimal(str(self.BUY_PRICE))
-            maker_target = Decimal(str(self.trade_size)).quantize(
-                Decimal("0.01"), rounding=ROUND_DOWN
-            )
-            if maker_target < Decimal("1.00"):
+            trade_decimal = Decimal(str(self.trade_size))
+            
+            # Ensure maker >= $1.00 minimum
+            if trade_decimal < Decimal("1.00"):
                 print(
-                    f"⚠️  [{self.market_name}] Raised maker amount to $1.00 (API minimum) from ${self.trade_size}"
+                    f"⚠️  [{self.market_name}] Raised trade size to $1.00 (API minimum) from ${self.trade_size}"
                 )
-                maker_target = Decimal("1.00")
+                trade_decimal = Decimal("1.00")
 
-            tokens_ideal = maker_target / price_decimal
-            tokens_rounded = tokens_ideal.quantize(
+            # Calculate tokens needed, round to 4 decimals
+            tokens_decimal = (trade_decimal / price_decimal).quantize(
                 Decimal("0.0001"), rounding=ROUND_DOWN
             )
-
-            maker_amount = (price_decimal * tokens_rounded).quantize(
-                Decimal("0.01"), rounding=ROUND_UP
+            
+            # Verify maker_amount has exactly 2 decimals
+            maker_check = (price_decimal * tokens_decimal).quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
             )
-            if maker_amount < Decimal("1.00"):
-                maker_amount = Decimal("1.00")
-
-            tokens_to_buy = float(
-                (maker_amount / price_decimal).quantize(
-                    Decimal("0.0001"), rounding=ROUND_DOWN
-                )
-            )
+            
+            # Convert to float with explicit rounding to prevent float precision issues
+            price_float = round(float(price_decimal), 2)
+            tokens_float = round(float(tokens_decimal), 4)
+            
+            print(f"[DEBUG] Order params: price={price_float}, size={tokens_float}, maker_amount={float(maker_check)}")
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
-                price=self.BUY_PRICE,
-                size=tokens_to_buy,
+                price=price_float,
+                size=tokens_float,
                 side="BUY",
             )
 
