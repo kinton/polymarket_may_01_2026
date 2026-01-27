@@ -35,7 +35,7 @@ def main():
         # Update balance and allowance for the user
         # This authorizes the exchange to spend USDC (collateral asset)
         print("Updating balance and allowance for Polymarket exchange...")
-        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)  # type: ignore
         result = client.update_balance_allowance(params)
 
         print(f"Success! Result: {result}")

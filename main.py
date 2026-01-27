@@ -196,12 +196,24 @@ class TradingBotRunner:
 
         try:
             # Parse end time
+            if not end_time_utc:
+                self.trader_logger.error(f"Missing end time for market {condition_id}")
+                return
+
             end_time = datetime.fromisoformat(end_time_utc.replace(" UTC", "+00:00"))
 
             # Validate token IDs
             if token_id_yes == "N/A" or token_id_no == "N/A":
                 self.trader_logger.error(f"Invalid token IDs for market {condition_id}")
                 return
+
+            # Validate condition_id
+            if not condition_id or condition_id == "N/A":
+                self.trader_logger.error("Invalid condition ID")
+                return
+
+            # Type assertions: values are validated above
+            assert token_id_yes and token_id_no and token_id_yes != "N/A" and token_id_no != "N/A"
 
             # Create and run trader with both token IDs
             # Trader will dynamically determine winning side based on prices

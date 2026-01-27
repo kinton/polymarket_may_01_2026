@@ -55,7 +55,7 @@ from market_parser import (
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+    from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
 except ImportError:
     print("Error: py-clob-client not installed. Run: uv pip install py-clob-client")
     exit(1)
@@ -268,7 +268,9 @@ class LastSecondTrader:
             if isinstance(data, list):
                 if len(data) == 0:
                     return
-                data = data[0]  # Get first element
+                data = data[0]  # type: ignore  # Get first element
+            if not isinstance(data, dict):
+                return
 
             # CRITICAL: Determine which token this data is for based on asset_id in the data itself
             # NOT based on which WebSocket connection it came from!
@@ -528,6 +530,10 @@ class LastSecondTrader:
         winning_ask = self._get_winning_ask()
         winning_token_id = self._get_winning_token_id()
 
+        if not winning_token_id:
+            print(f"❌ [{self.market_name}] Error: No winning token ID available")
+            return
+
         if self.dry_run:
             print(f"{'=' * 80}")
             print(f"🔷 [{self.market_name}] DRY RUN MODE - NO REAL TRADE EXECUTED")
@@ -573,12 +579,12 @@ class LastSecondTrader:
             )
 
             created_order = await asyncio.to_thread(
-                self.client.create_order, order_args, CreateOrderOptions(tick_size="0.01")
+                self.client.create_order, order_args, PartialCreateOrderOptions(tick_size="0.01")
             )
             print(f"✓ Order created: {created_order}")
 
             response = await asyncio.to_thread(
-                self.client.post_order, created_order, OrderType.FOK
+                self.client.post_order, created_order, OrderType.FOK  # type: ignore
             )
 
             print("✓ Order posted as FOK successfully!")
@@ -597,6 +603,7 @@ class LastSecondTrader:
 
         async def listen_to_ws(ws, is_yes_token: bool):
             """Listen to a single WebSocket connection."""
+            token_name = "YES" if is_yes_token else "NO"
             try:
                 token_name = "YES" if is_yes_token else "NO"
                 token_id = self.token_id_yes if is_yes_token else self.token_id_no
@@ -694,21 +701,20 @@ async def main():
 
     # Example values - REPLACE WITH ACTUAL VALUES
     EXAMPLE_CONDITION_ID = "0x1234567890abcdef"
-    EXAMPLE_TOKEN_ID = "12345678"
     # EXAMPLE_END_TIME = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=300)  # 5 min from now
 
     # Parse command line args (simple version)
     if len(sys.argv) < 2:
         print(
-            "Usage: python hft_trader.py --condition-id <ID> --token-id <ID> --end-time <ISO_TIME> [--live] [--size <SIZE>]"
+            "Usage: python hft_trader.py --condition-id <ID> --token-id-yes <ID> --token-id-no <ID> --end-time <ISO_TIME> [--live] [--size <SIZE>]"
         )
         print("\nExample (dry run):")
         print(
-            f"  python hft_trader.py --condition-id {EXAMPLE_CONDITION_ID} --token-id {EXAMPLE_TOKEN_ID} --end-time 2026-01-24T12:30:00Z"
+            f"  python hft_trader.py --condition-id {EXAMPLE_CONDITION_ID} --token-id-yes 123 --token-id-no 456 --end-time 2026-01-24T12:30:00Z"
         )
         print("\nExample (live trading - DANGER!):")
         print(
-            f"  python hft_trader.py --condition-id {EXAMPLE_CONDITION_ID} --token-id {EXAMPLE_TOKEN_ID} --end-time 2026-01-24T12:30:00Z --live --size 10"
+            f"  python hft_trader.py --condition-id {EXAMPLE_CONDITION_ID} --token-id-yes 123 --token-id-no 456 --end-time 2026-01-24T12:30:00Z --live --size 10"
         )
         print("\n⚠️  WARNING: Default is DRY_RUN=True and SIZE=1 for safety!")
         return
@@ -716,8 +722,9 @@ async def main():
     # Simple arg parsing
     args = sys.argv[1:]
     condition_id = None
-    token_id = None
-    end_time = None
+    token_id_yes = None
+    token_id_no = None
+    end_time_str = None
     dry_run = True  # Default to safe mode
     trade_size = 1.0  # Default size
 
@@ -726,11 +733,14 @@ async def main():
         if args[i] == "--condition-id" and i + 1 < len(args):
             condition_id = args[i + 1]
             i += 2
-        elif args[i] == "--token-id" and i + 1 < len(args):
-            token_id = args[i + 1]
+        elif args[i] == "--token-id-yes" and i + 1 < len(args):
+            token_id_yes = args[i + 1]
+            i += 2
+        elif args[i] == "--token-id-no" and i + 1 < len(args):
+            token_id_no = args[i + 1]
             i += 2
         elif args[i] == "--end-time" and i + 1 < len(args):
-            end_time = datetime.fromisoformat(args[i + 1].replace("Z", "+00:00"))
+            end_time_str = args[i + 1]
             i += 2
         elif args[i] == "--live":
             dry_run = False
@@ -741,16 +751,23 @@ async def main():
         else:
             i += 1
 
-    if not all([condition_id, token_id, end_time]):
+    if not all([condition_id, token_id_yes, token_id_no, end_time_str]):
         print(
-            "❌ Error: Missing required arguments (--condition-id, --token-id, --end-time)"
+            "❌ Error: Missing required arguments (--condition-id, --token-id-yes, --token-id-no, --end-time)"
         )
         return
+
+    # Type assertion: all values are non-None after check above
+    assert condition_id and token_id_yes and token_id_no and end_time_str
+
+    # Parse end time
+    end_time = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
 
     # Create and run trader
     trader = LastSecondTrader(
         condition_id=condition_id,
-        token_id=token_id,
+        token_id_yes=token_id_yes,
+        token_id_no=token_id_no,
         end_time=end_time,
         dry_run=dry_run,
         trade_size=trade_size,

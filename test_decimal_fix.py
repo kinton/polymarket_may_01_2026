@@ -45,6 +45,10 @@ def test_fix():
         price_match = re.search(r'"price":\s*([0-9.]+)', json_payload)
         size_match = re.search(r'"size":\s*([0-9.]+)', json_payload)
 
+        if not price_match or not size_match:
+            print(f"✗ Failed to parse JSON: {json_payload}")
+            continue
+
         price_val = price_match.group(1)
         size_val = size_match.group(1)
         price_decimals = len(price_val.split(".")[-1]) if "." in price_val else 0
