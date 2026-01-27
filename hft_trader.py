@@ -55,7 +55,7 @@ from market_parser import (
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType
+    from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
 except ImportError:
     print("Error: py-clob-client not installed. Run: uv pip install py-clob-client")
     exit(1)
@@ -573,7 +573,7 @@ class LastSecondTrader:
             )
 
             created_order = await asyncio.to_thread(
-                self.client.create_order, order_args
+                self.client.create_order, order_args, CreateOrderOptions(tick_size="0.01")
             )
             print(f"✓ Order created: {created_order}")
 
