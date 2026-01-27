@@ -5,6 +5,7 @@ Test WebSocket connection to Polymarket CLOB
 import asyncio
 import json
 
+import pytest
 import websockets
 
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -18,6 +19,7 @@ TOKEN_ID_NO = (
 )
 
 
+@pytest.mark.asyncio
 async def test_websocket():
     """Test WebSocket connection and subscription"""
     try:

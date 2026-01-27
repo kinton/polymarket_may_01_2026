@@ -5,6 +5,7 @@ Test WebSocket with keepalive/ping-pong
 import asyncio
 import json
 
+import pytest
 import websockets
 
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -16,6 +17,7 @@ TOKEN_ID_NO = (
 )
 
 
+@pytest.mark.asyncio
 async def test_websocket_with_ping():
     """Test WebSocket with ping-pong for keepalive"""
     try:

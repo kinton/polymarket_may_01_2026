@@ -1,8 +1,11 @@
 """Quick test to see what the API actually returns."""
 import asyncio
-import aiohttp
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
+import aiohttp
+import pytest
+
+@pytest.mark.asyncio
 async def test_api():
     # Get current ET time
     et_tz = timezone(timedelta(hours=-5))

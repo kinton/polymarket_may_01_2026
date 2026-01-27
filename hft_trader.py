@@ -555,36 +555,38 @@ class LastSecondTrader:
             print(f"🔴 [{self.market_name}] EXECUTING LIVE ORDER...")
             print(f"{'=' * 80}")
 
-            # Create FOK order at $0.99 for winning side
-            # Step 1: Create the order
-            # Convert dollars to tokens: size = dollars / price
-            # Polymarket requirements:
-            #   - taker_amount (tokens): max 5 decimals
-            #   - maker_amount (dollars): max 2 decimals
-            #   - Critical: maker_amount = price × size must have exactly 2 decimals
-            # 
-            # Problem: price=0.99, trade_size=1.00
-            #   tokens = 1.00/0.99 = 1.010101...
-            #   If we round tokens to 5 decimals: 1.01010
-            #   maker = 0.99 × 1.01010 = 0.999999 (6 decimals) ❌
-            # 
-            # Solution: Round tokens to 2 decimals (not 5!)
-            #   tokens = 1.01 (2 decimals)
-            #   maker = 0.99 × 1.01 = 0.9999 (4 decimals)
-            #   API will round 0.9999 to 1.00 (2 decimals) ✓
-            # 
-            # This sacrifices precision but ensures API acceptance
+            # Enforce API precision and min maker amount ($1.00); keep limit price at BUY_PRICE
             price_decimal = Decimal(str(self.BUY_PRICE))
-            trade_size_decimal = Decimal(str(self.trade_size))
-            
-            # Calculate tokens and round to 2 decimals
-            tokens_ideal = trade_size_decimal / price_decimal
-            tokens_to_buy = float(tokens_ideal.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+            maker_target = Decimal(str(self.trade_size)).quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
+            )
+            if maker_target < Decimal("1.00"):
+                print(
+                    f"⚠️  [{self.market_name}] Raised maker amount to $1.00 (API minimum) from ${self.trade_size}"
+                )
+                maker_target = Decimal("1.00")
+
+            tokens_ideal = maker_target / price_decimal
+            tokens_rounded = tokens_ideal.quantize(
+                Decimal("0.0001"), rounding=ROUND_DOWN
+            )
+
+            maker_amount = (price_decimal * tokens_rounded).quantize(
+                Decimal("0.01"), rounding=ROUND_UP
+            )
+            if maker_amount < Decimal("1.00"):
+                maker_amount = Decimal("1.00")
+
+            tokens_to_buy = float(
+                (maker_amount / price_decimal).quantize(
+                    Decimal("0.0001"), rounding=ROUND_DOWN
+                )
+            )
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
                 price=self.BUY_PRICE,
-                size=tokens_to_buy,  # size is in tokens, not dollars
+                size=tokens_to_buy,
                 side="BUY",
             )
 
@@ -593,7 +595,6 @@ class LastSecondTrader:
             )
             print(f"✓ Order created: {created_order}")
 
-            # Step 2: Post the order as FOK (Fill-or-Kill)
             response = await asyncio.to_thread(
                 self.client.post_order, created_order, OrderType.FOK
             )
