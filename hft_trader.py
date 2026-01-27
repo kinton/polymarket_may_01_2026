@@ -34,7 +34,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Dict, Optional
 
 import websockets
