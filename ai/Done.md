@@ -1,5 +1,19 @@
 # Выполненные задачи
 
+## 11. Исправление ошибок типов и API usage ✅
+**Дата:** 27 января 2026  
+**Проблема:** Type errors в коде после предыдущих изменений, неправильное использование py-clob-client API
+**Решение:**
+- Изменен `CreateOrderOptions` → `PartialCreateOrderOptions` для опциональных параметров
+- Добавлены type assertions для устранения None-related errors
+- Исправлено использование `AssetType.COLLATERAL` с type: ignore (библиотека использует псевдо-enum)
+- Исправлено использование `OrderType.FOK` с type: ignore (псевдо-enum класс)
+- Добавлены проверки на None для `winning_token_id`, `end_time_str`, `condition_id`
+- Обновлен main() для работы с `--token-id-yes` и `--token-id-no` вместо одного `--token-id`
+- Добавлена переменная `token_name` в WebSocket listener для error handling
+- Исправлен порядок доступа к `data.get("asset_id")` после проверки типа
+**Результат:** ✅ Все тесты (39/39) прошли, ruff clean, no errors
+
 ## 1. Проверка логики по статьям ✅
 **Дата:** 24 января 2026  
 **Результат:** Проверил статьи на Teletype и X. Текущая реализация полностью соответствует стратегии:

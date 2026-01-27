@@ -213,7 +213,12 @@ class TradingBotRunner:
                 return
 
             # Type assertions: values are validated above
-            assert token_id_yes and token_id_no and token_id_yes != "N/A" and token_id_no != "N/A"
+            assert (
+                token_id_yes
+                and token_id_no
+                and token_id_yes != "N/A"
+                and token_id_no != "N/A"
+            )
 
             # Create and run trader with both token IDs
             # Trader will dynamically determine winning side based on prices
