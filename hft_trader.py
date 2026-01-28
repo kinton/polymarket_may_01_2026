@@ -577,17 +577,22 @@ class LastSecondTrader:
                 Decimal("0.01"), rounding=ROUND_DOWN
             )
             trade_size_dec = Decimal(str(self.trade_size))
+            MIN_ORDER_SIZE = Decimal("1.00")  # Polymarket minimum for market BUY
 
             # Calculate max cents we can spend (round down to avoid exceeding budget)
             max_cents = (trade_size_dec * 100).to_integral_value(rounding=ROUND_DOWN)
 
-            # Find largest size where size × price equals exactly N cents (N = integer)
+            # Find size where size × price equals exactly N cents AND >= $1.00 minimum
             # Work backwards from max_cents to find valid combination
             size_dec = None
             maker_dec = None
-            for cents in range(int(max_cents), 0, -1):
+            for cents in range(int(max_cents), 99, -1):  # Start from 100 cents ($1.00)
                 # maker_amount in dollars
                 candidate_maker = Decimal(cents) / 100
+
+                # Skip if below minimum
+                if candidate_maker < MIN_ORDER_SIZE:
+                    continue
 
                 # Calculate size: size = maker_amount / price
                 candidate_size = (candidate_maker / price_dec).quantize(
@@ -606,7 +611,7 @@ class LastSecondTrader:
 
             if size_dec is None or maker_dec is None:
                 print(
-                    f"❌ ERROR: Cannot find valid FOK size for trade_size=${self.trade_size}, price=${self.BUY_PRICE}"
+                    f"❌ ERROR: Cannot find valid FOK size >= $1.00 for trade_size=${self.trade_size}, price=${self.BUY_PRICE}"
                 )
                 return
 
