@@ -1,5 +1,25 @@
 # Выполненные задачи
 
+## 13. Исправление ошибки минимального размера BUY order ✅
+**Дата:** 28 января 2026  
+**Проблема:** `PolyApiException[status_code=400, error_message={'error': 'invalid amount for a marketable BUY order ($0.99), min size: $1'}]`
+
+**Причина:** Polymarket API требует минимум **$1 USDC** для market BUY orders. Раньше default trade_size был $1.00, но при делении:
+- `$1.00 / $0.99 = 1.0101 tokens`
+- `1.0101 * $0.99 = $0.999999` (меньше $1!)
+
+**Решение:**
+1. Увеличили default trade_size с **$1.00** на **$1.01**
+2. При $1.01 / $0.99 = 1.0202 tokens
+3. `1.0202 * $0.99 = $1.01` (соответствует минимуму!)
+4. Обновили комментарий в argparse help
+5. Обновили Project.md с новым параметром
+
+**Результат:** 
+- ✅ Ruff clean
+- ✅ Trade size теперь соответствует минимальному требованию
+- ✅ Ордеры пройдут проверку Polymarket API
+
 ## 12. Исправление ошибки FOK order precision ✅
 **Дата:** 28 января 2026  
 **Проблема:** `PolyApiException[status_code=400, error_message={'error': 'invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals'}]`

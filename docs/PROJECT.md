@@ -163,6 +163,7 @@ OrderArgs(
 - **Trigger Threshold:** 1.0 секунда (триггер срабатывает при ≤1s)
 - **Price Threshold:** 0.50 (winning side определяется как price > 0.50)
 - **Buy Price:** 0.99 (покупаем по $0.99)
+- **Trade Size:** $1.01 (минимум $1 требуется Polymarket для market BUY orders)
 
 ### Workflow:
 1. **Поиск** → Gamma API каждые 90 сек
