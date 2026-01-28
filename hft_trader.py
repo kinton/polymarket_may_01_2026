@@ -34,7 +34,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Any, Dict, Optional
 
 import websockets
@@ -579,39 +579,35 @@ class LastSecondTrader:
             trade_size_dec = Decimal(str(self.trade_size))
             MIN_ORDER_SIZE = Decimal("1.00")  # Polymarket minimum for market BUY
 
-            # Calculate max cents we can spend (round down to avoid exceeding budget)
-            max_cents = (trade_size_dec * 100).to_integral_value(rounding=ROUND_DOWN)
+            # Strategy: Find size where size × price has exactly 2 decimals AND >= $1.00
+            # 1. Calculate max tokens we can buy: trade_size / price
+            # 2. Round UP to next 0.01 token (ensures maker_amount >= min)
+            # 3. Verify result meets all constraints
 
-            # Find size where size × price equals exactly N cents AND >= $1.00 minimum
-            # Work backwards from max_cents to find valid combination
-            size_dec = None
-            maker_dec = None
-            for cents in range(int(max_cents), 99, -1):  # Start from 100 cents ($1.00)
-                # maker_amount in dollars
-                candidate_maker = Decimal(cents) / 100
+            max_tokens = (trade_size_dec / price_dec).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
 
-                # Skip if below minimum
-                if candidate_maker < MIN_ORDER_SIZE:
-                    continue
+            # Check if rounded size produces valid maker_amount
+            maker_dec = max_tokens * price_dec
+            maker_rounded = maker_dec.quantize(Decimal("0.01"))
 
-                # Calculate size: size = maker_amount / price
-                candidate_size = (candidate_maker / price_dec).quantize(
-                    Decimal("0.0001"), rounding=ROUND_DOWN
-                )
+            # Verify constraints
+            if maker_dec != maker_rounded:
+                # maker_amount doesn't have exactly 2 decimals, try next cent
+                maker_dec = maker_rounded
 
-                # Verify: size × price = maker_amount (exactly, no more than 2 decimals)
-                check_maker = candidate_size * price_dec
-                check_maker_rounded = check_maker.quantize(Decimal("0.01"))
+            size_dec = max_tokens
 
-                if check_maker == check_maker_rounded:
-                    # Found valid combination!
-                    size_dec = candidate_size
-                    maker_dec = check_maker
-                    break
-
-            if size_dec is None or maker_dec is None:
+            if maker_dec < MIN_ORDER_SIZE:
                 print(
-                    f"❌ ERROR: Cannot find valid FOK size >= $1.00 for trade_size=${self.trade_size}, price=${self.BUY_PRICE}"
+                    f"❌ ERROR: Rounded size {size_dec} gives maker_amount ${maker_dec} < ${MIN_ORDER_SIZE}"
+                )
+                return
+
+            if size_dec == Decimal("0"):
+                print(
+                    f"❌ ERROR: Budget ${self.trade_size} too low for price ${self.BUY_PRICE}"
                 )
                 return
 

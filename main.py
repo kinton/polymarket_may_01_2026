@@ -49,7 +49,7 @@ class TradingBotRunner:
     def __init__(
         self,
         dry_run: bool = True,
-        trade_size: float = 2.00,
+        trade_size: float = 1.01,
         poll_interval: int = 90,
         run_once: bool = False,
     ):
@@ -341,8 +341,8 @@ async def main():
     parser.add_argument(
         "--size",
         type=float,
-        default=2.00,
-        help="Trade size in dollars (default: $2.00, buys 2 tokens at $0.99/token, meets $1 min)",
+        default=1.01,
+        help="Trade size in dollars (default: $1.01, buys 1.02 tokens at $0.99/token via rounding up)",
     )
     parser.add_argument(
         "--poll-interval",
