@@ -34,6 +34,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, Optional
 
 import websockets
@@ -565,15 +566,64 @@ class LastSecondTrader:
             print(f"🔴 [{self.market_name}] EXECUTING LIVE ORDER...")
             print(f"{'=' * 80}")
 
-            # Simple calculation: size = trade_size / price
-            # OrderBuilder will apply proper rounding via ROUNDING_CONFIG
-            # (supports up to 6 decimals for maker amount)
-            size = self.trade_size / self.BUY_PRICE
+            # FOK market BUY orders have strict precision limits:
+            # - maker amount (USDC): max 2 decimals
+            # - taker amount (shares): max 4 decimals
+            # - CRITICAL: size × price must equal exactly N.NN (2 decimals)!
+            # See: https://github.com/Polymarket/py-clob-client/issues/121
+
+            # Use Decimal for exact arithmetic (no floating point errors)
+            price_dec = Decimal(str(self.BUY_PRICE)).quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
+            )
+            trade_size_dec = Decimal(str(self.trade_size))
+
+            # Calculate max cents we can spend (round down to avoid exceeding budget)
+            max_cents = (trade_size_dec * 100).to_integral_value(rounding=ROUND_DOWN)
+
+            # Find largest size where size × price equals exactly N cents (N = integer)
+            # Work backwards from max_cents to find valid combination
+            size_dec = None
+            maker_dec = None
+            for cents in range(int(max_cents), 0, -1):
+                # maker_amount in dollars
+                candidate_maker = Decimal(cents) / 100
+
+                # Calculate size: size = maker_amount / price
+                candidate_size = (candidate_maker / price_dec).quantize(
+                    Decimal("0.0001"), rounding=ROUND_DOWN
+                )
+
+                # Verify: size × price = maker_amount (exactly, no more than 2 decimals)
+                check_maker = candidate_size * price_dec
+                check_maker_rounded = check_maker.quantize(Decimal("0.01"))
+
+                if check_maker == check_maker_rounded:
+                    # Found valid combination!
+                    size_dec = candidate_size
+                    maker_dec = check_maker
+                    break
+
+            if size_dec is None or maker_dec is None:
+                print(
+                    f"❌ ERROR: Cannot find valid FOK size for trade_size=${self.trade_size}, price=${self.BUY_PRICE}"
+                )
+                return
+
+            # Convert to float for API
+            price = float(price_dec)
+            size = float(size_dec)
+            maker_amount = float(maker_dec)
 
             print(
-                f"Order: price=${self.BUY_PRICE:.2f}, size={size:.4f} tokens, "
-                f"amount=${self.trade_size:.2f}"
+                f"Order: price=${price:.2f}, size={size:.4f} tokens, "
+                f"maker_amount=${maker_amount:.2f} (adjusted from ${self.trade_size:.2f})"
             )
+
+            # Final validation
+            if round(maker_amount, 2) != maker_amount:
+                print(f"❌ ERROR: maker_amount {maker_amount} has > 2 decimals!")
+                return
 
             order_args = OrderArgs(
                 token_id=winning_token_id,

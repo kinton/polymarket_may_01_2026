@@ -2,6 +2,8 @@
 
 High-frequency trading bot for Polymarket 5/15-minute Bitcoin/Ethereum markets. Automatically discovers, monitors, and executes trades in final seconds before market close.
 
+Use `uv`.
+
 ## 🚀 Quick Start
 
 ```bash

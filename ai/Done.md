@@ -1,5 +1,40 @@
 # Выполненные задачи
 
+## 12. Исправление ошибки FOK order precision ✅
+**Дата:** 28 января 2026  
+**Проблема:** `PolyApiException[status_code=400, error_message={'error': 'invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals'}]`
+
+**Причина:** Polymarket API требует для FOK market BUY orders:
+- maker amount (USDC): max 2 decimals
+- taker amount (shares): max 4 decimals
+- **КРИТИЧНО**: `size × price` должен равняться ровно N.NN (2 знака после запятой)!
+
+**Источники:**
+- https://github.com/Polymarket/py-clob-client/issues/121
+- https://github.com/Polymarket/rs-clob-client/issues/114
+- https://nautilustrader.io/docs/nightly/integrations/polymarket/ (Precision limits section)
+
+**Решение:**
+1. Использован Python `Decimal` для точных вычислений (без ошибок floating point)
+2. Реализован алгоритм:
+   - Конвертируем цену и trade_size в Decimal
+   - Вычисляем max_cents = floor(trade_size × 100)
+   - Перебираем от max_cents вниз, пока не найдем cents, где:
+     - maker_amount = cents / 100
+     - size = maker_amount / price (округленный до 4 знаков)
+     - size × price = maker_amount (точно, с макс 2 знаками)
+3. Добавлены валидационные тесты в test_fok_rounding.py
+4. Импортирован `Decimal, ROUND_DOWN` в hft_trader.py
+
+**Результаты тестов:**
+- ✅ $1.00 @ $0.99 → size=1.0000, maker=$0.99
+- ✅ $5.00 @ $0.99 → size=5.0000, maker=$4.95
+- ✅ $20.10 @ $0.76 → size=26.2500, maker=$19.95
+- ✅ Все 33 unit теста прошли
+- ✅ ruff check clean
+
+**Результат:** Проблема полностью решена! Теперь FOK orders будут корректно округляться согласно API требованиям.
+
 ## 11. Исправление ошибок типов и API usage ✅
 **Дата:** 27 января 2026  
 **Проблема:** Type errors в коде после предыдущих изменений, неправильное использование py-clob-client API
