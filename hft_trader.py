@@ -34,7 +34,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, Optional
 
 import websockets
@@ -566,70 +566,35 @@ class LastSecondTrader:
             print(f"🔴 [{self.market_name}] EXECUTING LIVE ORDER...")
             print(f"{'=' * 80}")
 
-            # FOK market BUY orders have strict precision limits:
-            # - maker amount (USDC): max 2 decimals
-            # - taker amount (shares): max 4 decimals
-            # - CRITICAL: size × price must equal exactly N.NN (2 decimals)!
-            # See: https://github.com/Polymarket/py-clob-client/issues/121
+            # FOK market BUY orders requirements:
+            # API params:
+            # - price: price per token (e.g., $0.99)
+            # - size: amount to spend in DOLLARS (e.g., $1.01)
+            # API will internally calculate: tokens_to_buy = size / price
+            # 
+            # Important: Both price and size must have at most 2 decimals
 
             # Use Decimal for exact arithmetic (no floating point errors)
-            price_dec = Decimal(str(self.BUY_PRICE)).quantize(
-                Decimal("0.01"), rounding=ROUND_DOWN
-            )
             trade_size_dec = Decimal(str(self.trade_size))
-            MIN_ORDER_SIZE = Decimal("1.00")  # Polymarket minimum for market BUY
 
-            # Strategy: Find size where size × price has exactly 2 decimals AND >= $1.00
-            # 1. Calculate max tokens we can buy: trade_size / price
-            # 2. Round UP to next 0.01 token (ensures maker_amount >= min)
-            # 3. Verify result meets all constraints
+            # CLOB API expects: size = dollars to spend (not tokens!)
+            # API will calculate tokens internally: tokens = size / price
+            # We just need to ensure trade_size is properly bounded
 
-            max_tokens = (trade_size_dec / price_dec).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            )
-
-            # Check if rounded size produces valid maker_amount
-            maker_dec = max_tokens * price_dec
-            maker_rounded = maker_dec.quantize(Decimal("0.01"))
-
-            # Verify constraints
-            if maker_dec != maker_rounded:
-                # maker_amount doesn't have exactly 2 decimals, try next cent
-                maker_dec = maker_rounded
-
-            size_dec = max_tokens
-
-            if maker_dec < MIN_ORDER_SIZE:
-                print(
-                    f"❌ ERROR: Rounded size {size_dec} gives maker_amount ${maker_dec} < ${MIN_ORDER_SIZE}"
-                )
-                return
-
-            if size_dec == Decimal("0"):
-                print(
-                    f"❌ ERROR: Budget ${self.trade_size} too low for price ${self.BUY_PRICE}"
-                )
-                return
-
-            # Convert to float for API
-            price = float(price_dec)
-            size = float(size_dec)
-            maker_amount = float(maker_dec)
+            # Ensure trade_size has at most 2 decimals for API
+            size_dollars = trade_size_dec.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
             print(
-                f"Order: price=${price:.2f}, size={size:.4f} tokens, "
-                f"maker_amount=${maker_amount:.2f} (adjusted from ${self.trade_size:.2f})"
+                f"Order: price=${self.BUY_PRICE:.2f}, spending ${float(size_dollars):.2f}"
             )
 
-            # Final validation
-            if round(maker_amount, 2) != maker_amount:
-                print(f"❌ ERROR: maker_amount {maker_amount} has > 2 decimals!")
-                return
+            # Create order with dollars
+            size = float(size_dollars)
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
                 price=self.BUY_PRICE,
-                size=size,
+                size=size,  # CRITICAL: size is in DOLLARS, not tokens!
                 side="BUY",
             )
 
