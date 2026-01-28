@@ -591,6 +591,13 @@ class LastSecondTrader:
             # Create order with dollars
             size = float(size_dollars)
 
+            # DETAILED LOGGING
+            print("[DEBUG] OrderArgs parameters:")
+            print(f"  token_id: {winning_token_id}")
+            print(f"  price: {self.BUY_PRICE} (type: {type(self.BUY_PRICE).__name__})")
+            print(f"  size: {size} (type: {type(size).__name__})")
+            print("  side: BUY")
+
             order_args = OrderArgs(
                 token_id=winning_token_id,
                 price=self.BUY_PRICE,
@@ -604,6 +611,13 @@ class LastSecondTrader:
                 CreateOrderOptions(tick_size="0.01", neg_risk=False),  # type: ignore
             )
             print(f"✓ Order created: {created_order}")
+            
+            # Log the actual Order object
+            if hasattr(created_order, 'order'):
+                order_obj = created_order.order
+                print("[DEBUG] SignedOrder.order details:")
+                print(f"  maker_amount: {order_obj.maker_amount} (decimals: {len(str(order_obj.maker_amount).split('.')[-1]) if '.' in str(order_obj.maker_amount) else 0})")
+                print(f"  taker_amount: {order_obj.taker_amount} (decimals: {len(str(order_obj.taker_amount).split('.')[-1]) if '.' in str(order_obj.taker_amount) else 0})")
 
             response = await asyncio.to_thread(
                 self.client.post_order,
@@ -617,6 +631,8 @@ class LastSecondTrader:
 
         except Exception as e:
             print(f"❌ [{self.market_name}] Error executing order: {e}")
+            if hasattr(e, '__dict__'):
+                print(f"[DEBUG] Exception details: {e.__dict__}")
             print(f"{'=' * 80}\n")
 
     async def listen_to_market(self):
