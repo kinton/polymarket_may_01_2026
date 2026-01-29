@@ -32,10 +32,8 @@ Requirements:
 
 import asyncio
 import json
-import math
 import os
 from datetime import datetime, timezone
-from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Dict, Optional
 
 import websockets
@@ -119,12 +117,11 @@ class LastSecondTrader:
         # Extract short market name for logging (e.g. "BTC", "ETH", "SOL")
         self.market_name = self._extract_market_name(title)
 
-        # Market state - track both YES and NO
+        # Market state
         self.orderbook = OrderBook()
         self.winning_side: Optional[str] = None  # "YES" or "NO"
         self.order_executed = False
-        self.ws_yes = None
-        self.ws_no = None
+        self.ws = None
 
         # Track last log time to avoid spam
         self.last_log_time = 0.0
@@ -134,23 +131,9 @@ class LastSecondTrader:
         load_dotenv()
         self.client = self._init_clob_client()
 
-        print(f"{'=' * 80}")
-        print("Last-Second Trader Initialized")
-        print(f"{'=' * 80}")
-        print(
-            f"Mode: {'DRY RUN (Safe Mode)' if self.dry_run else '🔴 LIVE TRADING 🔴'}"
-        )
-        print(f"Condition ID: {self.condition_id}")
-        print(f"Token ID (YES): {self.token_id_yes}")
-        print(f"Token ID (NO): {self.token_id_no}")
-        print(f"End Time: {self.end_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-        print(f"Trade Size: ${self.trade_size}")
-        print(f"Buy Price: ${self.BUY_PRICE}")
-        print(f"Trigger: <= {self.TRIGGER_THRESHOLD} second(s) remaining")
-        print("Strategy: Auto-detect winning side (higher ask wins)")
-        if self.slug:
-            print(f"Market Link: https://polymarket.com/market/{self.slug}")
-        print(f"{'=' * 80}\n")
+        # Log init
+        mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
+        self._log(f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE}")
 
     def _extract_market_name(self, title: Optional[str]) -> str:
         """Extract short market name from title for logging."""
@@ -171,6 +154,12 @@ class LastSecondTrader:
             # Fallback: use first word of title
             return title.split()[0][:8].upper()
 
+    def _log(self, message: str) -> None:
+        """Log message to both console and file logger."""
+        print(message)
+        if self.logger:
+            self.logger.info(message)
+
     def _init_clob_client(self) -> Optional[ClobClient]:
         """Initialize the CLOB client for order execution."""
         if self.dry_run:
@@ -183,54 +172,20 @@ class LastSecondTrader:
             host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
 
             if not private_key:
-                print("Warning: Missing PRIVATE_KEY in .env file")
+                self._log("⚠️ Missing PRIVATE_KEY in .env")
                 return None
 
-            print("[INIT] Initializing CLOB client...")
-            print(f"[INIT] Host: {host}")
-            print(f"[INIT] Chain ID: {chain_id}")
-            print(f"[INIT] Private Key: {private_key[:10]}...{private_key[-4:]}")
+            client = ClobClient(host=host, key=private_key, chain_id=chain_id)
 
-            # Initialize client with just private key, host, and chain_id
-            client = ClobClient(
-                host=host,
-                key=private_key,
-                chain_id=chain_id,
-            )
-
-            # Create or derive API credentials from private key
-            # This is REQUIRED for authentication - without it, you get 403 errors
-            print("[INIT] Deriving API credentials from private key...")
+            # Derive API credentials from private key (required for auth)
             api_creds = client.create_or_derive_api_creds()
             client.set_api_creds(api_creds)
-            print(
-                f"[INIT] API Key: {api_creds.api_key[:10]}...{api_creds.api_key[-4:]}"
-            )
-            print(
-                f"[INIT] API Secret: {api_creds.api_secret[:10]}...{api_creds.api_secret[-4:]}"
-            )
-            print(
-                f"[INIT] API Passphrase: {api_creds.api_passphrase[:4]}...{api_creds.api_passphrase[-4:]}"
-            )
 
-            # Test connection
-            print("[INIT] Testing API connection...")
-            try:
-                server_time = client.get_server_time()
-                print(f"[INIT] ✓ Server time: {server_time}")
-            except Exception as test_err:
-                print(f"[INIT] ⚠ Warning: Connection test failed: {test_err}")
-                if "403" in str(test_err):
-                    print("[INIT] ⚠ CLOUDFLARE 403 - Your IP may be rate-limited")
-                    print(
-                        "[INIT] ⚠ TIP: Wait 10-15 minutes or switch network (VPN/mobile)"
-                    )
-
-            print("✓ CLOB client initialized for live trading\n")
+            self._log(f"✓ CLOB client initialized ({host})")
             return client
 
         except Exception as e:
-            print(f"Error initializing CLOB client: {e}")
+            self._log(f"❌ CLOB init failed: {e}")
             return None
 
     def get_time_remaining(self) -> float:
@@ -247,57 +202,31 @@ class LastSecondTrader:
     async def connect_websocket(self):
         """Connect to Polymarket WebSocket and subscribe to both YES and NO tokens."""
         try:
-            # Connect to YES token
-            self.ws_yes = await websockets.connect(
+            # Single WebSocket connection for both tokens
+            self.ws = await websockets.connect(
                 self.WS_URL, ping_interval=20, ping_timeout=10
             )
-            subscribe_msg_yes = {
-                "assets_ids": [self.token_id_yes],
-                "type": "MARKET",  # Must be uppercase per official docs
+            subscribe_msg = {
+                "assets_ids": [self.token_id_yes, self.token_id_no],
+                "type": "MARKET",
             }
-            await self.ws_yes.send(json.dumps(subscribe_msg_yes))
+            await self.ws.send(json.dumps(subscribe_msg))
 
-            # Connect to NO token
-            self.ws_no = await websockets.connect(
-                self.WS_URL, ping_interval=20, ping_timeout=10
-            )
-            subscribe_msg_no = {"assets_ids": [self.token_id_no], "type": "MARKET"}
-            await self.ws_no.send(json.dumps(subscribe_msg_no))
-
-            print(f"✓ Connected to WebSocket: {self.WS_URL}")
-            print(f"✓ Subscribed to YES token: {self.token_id_yes}")
-            print(f"✓ Subscribed to NO token: {self.token_id_no}\n")
-
+            self._log("✓ WebSocket connected, subscribed to YES+NO tokens")
             return True
 
         except Exception as e:
-            print(f"Error connecting to WebSocket: {e}")
+            self._log(f"❌ WebSocket connection failed: {e}")
             return False
 
-    async def process_market_update(self, data: Dict[str, Any], is_yes_token: bool):
+    async def process_market_update(self, data: Dict[str, Any]):
         """
-        Process incoming market data from WebSocket for YES or NO token.
-
-        Expected format from official docs:
-        {
-            "event_type": "book" or "price_change" or "best_bid_ask",
-            "asset_id": "<token_id>",
-            "market": "<condition_id>",
-            "bids": [{"price": "0.74", "size": "100"}, ...],  # for book event
-            "asks": [{"price": "0.76", "size": "100"}, ...],  # for book event
-            "best_bid": "0.74",  # for price_change/best_bid_ask
-            "best_ask": "0.76",  # for price_change/best_bid_ask
-            "timestamp": "123456789000"
-        }
-
-        Note: WebSocket sends data as an array [{}], so we extract first element
+        Process incoming market data from WebSocket.
 
         Args:
             data: Market data from WebSocket (can be array or dict)
-            is_yes_token: True if this is the YES WebSocket connection (used for debugging only)
         """
         try:
-            # Skip empty confirmation messages
             if not data:
                 return
 
@@ -305,38 +234,25 @@ class LastSecondTrader:
             if isinstance(data, list):
                 if len(data) == 0:
                     return
-                data = data[0]  # type: ignore  # Get first element
+                data = data[0]  # type: ignore
             if not isinstance(data, dict):
                 return
 
-            # CRITICAL: Determine which token this data is for based on asset_id in the data itself
-            # NOT based on which WebSocket connection it came from!
+            # Determine which token this data is for
             received_asset_id = data.get("asset_id")
             if not received_asset_id:
-                # No asset_id in message - skip
                 return
 
-            # Determine if this is YES or NO token data based on actual asset_id
             is_yes_data = received_asset_id == self.token_id_yes
             is_no_data = received_asset_id == self.token_id_no
 
             if not is_yes_data and not is_no_data:
-                # Data for a different market/token - ignore
                 return
-
-            # DEBUG: Log if data came from unexpected WebSocket
-            ws_label = "YES" if is_yes_token else "NO"
-            data_label = "YES" if is_yes_data else "NO"
-            if is_yes_token != is_yes_data:
-                print(
-                    f"[DEBUG] {ws_label} WebSocket received {data_label} token data (asset_id: {received_asset_id[:16]}...)"
-                )
 
             event_type = data.get("event_type")
 
             # Extract best bid and ask based on event type
             if event_type == "book":
-                # Full orderbook snapshot
                 asks = data.get("asks", [])
                 bids = data.get("bids", [])
                 best_ask = extract_best_ask_from_book(asks)
@@ -355,25 +271,20 @@ class LastSecondTrader:
                         self.orderbook.best_bid_no = best_bid
 
             elif event_type == "price_change":
-                # Price update — price_changes array contains data for BOTH tokens
-                # We must process ALL elements, not just the one matching received_asset_id
+                # price_changes array contains data for BOTH tokens
                 changes = data.get("price_changes", [])
 
-                # Process all price changes in this event
                 for change in changes:
                     change_asset_id = change.get("asset_id")
                     if not change_asset_id:
                         continue
 
-                    # Determine which token this change is for
                     is_yes_change = change_asset_id == self.token_id_yes
                     is_no_change = change_asset_id == self.token_id_no
 
                     if not is_yes_change and not is_no_change:
-                        # Not our market
                         continue
 
-                    # Extract best_ask and best_bid from this change
                     best_ask = change.get("best_ask")
                     best_bid = change.get("best_bid")
 
@@ -398,7 +309,6 @@ class LastSecondTrader:
                             pass
 
             elif event_type == "best_bid_ask":
-                # Some events may provide top-level best_bid/best_ask
                 best_ask = data.get("best_ask")
                 best_bid = data.get("best_bid")
 
@@ -499,66 +409,39 @@ class LastSecondTrader:
         Check if trigger conditions are met and execute trade if appropriate.
 
         Trigger conditions:
-        1. Time remaining <= 1 second (but > 0)
-        2. Winning side is determined (price > 0.50)
-        3. Best ask exists for winning side
-        4. Best ask is <= $0.99 (at or better than our limit)
-        5. Order not already executed
+        1. Time remaining <= TRIGGER_THRESHOLD seconds (but > 0)
+        2. Winning side is determined (higher ask price)
+        3. Best ask <= $0.99 (at or better than our limit)
+        4. Order not already executed
         """
-        # Already executed or market closed
         if self.order_executed or time_remaining <= 0:
             return
 
-        # Check time trigger: <= 1 second but > 0
         if time_remaining > self.TRIGGER_THRESHOLD:
             return
 
-        # Check if winning side is determined
         if self.winning_side is None:
-            # Don't spam warnings - only log once when we enter trigger window
             if not hasattr(self, "_logged_no_winner"):
-                print(
-                    f"⚠️  [{self.market_name}] Warning: No winning side determined at {time_remaining:.3f}s remaining"
-                )
+                self._log(f"⚠️  [{self.market_name}] No winning side at {time_remaining:.3f}s")
                 self._logged_no_winner = True
             return
 
-        # Get best ask for winning side
         winning_ask = self._get_winning_ask()
         if winning_ask is None:
             if not hasattr(self, "_logged_no_ask"):
-                print(
-                    f"⚠️  [{self.market_name}] Warning: No ask price available for winning side at {time_remaining:.3f}s remaining"
-                )
+                self._log(f"⚠️  [{self.market_name}] No ask price at {time_remaining:.3f}s")
                 self._logged_no_ask = True
             return
 
-        # Check if price is above our target (we can execute at BUY_PRICE or better)
-        # Use PRICE_TIE_EPS tolerance to handle float precision issues
         if winning_ask > self.BUY_PRICE + self.PRICE_TIE_EPS:
             if not hasattr(self, "_logged_price_high"):
-                print(
-                    f"⚠️  [{self.market_name}] Best ask ${winning_ask:.4f} > ${self.BUY_PRICE} - not worth buying"
-                )
+                self._log(f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.BUY_PRICE}")
                 self._logged_price_high = True
             return
 
         # All conditions met - execute trade!
-        print(f"\n{'=' * 80}")
-        print(
-            f"🎯 [{self.market_name}] TRIGGER ACTIVATED at {time_remaining:.3f}s remaining!"
-        )
-        print(f"{'=' * 80}")
-        print(f"Market: {self.title}")
-        print(f"Winning Side: {self.winning_side}")
-        print(f"Best Ask: ${winning_ask:.4f}")
-        print(f"Target Price: ${self.BUY_PRICE}")
-        print(f"Trade Size: ${self.trade_size}")
-        print(f"{'=' * 80}\n")
+        self._log(f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {self.winning_side} @ ${winning_ask:.4f}")
 
-        # Important: We listen to BOTH YES/NO websockets, so this method can be
-        # called twice almost simultaneously. Mark executed BEFORE awaiting to
-        # prevent double-order attempts.
         self.order_executed = True
         await self.execute_order()
 
@@ -566,394 +449,113 @@ class LastSecondTrader:
         """
         Execute Fill-or-Kill (FOK) order on the winning side.
         In dry run mode, only prints the intended action.
+
+        Precision is handled automatically by py-clob-client's ROUNDING_CONFIG.
+        For tick_size="0.01": price=2dp, size=2dp, amount=4dp (before 10^6 scaling).
         """
         winning_ask = self._get_winning_ask()
         winning_token_id = self._get_winning_token_id()
 
         if not winning_token_id:
-            print(f"❌ [{self.market_name}] Error: No winning token ID available")
+            self._log(f"❌ [{self.market_name}] Error: No winning token ID available")
             return
+
+        # Calculate order parameters (simple - library handles precision)
+        price = round(self.BUY_PRICE, 2)  # 2 decimal places for tick_size=0.01
+        size = round(self.trade_size / price, 2)  # 2 decimal places per ROUNDING_CONFIG
+
+        # Minimum order size check (~$1.00 minimum notional)
+        if size * price < 1.0:
+            size = round(1.0 / price + 0.01, 2)  # Round up to meet $1 minimum
 
         if self.dry_run:
-            print(f"{'=' * 80}")
-            print(f"🔷 [{self.market_name}] DRY RUN MODE - NO REAL TRADE EXECUTED")
-            print(f"{'=' * 80}")
-            print("WOULD BUY:")
-            print(f"  Market: {self.title}")
-            print(f"  Side: {self.winning_side}")
-            print(f"  Token ID: {winning_token_id}")
-            print(f"  Price: ${self.BUY_PRICE}")
-            print(f"  Size: ${self.trade_size}")
-            print("  Type: Fill-or-Kill (FOK)")
-            print(f"  Current Best Ask: ${winning_ask:.4f}")
-            print(f"{'=' * 80}\n")
+            self._log(f"🔷 [{self.market_name}] DRY RUN - WOULD BUY:")
+            self._log(f"  Side: {self.winning_side}, Price: ${price}, Size: {size} tokens")
+            self._log(f"  Best Ask: ${winning_ask:.4f}, Type: FOK")
             return
 
-        # Live trading mode
         if not self.client:
-            print(
-                f"❌ [{self.market_name}] Error: CLOB client not initialized. Cannot execute order."
-            )
+            self._log(f"❌ [{self.market_name}] CLOB client not initialized")
             return
 
         try:
-            print(f"{'=' * 80}")
-            print(f"🔴 [{self.market_name}] EXECUTING LIVE ORDER...")
-            print(f"{'=' * 80}")
+            self._log(f"🔴 [{self.market_name}] EXECUTING ORDER: {self.winning_side} @ ${price} x {size}")
 
-            # Market BUY precision constraints (from API error):
-            # - makerAmount must have max 2 decimals
-            # - takerAmount must have max 4 decimals
-            #
-            # Empirically with py-clob-client for BUY:
-            # - takerAmount ~= size (token amount)
-            # - makerAmount ~= size * price
-            #
-            # Therefore we must choose a token `size` (4dp) so that `size * price`
-            # lands exactly on 2dp (otherwise makerAmount will have >2dp and API rejects).
-
-            price_dec = Decimal(str(self.BUY_PRICE)).quantize(
-                Decimal("0.01"), rounding=ROUND_DOWN
-            )
-            budget_dec = Decimal(str(self.trade_size)).quantize(
-                Decimal("0.01"), rounding=ROUND_DOWN
-            )
-
-            # If price < $1, bump limit to $1 to satisfy exchange min notional
-            # (only affects maker amount; taker size stays bounded by budget logic)
-            if price_dec < Decimal("1.00"):
-                price_dec = Decimal("1.00")
-
-            if price_dec <= 0:
-                raise ValueError(f"Invalid BUY_PRICE: {price_dec}")
-
-            # Work in integer cents and 4dp token-units to guarantee the constraint.
-            price_cents = int((price_dec * 100).to_integral_value(rounding=ROUND_DOWN))
-
-            # Max token units within budget (4dp)
-            max_token_units_4dp = int(
-                (budget_dec / price_dec * Decimal("10000")).to_integral_value(
-                    rounding=ROUND_DOWN
-                )
-            )
-
-            # token_units must satisfy: (token_units * price_cents) % 10_000 == 0
-            # step is the smallest increment that keeps maker cents integral
-            step_units = 10000 // math.gcd(price_cents, 10000)
-
-            # Need maker spend >= $1.00 to satisfy CLOB min size
-            min_units_for_one_dollar = int(
-                (Decimal("1.00") / price_dec * Decimal("10000")).to_integral_value(
-                    rounding=ROUND_UP
-                )
-            )
-
-            # Pick the smallest valid size that reaches $1, but not above budget
-            token_units_4dp = (
-                math.ceil(min_units_for_one_dollar / step_units) * step_units
-            )
-            if token_units_4dp > max_token_units_4dp:
-                print(
-                    f"❌ [{self.market_name}] Skipping order: cannot meet $1.00 min size within budget=${budget_dec} at price=${price_dec}"
-                )
-                return
-
-            size_tokens_dec = (Decimal(token_units_4dp) / Decimal("10000")).quantize(
-                Decimal("0.0001"), rounding=ROUND_DOWN
-            )
-            maker_spend_dec = (size_tokens_dec * price_dec).quantize(
-                Decimal("0.01"), rounding=ROUND_DOWN
-            )
-
-            maker_amount_units = int(
-                (maker_spend_dec * Decimal("1000000")).to_integral_value(
-                    rounding=ROUND_DOWN
-                )
-            )
-            taker_amount_units = int(
-                (size_tokens_dec * Decimal("1000000")).to_integral_value(
-                    rounding=ROUND_DOWN
-                )
-            )
-
-            print(
-                f"Order: price=${float(price_dec):.2f}, budget=${float(budget_dec):.2f} -> size={float(size_tokens_dec):.4f} tokens, maker=${float(maker_spend_dec):.2f}"
-            )
-            if self.logger:
-                self.logger.info(
-                    f"ORDER_BUILD [{self.market_name}] price={price_dec} budget={budget_dec} size_tokens={size_tokens_dec} maker={maker_spend_dec} makerAmount={maker_amount_units} takerAmount={taker_amount_units}"
-                )
-
-            print("[DEBUG] OrderArgs parameters:")
-            print(f"  token_id: {winning_token_id}")
-            print(f"  price: {float(price_dec)} (type: float)")
-            print(f"  size: {float(size_tokens_dec)} tokens (type: float)")
-            print("  side: BUY")
-            print("[DEBUG] Expected signed amounts (units):")
-            print(f"  makerAmount: {maker_amount_units} (should be multiple of 10000)")
-            print(f"  takerAmount: {taker_amount_units} (should be multiple of 100)")
-
+            # Let py-clob-client handle all precision via ROUNDING_CONFIG
             order_args = OrderArgs(
                 token_id=winning_token_id,
-                price=float(price_dec),
-                size=float(size_tokens_dec),
+                price=price,
+                size=size,
                 side="BUY",
             )
 
+            # Create order - library auto-resolves tick_size and neg_risk if not provided
+            # But we specify tick_size="0.01" explicitly for Bitcoin/Ethereum 5m/15m markets
             created_order = await asyncio.to_thread(
                 self.client.create_order,
                 order_args,
-                CreateOrderOptions(tick_size="0.01", neg_risk=False),  # type: ignore
+                CreateOrderOptions(tick_size="0.01", neg_risk=False),
             )
-            print(f"✓ Order created: {created_order}")
-            if self.logger:
-                self.logger.info(f"ORDER_CREATED [{self.market_name}] {created_order}")
+            self._log(f"✓ [{self.market_name}] Order created")
 
-            # Log the actual Order object
-            if hasattr(created_order, "order"):
-                order_obj = created_order.order
-                print("[DEBUG] SignedOrder.order details:")
-                print(f"  Type: {type(order_obj).__name__}")
-                attrs = [attr for attr in dir(order_obj) if not attr.startswith("_")]
-                print(f"  All attributes: {attrs}")
-                # Print values for any non-callable attributes
-                for attr in attrs:
-                    try:
-                        val = getattr(order_obj, attr)
-                        if not callable(val):
-                            print(f"  {attr} = {val}")
-                    except Exception as e:
-                        print(f"  {attr} = <error: {e}>")
-
+            # Post as Fill-or-Kill
             response = await asyncio.to_thread(
                 self.client.post_order,
                 created_order,
-                OrderType.FOK,  # type: ignore
+                OrderType.FOK,
             )
 
-            print("✓ Order posted as FOK successfully!")
-            print(f"Response: {json.dumps(response, indent=2)}")
-            print(f"{'=' * 80}\n")
-            if self.logger:
-                self.logger.info(
-                    f"ORDER_POSTED [{self.market_name}] response={response}"
-                )
+            self._log(f"✓ [{self.market_name}] FOK order posted: {response}")
 
         except Exception as e:
             error_str = str(e)
+            self._log(f"❌ [{self.market_name}] Order failed: {error_str}")
 
-            # Detect Cloudflare 403 block
-            if "403" in error_str and (
-                "Cloudflare" in error_str or "cloudflare" in error_str.lower()
-            ):
-                print(
-                    f"❌ [{self.market_name}] CLOUDFLARE 403 ERROR - Request Blocked!"
-                )
-                print(f"\n{'=' * 80}")
-                print("DIAGNOSTICS:")
-                print(
-                    f"  Host: {os.getenv('CLOB_HOST', 'https://clob.polymarket.com')}"
-                )
-                print(
-                    f"  API Key exists: {bool(self.client and hasattr(self.client, 'headers'))}"
-                )
-                print("\nPOSSIBLE CAUSES:")
-                print("  1. Rate limiting - too many requests from your IP")
-                print("  2. Missing or invalid API credentials")
-                print("  3. py-clob-client missing proper User-Agent headers")
-                print("  4. Cloudflare bot protection triggered")
-                print("\nTROUBLESHOOTING STEPS:")
-                print("  1. Wait 5-10 minutes before retrying (rate limit cooldown)")
-                print("  2. Verify .env has correct PRIVATE_KEY")
-                print("  3. Try from different network/IP (VPN/mobile hotspot)")
-                print(
-                    "  4. Check if py-clob-client needs update: uv pip install -U py-clob-client"
-                )
-                print("  5. Contact Polymarket support if issue persists")
-                print(f"{'=' * 80}\n")
-            else:
-                print(f"❌ [{self.market_name}] Error executing order: {e}")
-                if hasattr(e, "__dict__"):
-                    print(f"[DEBUG] Exception details: {e.__dict__}")
-                print(f"{'=' * 80}\n")
+            if "403" in error_str:
+                self._log("  → Possible rate limit. Wait 5-10 min or switch IP.")
 
     async def listen_to_market(self):
-        """
-        Main loop: Listen to both WebSocket connections and process market updates.
-        Runs until market closes or connection is lost.
-        """
-
-        async def listen_to_ws(ws, is_yes_token: bool):
-            """Listen to a single WebSocket connection."""
-            token_name = "YES" if is_yes_token else "NO"
-            try:
-                token_id = self.token_id_yes if is_yes_token else self.token_id_no
-                print(
-                    f"[DEBUG] Starting to listen for {token_name} WebSocket messages (token_id: {token_id[:16]}...)"
-                )
-                message_count = 0
-                async for message in ws:
-                    message_count += 1
-
-                    # Parse JSON message
-                    try:
-                        data = json.loads(message)
-                    except json.JSONDecodeError:
-                        continue
-
-                    # Skip empty confirmation messages
-                    if not data or (isinstance(data, list) and len(data) == 0):
-                        if message_count <= 2:
-                            print(f"[{token_name}] Subscription confirmed")
-                        continue
-
-                    # DEBUG: Show first 5 messages with full details
-                    # if message_count <= 5:
-                    #     print(f"\n[DEBUG {token_name} MSG #{message_count}] FULL:")
-                    #     print(json.dumps(data, indent=2))
-
-                    # Process market update(s)
-                    if isinstance(data, list):
-                        for update in data:
-                            await self.process_market_update(update, is_yes_token)
-                    else:
-                        await self.process_market_update(data, is_yes_token)
-
-                    # Check if market closed
-                    time_remaining = self.get_time_remaining()
-                    if time_remaining <= 0:
-                        print(f"\n{'=' * 80}")
-                        print(
-                            f"⏰ [{self.market_name}] Market closed. Time remaining: {time_remaining:.2f}s"
-                        )
-                        if not self.order_executed:
-                            print("No order was executed.")
-                        print(f"{'=' * 80}\n")
-                        break
-
-            except websockets.exceptions.ConnectionClosed:
-                print(
-                    f"\n⚠️  [{self.market_name}] {token_name} WebSocket connection closed"
-                )
-            except Exception as e:
-                print(
-                    f"\n❌ [{self.market_name}] Error in {token_name} market listener: {e}"
-                )
-
-        # Listen to both WebSockets concurrently
+        """Listen to WebSocket and process market updates until market closes."""
         try:
-            await asyncio.gather(
-                listen_to_ws(self.ws_yes, True), listen_to_ws(self.ws_no, False)
-            )
+            async for message in self.ws:
+                try:
+                    data = json.loads(message)
+                except json.JSONDecodeError:
+                    continue
+
+                if not data or (isinstance(data, list) and len(data) == 0):
+                    continue
+
+                # Process market update(s)
+                if isinstance(data, list):
+                    for update in data:
+                        await self.process_market_update(update)
+                else:
+                    await self.process_market_update(data)
+
+                # Check if market closed
+                if self.get_time_remaining() <= 0:
+                    self._log(f"⏰ [{self.market_name}] Market closed")
+                    break
+
+        except websockets.exceptions.ConnectionClosed:
+            self._log(f"⚠️  [{self.market_name}] WebSocket connection closed")
         except Exception as e:
-            print(f"\n❌ Error in market listener: {e}")
+            self._log(f"❌ [{self.market_name}] Error in market listener: {e}")
 
     async def run(self):
         """Main entry point: Connect and start trading."""
         try:
-            # Connect to WebSocket
             connected = await self.connect_websocket()
             if not connected:
-                print("Failed to connect to WebSocket. Exiting.")
+                self._log("Failed to connect to WebSocket. Exiting.")
                 return
 
-            # Start listening to market data
             await self.listen_to_market()
 
         except KeyboardInterrupt:
-            print("\n\n⚠️  Interrupted by user. Shutting down...")
+            self._log("⚠️  Interrupted by user. Shutting down...")
         finally:
-            if self.ws_yes:
-                await self.ws_yes.close()
-            if self.ws_no:
-                await self.ws_no.close()
-            print("\n✓ Trader shut down cleanly\n")
-
-
-async def main():
-    """
-    Main entry point with example usage.
-
-    In production, pass these values from command line or from gamma_15m_finder.py
-    """
-    import sys
-
-    # Example values - REPLACE WITH ACTUAL VALUES
-    EXAMPLE_CONDITION_ID = "0x1234567890abcdef"
-    # EXAMPLE_END_TIME = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=300)  # 5 min from now
-
-    # Parse command line args (simple version)
-    if len(sys.argv) < 2:
-        print(
-            "Usage: python hft_trader.py --condition-id <ID> --token-id-yes <ID> --token-id-no <ID> --end-time <ISO_TIME> [--live] [--size <SIZE>]"
-        )
-        print("\nExample (dry run):")
-        print(
-            f"  python hft_trader.py --condition-id {EXAMPLE_CONDITION_ID} --token-id-yes 123 --token-id-no 456 --end-time 2026-01-24T12:30:00Z"
-        )
-        print("\nExample (live trading - DANGER!):")
-        print(
-            f"  python hft_trader.py --condition-id {EXAMPLE_CONDITION_ID} --token-id-yes 123 --token-id-no 456 --end-time 2026-01-24T12:30:00Z --live --size 10"
-        )
-        print("\n⚠️  WARNING: Default is DRY_RUN=True and SIZE=1 for safety!")
-        return
-
-    # Simple arg parsing
-    args = sys.argv[1:]
-    condition_id = None
-    token_id_yes = None
-    token_id_no = None
-    end_time_str = None
-    dry_run = True  # Default to safe mode
-    trade_size = 1.0  # Default size
-
-    i = 0
-    while i < len(args):
-        if args[i] == "--condition-id" and i + 1 < len(args):
-            condition_id = args[i + 1]
-            i += 2
-        elif args[i] == "--token-id-yes" and i + 1 < len(args):
-            token_id_yes = args[i + 1]
-            i += 2
-        elif args[i] == "--token-id-no" and i + 1 < len(args):
-            token_id_no = args[i + 1]
-            i += 2
-        elif args[i] == "--end-time" and i + 1 < len(args):
-            end_time_str = args[i + 1]
-            i += 2
-        elif args[i] == "--live":
-            dry_run = False
-            i += 1
-        elif args[i] == "--size" and i + 1 < len(args):
-            trade_size = float(args[i + 1])
-            i += 2
-        else:
-            i += 1
-
-    if not all([condition_id, token_id_yes, token_id_no, end_time_str]):
-        print(
-            "❌ Error: Missing required arguments (--condition-id, --token-id-yes, --token-id-no, --end-time)"
-        )
-        return
-
-    # Type assertion: all values are non-None after check above
-    assert condition_id and token_id_yes and token_id_no and end_time_str
-
-    # Parse end time
-    end_time = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
-
-    # Create and run trader
-    trader = LastSecondTrader(
-        condition_id=condition_id,
-        token_id_yes=token_id_yes,
-        token_id_no=token_id_no,
-        end_time=end_time,
-        dry_run=dry_run,
-        trade_size=trade_size,
-    )
-
-    await trader.run()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            if self.ws:
+                await self.ws.close()
+            self._log("✓ Trader shut down cleanly")
