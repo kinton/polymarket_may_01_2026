@@ -133,7 +133,9 @@ class LastSecondTrader:
 
         # Log init
         mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
-        self._log(f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE}")
+        self._log(
+            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE}"
+        )
 
     def _extract_market_name(self, title: Optional[str]) -> str:
         """Extract short market name from title for logging."""
@@ -422,28 +424,67 @@ class LastSecondTrader:
 
         if self.winning_side is None:
             if not hasattr(self, "_logged_no_winner"):
-                self._log(f"⚠️  [{self.market_name}] No winning side at {time_remaining:.3f}s")
+                self._log(
+                    f"⚠️  [{self.market_name}] No winning side at {time_remaining:.3f}s"
+                )
                 self._logged_no_winner = True
             return
 
         winning_ask = self._get_winning_ask()
         if winning_ask is None:
             if not hasattr(self, "_logged_no_ask"):
-                self._log(f"⚠️  [{self.market_name}] No ask price at {time_remaining:.3f}s")
+                self._log(
+                    f"⚠️  [{self.market_name}] No ask price at {time_remaining:.3f}s"
+                )
                 self._logged_no_ask = True
             return
 
         if winning_ask > self.BUY_PRICE + self.PRICE_TIE_EPS:
             if not hasattr(self, "_logged_price_high"):
-                self._log(f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.BUY_PRICE}")
+                self._log(
+                    f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.BUY_PRICE}"
+                )
                 self._logged_price_high = True
             return
 
         # All conditions met - execute trade!
-        self._log(f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {self.winning_side} @ ${winning_ask:.4f}")
+        self._log(
+            f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {self.winning_side} @ ${winning_ask:.4f}"
+        )
 
-        self.order_executed = True
         await self.execute_order()
+
+    async def verify_order(self, order_id: str) -> None:
+        """
+        Verify order status after submission by querying the API.
+        """
+        if not self.client:
+            return
+
+        self._log(f"🔎 [{self.market_name}] Verifying order {order_id}...")
+        try:
+            # Wait briefly for propagation
+            await asyncio.sleep(0.5)
+
+            # Client.get_order returns a dictionary
+            order_data = await asyncio.to_thread(self.client.get_order, order_id)
+
+            # Exact key per py-clob-client documentation
+            status = order_data.get("status", "unknown").lower()
+
+            if status == "matched":
+                self._log(
+                    f"✅ [{self.market_name}] Order {order_id} CONFIRMED FILLED (Status: {status})"
+                )
+            elif status in ["canceled", "killed"]:
+                self._log(
+                    f"⚠️  [{self.market_name}] Order {order_id} WAS KILLED/CANCELED (Status: {status})"
+                )
+            else:
+                self._log(f"ℹ️  [{self.market_name}] Order {order_id} status: {status}")
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Verification failed: {e}")
 
     async def execute_order(self) -> None:
         """
@@ -470,8 +511,11 @@ class LastSecondTrader:
 
         if self.dry_run:
             self._log(f"🔷 [{self.market_name}] DRY RUN - WOULD BUY:")
-            self._log(f"  Side: {self.winning_side}, Price: ${price}, Size: {size} tokens")
+            self._log(
+                f"  Side: {self.winning_side}, Price: ${price}, Size: {size} tokens"
+            )
             self._log(f"  Best Ask: ${winning_ask:.4f}, Type: FOK")
+            self.order_executed = True
             return
 
         if not self.client:
@@ -479,7 +523,9 @@ class LastSecondTrader:
             return
 
         try:
-            self._log(f"🔴 [{self.market_name}] EXECUTING ORDER: {self.winning_side} @ ${price} x {size}")
+            self._log(
+                f"🔴 [{self.market_name}] EXECUTING ORDER: {self.winning_side} @ ${price} x {size}"
+            )
 
             # Let py-clob-client handle all precision via ROUNDING_CONFIG
             order_args = OrderArgs(
@@ -499,13 +545,27 @@ class LastSecondTrader:
             self._log(f"✓ [{self.market_name}] Order created")
 
             # Post as Fill-or-Kill
-            response = await asyncio.to_thread(
+            response: dict[str, Any] = await asyncio.to_thread(
                 self.client.post_order,
                 created_order,
                 OrderType.FOK,
             )
 
             self._log(f"✓ [{self.market_name}] FOK order posted: {response}")
+
+            # Extract and verify (Exact key from py-clob-client is "orderID")
+            try:
+                order_id = response["orderID"]
+                await self.verify_order(str(order_id))
+            except KeyError:
+                self._log(
+                    f"⚠️  [{self.market_name}] 'orderID' missing in response: {response}"
+                )
+            except Exception as e:
+                self._log(f"⚠️  [{self.market_name}] Verification setup failed: {e}")
+
+            # Set flag only after successful post + verification attempt
+            self.order_executed = True
 
         except Exception as e:
             error_str = str(e)

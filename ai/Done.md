@@ -242,3 +242,15 @@ tokens_to_buy = self.trade_size / self.BUY_PRICE
 **Commit:** `fix: trade_size now represents dollars, not tokens - converts to tokens when creating order`
 
 **Тестирование:** 33/33 core тестов passed, ruff checks passed
+
+## 14. Fix Race Condition в execute_order ✅
+**Дата:** 30 января 2026
+**Проблема:** Флаг `self._order_submitted` устанавливался в `True` перед вызовом `execute_order`. Если исполнение ордера завершалось ошибкой, повторной попытки не было.
+**Решение:** Флаг `self.order_executed = True` перемещен в конец метода `execute_order`, после успешного API вызова.
+**Результат:** ✅ Повышена надежность исполнения.
+
+## 15. Verify Order Filled (FOK Verification) ✅
+**Дата:** 30 января 2026
+**Проблема:** Бот отправлял ордер, но не проверял, был ли он реально исполнен.
+**Решение:** Добавлен метод `verify_order(order_id)`, который запрашивает статус ордера и логирует результат (FILLED/CANCELED).
+**Результат:** ✅ Теперь мы точно знаем статус ордера после отправки.
