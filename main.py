@@ -25,6 +25,7 @@ Usage:
 
 import asyncio
 import logging
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -42,8 +43,8 @@ class TradingBotRunner:
     """
 
     # Configuration
-    POLL_INTERVAL = 90  # Check for new markets every 90 seconds (1.5 minutes)
-    TRADER_START_BUFFER = 180  # Start trader 3 minutes before market ends
+    POLL_INTERVAL = 120  # Check for new markets every 120 seconds to reduce API load
+    TRADER_START_BUFFER = 120  # Start trader 2 minutes before market ends
     MIN_TIME_TO_START = 0  # Don't start trader if less than 30 seconds until close
 
     def __init__(
@@ -109,10 +110,13 @@ class TradingBotRunner:
         )
         self.finder_logger.addHandler(finder_console)
 
-        # Trader logger (trading execution)
+        # Trader logger (trading execution) — create per-run file trades-<timestamp>.log
+        run_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.trader_log_file = log_dir / f"trades-{run_ts}.log"
+
         self.trader_logger = logging.getLogger("trader")
         self.trader_logger.setLevel(logging.INFO)
-        trader_handler = logging.FileHandler(log_dir / "trades.log")
+        trader_handler = logging.FileHandler(self.trader_log_file)
         trader_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         )
@@ -166,6 +170,13 @@ class TradingBotRunner:
         if seconds_until_end > self.TRADER_START_BUFFER:
             self.finder_logger.info(
                 f"Market {condition_id} ends in {minutes_until_end:.1f}m - waiting to start trader"
+            )
+            return False
+
+        # Limit concurrent traders to reduce API load
+        if len(self.active_traders) >= 1:
+            self.finder_logger.info(
+                f"Skipping market {condition_id} because a trader is already running (limit=1)"
             )
             return False
 
@@ -231,6 +242,7 @@ class TradingBotRunner:
                 trade_size=self.trade_size,
                 title=market.get("title"),
                 slug=market.get("slug"),
+                trader_logger=self.trader_logger,
             )
 
             # Run trader (this will block until market closes or trader finishes)
@@ -293,8 +305,13 @@ class TradingBotRunner:
                     self.finder_logger.info("Run-once mode: exiting after single poll")
                     break
 
-                # Wait before next poll
-                await asyncio.sleep(self.poll_interval)
+                # Wait before next poll with jitter to avoid synchronized bursts
+                jitter = random.uniform(0.85, 1.15)
+                sleep_for = max(1, int(self.poll_interval * jitter))
+                self.finder_logger.info(
+                    f"Sleeping {sleep_for}s before next poll (jitter {jitter:.2f}x)"
+                )
+                await asyncio.sleep(sleep_for)
 
             except KeyboardInterrupt:
                 self.finder_logger.info("Received shutdown signal...")

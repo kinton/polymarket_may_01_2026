@@ -32,9 +32,10 @@ Requirements:
 
 import asyncio
 import json
+import math
 import os
 from datetime import datetime, timezone
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Dict, Optional
 
 import websockets
@@ -92,6 +93,7 @@ class LastSecondTrader:
         trade_size: float = 1.0,
         title: Optional[str] = None,
         slug: Optional[str] = None,
+        trader_logger: Optional[Any] = None,
     ):
         """
         Initialize the trader.
@@ -112,6 +114,7 @@ class LastSecondTrader:
         self.trade_size = trade_size  # dollars to spend
         self.title = title
         self.slug = slug
+        self.logger = trader_logger
 
         # Extract short market name for logging (e.g. "BTC", "ETH", "SOL")
         self.market_name = self._extract_market_name(title)
@@ -183,6 +186,11 @@ class LastSecondTrader:
                 print("Warning: Missing PRIVATE_KEY in .env file")
                 return None
 
+            print("[INIT] Initializing CLOB client...")
+            print(f"[INIT] Host: {host}")
+            print(f"[INIT] Chain ID: {chain_id}")
+            print(f"[INIT] Private Key: {private_key[:10]}...{private_key[-4:]}")
+
             # Initialize client with just private key, host, and chain_id
             client = ClobClient(
                 host=host,
@@ -192,7 +200,31 @@ class LastSecondTrader:
 
             # Create or derive API credentials from private key
             # This is REQUIRED for authentication - without it, you get 403 errors
-            client.set_api_creds(client.create_or_derive_api_creds())
+            print("[INIT] Deriving API credentials from private key...")
+            api_creds = client.create_or_derive_api_creds()
+            client.set_api_creds(api_creds)
+            print(
+                f"[INIT] API Key: {api_creds.api_key[:10]}...{api_creds.api_key[-4:]}"
+            )
+            print(
+                f"[INIT] API Secret: {api_creds.api_secret[:10]}...{api_creds.api_secret[-4:]}"
+            )
+            print(
+                f"[INIT] API Passphrase: {api_creds.api_passphrase[:4]}...{api_creds.api_passphrase[-4:]}"
+            )
+
+            # Test connection
+            print("[INIT] Testing API connection...")
+            try:
+                server_time = client.get_server_time()
+                print(f"[INIT] ✓ Server time: {server_time}")
+            except Exception as test_err:
+                print(f"[INIT] ⚠ Warning: Connection test failed: {test_err}")
+                if "403" in str(test_err):
+                    print("[INIT] ⚠ CLOUDFLARE 403 - Your IP may be rate-limited")
+                    print(
+                        "[INIT] ⚠ TIP: Wait 10-15 minutes or switch network (VPN/mobile)"
+                    )
 
             print("✓ CLOB client initialized for live trading\n")
             return client
@@ -524,8 +556,11 @@ class LastSecondTrader:
         print(f"Trade Size: ${self.trade_size}")
         print(f"{'=' * 80}\n")
 
-        await self.execute_order()
+        # Important: We listen to BOTH YES/NO websockets, so this method can be
+        # called twice almost simultaneously. Mark executed BEFORE awaiting to
+        # prevent double-order attempts.
         self.order_executed = True
+        await self.execute_order()
 
     async def execute_order(self) -> None:
         """
@@ -566,42 +601,102 @@ class LastSecondTrader:
             print(f"🔴 [{self.market_name}] EXECUTING LIVE ORDER...")
             print(f"{'=' * 80}")
 
-            # FOK market BUY orders requirements:
-            # API params:
-            # - price: price per token (e.g., $0.99)
-            # - size: amount to spend in DOLLARS (e.g., $1.01)
-            # API will internally calculate: tokens_to_buy = size / price
-            # 
-            # Important: Both price and size must have at most 2 decimals
+            # Market BUY precision constraints (from API error):
+            # - makerAmount must have max 2 decimals
+            # - takerAmount must have max 4 decimals
+            #
+            # Empirically with py-clob-client for BUY:
+            # - takerAmount ~= size (token amount)
+            # - makerAmount ~= size * price
+            #
+            # Therefore we must choose a token `size` (4dp) so that `size * price`
+            # lands exactly on 2dp (otherwise makerAmount will have >2dp and API rejects).
 
-            # Use Decimal for exact arithmetic (no floating point errors)
-            trade_size_dec = Decimal(str(self.trade_size))
-
-            # CLOB API expects: size = dollars to spend (not tokens!)
-            # API will calculate tokens internally: tokens = size / price
-            # We just need to ensure trade_size is properly bounded
-
-            # Ensure trade_size has at most 2 decimals for API
-            size_dollars = trade_size_dec.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-
-            print(
-                f"Order: price=${self.BUY_PRICE:.2f}, spending ${float(size_dollars):.2f}"
+            price_dec = Decimal(str(self.BUY_PRICE)).quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
+            )
+            budget_dec = Decimal(str(self.trade_size)).quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
             )
 
-            # Create order with dollars
-            size = float(size_dollars)
+            # If price < $1, bump limit to $1 to satisfy exchange min notional
+            # (only affects maker amount; taker size stays bounded by budget logic)
+            if price_dec < Decimal("1.00"):
+                price_dec = Decimal("1.00")
 
-            # DETAILED LOGGING
+            if price_dec <= 0:
+                raise ValueError(f"Invalid BUY_PRICE: {price_dec}")
+
+            # Work in integer cents and 4dp token-units to guarantee the constraint.
+            price_cents = int((price_dec * 100).to_integral_value(rounding=ROUND_DOWN))
+
+            # Max token units within budget (4dp)
+            max_token_units_4dp = int(
+                (budget_dec / price_dec * Decimal("10000")).to_integral_value(
+                    rounding=ROUND_DOWN
+                )
+            )
+
+            # token_units must satisfy: (token_units * price_cents) % 10_000 == 0
+            # step is the smallest increment that keeps maker cents integral
+            step_units = 10000 // math.gcd(price_cents, 10000)
+
+            # Need maker spend >= $1.00 to satisfy CLOB min size
+            min_units_for_one_dollar = int(
+                (Decimal("1.00") / price_dec * Decimal("10000")).to_integral_value(
+                    rounding=ROUND_UP
+                )
+            )
+
+            # Pick the smallest valid size that reaches $1, but not above budget
+            token_units_4dp = (
+                math.ceil(min_units_for_one_dollar / step_units) * step_units
+            )
+            if token_units_4dp > max_token_units_4dp:
+                print(
+                    f"❌ [{self.market_name}] Skipping order: cannot meet $1.00 min size within budget=${budget_dec} at price=${price_dec}"
+                )
+                return
+
+            size_tokens_dec = (Decimal(token_units_4dp) / Decimal("10000")).quantize(
+                Decimal("0.0001"), rounding=ROUND_DOWN
+            )
+            maker_spend_dec = (size_tokens_dec * price_dec).quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
+            )
+
+            maker_amount_units = int(
+                (maker_spend_dec * Decimal("1000000")).to_integral_value(
+                    rounding=ROUND_DOWN
+                )
+            )
+            taker_amount_units = int(
+                (size_tokens_dec * Decimal("1000000")).to_integral_value(
+                    rounding=ROUND_DOWN
+                )
+            )
+
+            print(
+                f"Order: price=${float(price_dec):.2f}, budget=${float(budget_dec):.2f} -> size={float(size_tokens_dec):.4f} tokens, maker=${float(maker_spend_dec):.2f}"
+            )
+            if self.logger:
+                self.logger.info(
+                    f"ORDER_BUILD [{self.market_name}] price={price_dec} budget={budget_dec} size_tokens={size_tokens_dec} maker={maker_spend_dec} makerAmount={maker_amount_units} takerAmount={taker_amount_units}"
+                )
+
             print("[DEBUG] OrderArgs parameters:")
             print(f"  token_id: {winning_token_id}")
-            print(f"  price: {self.BUY_PRICE} (type: {type(self.BUY_PRICE).__name__})")
-            print(f"  size: {size} (type: {type(size).__name__})")
+            print(f"  price: {float(price_dec)} (type: float)")
+            print(f"  size: {float(size_tokens_dec)} tokens (type: float)")
             print("  side: BUY")
+            print("[DEBUG] Expected signed amounts (units):")
+            print(f"  makerAmount: {maker_amount_units} (should be multiple of 10000)")
+            print(f"  takerAmount: {taker_amount_units} (should be multiple of 100)")
 
             order_args = OrderArgs(
                 token_id=winning_token_id,
-                price=self.BUY_PRICE,
-                size=size,  # CRITICAL: size is in DOLLARS, not tokens!
+                price=float(price_dec),
+                size=float(size_tokens_dec),
                 side="BUY",
             )
 
@@ -611,13 +706,24 @@ class LastSecondTrader:
                 CreateOrderOptions(tick_size="0.01", neg_risk=False),  # type: ignore
             )
             print(f"✓ Order created: {created_order}")
-            
+            if self.logger:
+                self.logger.info(f"ORDER_CREATED [{self.market_name}] {created_order}")
+
             # Log the actual Order object
-            if hasattr(created_order, 'order'):
+            if hasattr(created_order, "order"):
                 order_obj = created_order.order
                 print("[DEBUG] SignedOrder.order details:")
-                print(f"  maker_amount: {order_obj.maker_amount} (decimals: {len(str(order_obj.maker_amount).split('.')[-1]) if '.' in str(order_obj.maker_amount) else 0})")
-                print(f"  taker_amount: {order_obj.taker_amount} (decimals: {len(str(order_obj.taker_amount).split('.')[-1]) if '.' in str(order_obj.taker_amount) else 0})")
+                print(f"  Type: {type(order_obj).__name__}")
+                attrs = [attr for attr in dir(order_obj) if not attr.startswith("_")]
+                print(f"  All attributes: {attrs}")
+                # Print values for any non-callable attributes
+                for attr in attrs:
+                    try:
+                        val = getattr(order_obj, attr)
+                        if not callable(val):
+                            print(f"  {attr} = {val}")
+                    except Exception as e:
+                        print(f"  {attr} = <error: {e}>")
 
             response = await asyncio.to_thread(
                 self.client.post_order,
@@ -628,12 +734,48 @@ class LastSecondTrader:
             print("✓ Order posted as FOK successfully!")
             print(f"Response: {json.dumps(response, indent=2)}")
             print(f"{'=' * 80}\n")
+            if self.logger:
+                self.logger.info(
+                    f"ORDER_POSTED [{self.market_name}] response={response}"
+                )
 
         except Exception as e:
-            print(f"❌ [{self.market_name}] Error executing order: {e}")
-            if hasattr(e, '__dict__'):
-                print(f"[DEBUG] Exception details: {e.__dict__}")
-            print(f"{'=' * 80}\n")
+            error_str = str(e)
+
+            # Detect Cloudflare 403 block
+            if "403" in error_str and (
+                "Cloudflare" in error_str or "cloudflare" in error_str.lower()
+            ):
+                print(
+                    f"❌ [{self.market_name}] CLOUDFLARE 403 ERROR - Request Blocked!"
+                )
+                print(f"\n{'=' * 80}")
+                print("DIAGNOSTICS:")
+                print(
+                    f"  Host: {os.getenv('CLOB_HOST', 'https://clob.polymarket.com')}"
+                )
+                print(
+                    f"  API Key exists: {bool(self.client and hasattr(self.client, 'headers'))}"
+                )
+                print("\nPOSSIBLE CAUSES:")
+                print("  1. Rate limiting - too many requests from your IP")
+                print("  2. Missing or invalid API credentials")
+                print("  3. py-clob-client missing proper User-Agent headers")
+                print("  4. Cloudflare bot protection triggered")
+                print("\nTROUBLESHOOTING STEPS:")
+                print("  1. Wait 5-10 minutes before retrying (rate limit cooldown)")
+                print("  2. Verify .env has correct PRIVATE_KEY")
+                print("  3. Try from different network/IP (VPN/mobile hotspot)")
+                print(
+                    "  4. Check if py-clob-client needs update: uv pip install -U py-clob-client"
+                )
+                print("  5. Contact Polymarket support if issue persists")
+                print(f"{'=' * 80}\n")
+            else:
+                print(f"❌ [{self.market_name}] Error executing order: {e}")
+                if hasattr(e, "__dict__"):
+                    print(f"[DEBUG] Exception details: {e.__dict__}")
+                print(f"{'=' * 80}\n")
 
     async def listen_to_market(self):
         """
@@ -645,7 +787,6 @@ class LastSecondTrader:
             """Listen to a single WebSocket connection."""
             token_name = "YES" if is_yes_token else "NO"
             try:
-                token_name = "YES" if is_yes_token else "NO"
                 token_id = self.token_id_yes if is_yes_token else self.token_id_no
                 print(
                     f"[DEBUG] Starting to listen for {token_name} WebSocket messages (token_id: {token_id[:16]}...)"
@@ -658,7 +799,6 @@ class LastSecondTrader:
                     try:
                         data = json.loads(message)
                     except json.JSONDecodeError:
-                        # Skip non-JSON messages
                         continue
 
                     # Skip empty confirmation messages
@@ -668,12 +808,11 @@ class LastSecondTrader:
                         continue
 
                     # DEBUG: Show first 5 messages with full details
-                    if message_count <= 5:
-                        print(f"\n[DEBUG {token_name} MSG #{message_count}] FULL:")
-                        print(json.dumps(data, indent=2))
+                    # if message_count <= 5:
+                    #     print(f"\n[DEBUG {token_name} MSG #{message_count}] FULL:")
+                    #     print(json.dumps(data, indent=2))
 
                     # Process market update(s)
-                    # WebSocket can return an array of updates
                     if isinstance(data, list):
                         for update in data:
                             await self.process_market_update(update, is_yes_token)

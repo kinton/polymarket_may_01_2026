@@ -26,5 +26,6 @@
     "**/*.pyc": true,
     "**/.pytest_cache": true,
     "**/.env": true
-  }
+  },
+  "python.analysis.typeCheckingMode": "off"
 }
