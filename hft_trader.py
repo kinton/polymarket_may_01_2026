@@ -57,7 +57,7 @@ try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import (
         CreateOrderOptions,
-        OrderArgs,
+        MarketOrderArgs,
         OrderType,
     )
 except ImportError:
@@ -486,13 +486,42 @@ class LastSecondTrader:
         except Exception as e:
             self._log(f"⚠️  [{self.market_name}] Verification failed: {e}")
 
+    def _calculate_valid_size(self, price: float, target_dollars: float) -> float:
+        """
+        Calculate a valid order size that satisfies Polymarket's precision requirements.
+
+        NOTE: This function is kept for reference but we now use market orders instead,
+        which take amount (dollars) instead of size (tokens), avoiding the precision issue.
+        """
+        from math import gcd
+
+        price_cents = int(round(price * 100))
+        raw_size = target_dollars / price
+        size_cents = int(raw_size * 100)
+
+        divisor = 10000 // gcd(price_cents, 10000)
+
+        if size_cents % divisor != 0:
+            size_cents = ((size_cents // divisor) + 1) * divisor
+
+        min_size_cents = int(100 / price) + 1
+        if min_size_cents % divisor != 0:
+            min_size_cents = ((min_size_cents // divisor) + 1) * divisor
+
+        size_cents = max(size_cents, min_size_cents)
+        return size_cents / 100.0
+
     async def execute_order(self) -> None:
         """
-        Execute Fill-or-Kill (FOK) order on the winning side.
-        In dry run mode, only prints the intended action.
+        Execute Fill-or-Kill (FOK) market order on the winning side.
 
-        Precision is handled automatically by py-clob-client's ROUNDING_CONFIG.
-        For tick_size="0.01": price=2dp, size=2dp, amount=4dp (before 10^6 scaling).
+        Uses MarketOrderArgs which takes 'amount' (dollars to spend) instead of 'size' (tokens).
+        This avoids the precision issue where price × size must have ≤2 decimal places.
+
+        For market orders:
+        - amount = dollars to spend (must have ≤2 decimal places)
+        - price = worst acceptable price (limit)
+        - The API calculates the appropriate token quantity
         """
         winning_ask = self._get_winning_ask()
         winning_token_id = self._get_winning_token_id()
@@ -501,20 +530,17 @@ class LastSecondTrader:
             self._log(f"❌ [{self.market_name}] Error: No winning token ID available")
             return
 
-        # Calculate order parameters (simple - library handles precision)
-        price = round(self.BUY_PRICE, 2)  # 2 decimal places for tick_size=0.01
-        size = round(self.trade_size / price, 2)  # 2 decimal places per ROUNDING_CONFIG
-
-        # Minimum order size check (~$1.00 minimum notional)
-        if size * price < 1.0:
-            size = round(1.0 / price + 0.01, 2)  # Round up to meet $1 minimum
+        # For market orders: specify amount (dollars) with 2 decimal places
+        # Ensure minimum $1.00
+        amount = max(round(self.trade_size, 2), 1.00)
+        price = round(self.BUY_PRICE, 2)  # Worst price we'll accept
 
         if self.dry_run:
             self._log(f"🔷 [{self.market_name}] DRY RUN - WOULD BUY:")
             self._log(
-                f"  Side: {self.winning_side}, Price: ${price}, Size: {size} tokens"
+                f"  Side: {self.winning_side}, Amount: ${amount}, Max Price: ${price}"
             )
-            self._log(f"  Best Ask: ${winning_ask:.4f}, Type: FOK")
+            self._log(f"  Best Ask: ${winning_ask:.4f}, Type: FOK MARKET")
             self.order_executed = True
             return
 
@@ -524,25 +550,24 @@ class LastSecondTrader:
 
         try:
             self._log(
-                f"🔴 [{self.market_name}] EXECUTING ORDER: {self.winning_side} @ ${price} x {size}"
+                f"🔴 [{self.market_name}] MARKET ORDER: {self.winning_side} ${amount} @ max ${price}"
             )
 
-            # Let py-clob-client handle all precision via ROUNDING_CONFIG
-            order_args = OrderArgs(
+            # Use MarketOrderArgs - specifies amount (dollars) not size (tokens)
+            order_args = MarketOrderArgs(
                 token_id=winning_token_id,
-                price=price,
-                size=size,
+                amount=amount,  # Dollars to spend
+                price=price,  # Maximum price we'll accept
                 side="BUY",
             )
 
-            # Create order - library auto-resolves tick_size and neg_risk if not provided
-            # But we specify tick_size="0.01" explicitly for Bitcoin/Ethereum 5m/15m markets
+            # Create market order
             created_order = await asyncio.to_thread(
-                self.client.create_order,
+                self.client.create_market_order,
                 order_args,
                 CreateOrderOptions(tick_size="0.01", neg_risk=False),
             )
-            self._log(f"✓ [{self.market_name}] Order created")
+            self._log(f"✓ [{self.market_name}] Market order created")
 
             # Post as Fill-or-Kill
             response: dict[str, Any] = await asyncio.to_thread(
@@ -553,7 +578,7 @@ class LastSecondTrader:
 
             self._log(f"✓ [{self.market_name}] FOK order posted: {response}")
 
-            # Extract and verify (Exact key from py-clob-client is "orderID")
+            # Extract and verify
             try:
                 order_id = response["orderID"]
                 await self.verify_order(str(order_id))
@@ -564,7 +589,7 @@ class LastSecondTrader:
             except Exception as e:
                 self._log(f"⚠️  [{self.market_name}] Verification setup failed: {e}")
 
-            # Set flag only after successful post + verification attempt
+            # Set flag only after successful post
             self.order_executed = True
 
         except Exception as e:
