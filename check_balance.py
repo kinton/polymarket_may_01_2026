@@ -14,25 +14,30 @@ from py_clob_client.constants import POLYGON
 def main():
     load_dotenv()
     private_key = os.getenv("PRIVATE_KEY")
+    proxy_address = os.getenv("POLYMARKET_PROXY_ADDRESS")
 
     if not private_key:
         print("❌ PRIVATE_KEY not found in .env")
         return
 
     try:
+        # Show wallet addresses
+        from eth_account import Account
+
+        account = Account.from_key(private_key)
+        print(f"🔑 EOA Wallet: {account.address}")
+        print(f"🔷 Proxy Wallet: {proxy_address or 'Not set'}")
+        print()
+
+        # Use signature_type=2 for Polymarket proxy wallets
         client = ClobClient(
             host="https://clob.polymarket.com",
             key=private_key,
             chain_id=POLYGON,
+            signature_type=2,  # POLY_PROXY
+            funder=proxy_address,
         )
         client.set_api_creds(client.create_or_derive_api_creds())
-
-        # Show wallet address
-        from eth_account import Account
-        account = Account.from_key(private_key)
-        print(f"🔑 Wallet Address: {account.address}")
-        print("   (Send USDC on Polygon to this address)")
-        print()
 
         # Get balance and allowance
         params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)

@@ -172,18 +172,30 @@ class LastSecondTrader:
             private_key = os.getenv("PRIVATE_KEY")
             chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
             host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
+            # Polymarket proxy wallet address (where USDC balance is)
+            funder = os.getenv("POLYMARKET_PROXY_ADDRESS")
 
             if not private_key:
                 self._log("⚠️ Missing PRIVATE_KEY in .env")
                 return None
 
-            client = ClobClient(host=host, key=private_key, chain_id=chain_id)
+            # signature_type=2 for Polymarket proxy wallets
+            # funder = the proxy wallet address that holds the USDC
+            client = ClobClient(
+                host=host,
+                key=private_key,
+                chain_id=chain_id,
+                signature_type=2,  # POLY_PROXY
+                funder=funder,
+            )
 
             # Derive API credentials from private key (required for auth)
             api_creds = client.create_or_derive_api_creds()
             client.set_api_creds(api_creds)
 
             self._log(f"✓ CLOB client initialized ({host})")
+            if funder:
+                self._log(f"  Proxy wallet: {funder}")
             return client
 
         except Exception as e:
@@ -637,7 +649,9 @@ class LastSecondTrader:
 
             # Stop retrying for permanent errors
             if "not enough balance" in error_str or "allowance" in error_str:
-                self._log("  → FATAL: Insufficient balance/allowance. Check wallet funding.")
+                self._log(
+                    "  → FATAL: Insufficient balance/allowance. Check wallet funding."
+                )
                 self.order_executed = True  # Stop retrying
             elif "403" in error_str:
                 self._log("  → Possible rate limit. Wait 5-10 min or switch IP.")
