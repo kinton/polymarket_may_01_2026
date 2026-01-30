@@ -376,10 +376,11 @@ class LastSecondTrader:
                 yes_bid = self.orderbook.best_bid_yes
                 no_ask = self.orderbook.best_ask_no
                 no_bid = self.orderbook.best_bid_no
-                
+
                 # Format prices: show "-" if None
-                def fmt(p): return f"${p:.2f}" if p is not None else "-"
-                
+                def fmt(p):
+                    return f"${p:.2f}" if p is not None else "-"
+
                 self._log(
                     f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
                     f"[{self.market_name}] "
@@ -418,7 +419,7 @@ class LastSecondTrader:
     def _get_winning_ask(self) -> Optional[float]:
         """
         Get best ask price for winning side.
-        
+
         If direct ask is not available, compute implied price from opposite side:
         - If NO ask = 0.99, implied YES ask ≈ 0.01 (but we can't buy at that)
         - We need actual ask to buy, so return None if no direct ask
@@ -435,7 +436,7 @@ class LastSecondTrader:
                 return self.orderbook.best_ask_no
             return None
         return None
-    
+
     def _get_winning_bid(self) -> Optional[float]:
         """Get best bid price for winning side (what buyers are willing to pay)."""
         if self.winning_side == "YES":
@@ -634,8 +635,13 @@ class LastSecondTrader:
             error_str = str(e)
             self._log(f"❌ [{self.market_name}] Order failed: {error_str}")
 
-            if "403" in error_str:
+            # Stop retrying for permanent errors
+            if "not enough balance" in error_str or "allowance" in error_str:
+                self._log("  → FATAL: Insufficient balance/allowance. Check wallet funding.")
+                self.order_executed = True  # Stop retrying
+            elif "403" in error_str:
                 self._log("  → Possible rate limit. Wait 5-10 min or switch IP.")
+                self.order_executed = True  # Stop retrying
 
     async def listen_to_market(self):
         """Listen to WebSocket and process market updates until market closes."""
