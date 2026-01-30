@@ -362,14 +362,21 @@ class LastSecondTrader:
             ) or state_changed
 
             if should_log:
-                yes_price = self.orderbook.best_ask_yes or 0.0
-                no_price = self.orderbook.best_ask_no or 0.0
+                # Show both bid and ask for better diagnosis
+                yes_ask = self.orderbook.best_ask_yes
+                yes_bid = self.orderbook.best_bid_yes
+                no_ask = self.orderbook.best_ask_no
+                no_bid = self.orderbook.best_bid_no
+                
+                # Format prices: show "-" if None
+                def fmt(p): return f"${p:.2f}" if p is not None else "-"
+                
                 self._log(
                     f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
                     f"[{self.market_name}] "
                     f"Time: {time_remaining:.2f}s | "
-                    f"YES: ${yes_price:.4f} | "
-                    f"NO: ${no_price:.4f} | "
+                    f"YES bid/ask: {fmt(yes_bid)}/{fmt(yes_ask)} | "
+                    f"NO bid/ask: {fmt(no_bid)}/{fmt(no_ask)} | "
                     f"Winner: {self.winning_side or 'None'}"
                 )
                 self.last_log_time = current_time
@@ -384,9 +391,11 @@ class LastSecondTrader:
     def _update_winning_side(self) -> None:
         """Update winning side based on current orderbook state."""
         self.winning_side = determine_winning_side(
-            self.orderbook.best_ask_yes,
-            self.orderbook.best_ask_no,
-            self.PRICE_TIE_EPS,
+            best_bid_yes=self.orderbook.best_bid_yes,
+            best_bid_no=self.orderbook.best_bid_no,
+            best_ask_yes=self.orderbook.best_ask_yes,
+            best_ask_no=self.orderbook.best_ask_no,
+            tie_epsilon=self.PRICE_TIE_EPS,
         )
 
     def _get_winning_token_id(self) -> Optional[str]:
@@ -398,11 +407,32 @@ class LastSecondTrader:
         )
 
     def _get_winning_ask(self) -> Optional[float]:
-        """Get best ask price for winning side."""
+        """
+        Get best ask price for winning side.
+        
+        If direct ask is not available, compute implied price from opposite side:
+        - If NO ask = 0.99, implied YES ask ≈ 0.01 (but we can't buy at that)
+        - We need actual ask to buy, so return None if no direct ask
+        """
         if self.winning_side == "YES":
-            return self.orderbook.best_ask_yes
+            # Direct ask available
+            if self.orderbook.best_ask_yes is not None:
+                return self.orderbook.best_ask_yes
+            # Try implied from NO bid: if someone bids 0.99 for NO, YES should be ~0.01
+            # But we need someone SELLING YES, not implied price
+            return None
         elif self.winning_side == "NO":
-            return self.orderbook.best_ask_no
+            if self.orderbook.best_ask_no is not None:
+                return self.orderbook.best_ask_no
+            return None
+        return None
+    
+    def _get_winning_bid(self) -> Optional[float]:
+        """Get best bid price for winning side (what buyers are willing to pay)."""
+        if self.winning_side == "YES":
+            return self.orderbook.best_bid_yes
+        elif self.winning_side == "NO":
+            return self.orderbook.best_bid_no
         return None
 
     async def check_trigger(self, time_remaining: float):

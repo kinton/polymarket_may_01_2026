@@ -66,28 +66,60 @@ def extract_prices_from_price_change(
 
 
 def determine_winning_side(
-    best_ask_yes: Optional[float],
-    best_ask_no: Optional[float],
+    best_bid_yes: Optional[float],
+    best_bid_no: Optional[float],
+    best_ask_yes: Optional[float] = None,
+    best_ask_no: Optional[float] = None,
     tie_epsilon: float = 1e-6,
 ) -> Optional[str]:
     """
-    Determine winning side based on higher ask price.
+    Determine winning side based on BID prices (who is willing to pay more).
+
+    The winning side is the one with higher bid price, meaning the market
+    believes that outcome is more likely.
 
     Args:
-        best_ask_yes: Best ask for YES token
-        best_ask_no: Best ask for NO token
-        tie_epsilon: Threshold for treating asks as tied
+        best_bid_yes: Best bid for YES token (buyers willing to pay)
+        best_bid_no: Best bid for NO token (buyers willing to pay)
+        best_ask_yes: Best ask for YES (optional, for fallback)
+        best_ask_no: Best ask for NO (optional, for fallback)
+        tie_epsilon: Threshold for treating bids as tied
 
     Returns:
         "YES" if YES wins, "NO" if NO wins, None if tie or insufficient data
     """
-    if best_ask_yes is None or best_ask_no is None:
-        return None
+    # Try to use bids first (most reliable indicator of market sentiment)
+    if best_bid_yes is not None and best_bid_no is not None:
+        if abs(best_bid_yes - best_bid_no) < tie_epsilon:
+            return None  # Tie
+        return "YES" if best_bid_yes > best_bid_no else "NO"
 
-    if abs(best_ask_yes - best_ask_no) < tie_epsilon:
-        return None  # Tie
+    # Fallback: derive from asks (1 - opposite_ask = implied_bid)
+    # If NO ask = 0.99, implied YES bid = 0.01, so NO wins
+    if best_ask_yes is not None and best_ask_no is not None:
+        if abs(best_ask_yes - best_ask_no) < tie_epsilon:
+            return None  # Tie
+        # Higher ask means that side is winning (more valuable)
+        return "YES" if best_ask_yes > best_ask_no else "NO"
 
-    return "YES" if best_ask_yes > best_ask_no else "NO"
+    # Single-side fallback: if only one side has data
+    if best_bid_yes is not None and best_bid_no is None:
+        # Only YES has bids - check if it's high enough to indicate winner
+        if best_bid_yes > 0.5:
+            return "YES"
+    if best_bid_no is not None and best_bid_yes is None:
+        if best_bid_no > 0.5:
+            return "NO"
+
+    # Ask-based single-side: high ask means that side is winning
+    if best_ask_yes is not None and best_ask_no is None:
+        if best_ask_yes > 0.5:
+            return "YES"
+    if best_ask_no is not None and best_ask_yes is None:
+        if best_ask_no > 0.5:
+            return "NO"
+
+    return None
 
 
 def get_winning_token_id(
