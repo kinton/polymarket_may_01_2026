@@ -260,13 +260,14 @@ class LastSecondTrader:
                 best_ask = extract_best_ask_from_book(asks)
                 best_bid = extract_best_bid_from_book(bids)
 
-                if best_ask is not None:
+                # Filter invalid prices: $0.00 and $1.00+ are not valid
+                if best_ask is not None and 0.001 <= best_ask <= 0.999:
                     if is_yes_data:
                         self.orderbook.best_ask_yes = best_ask
                     else:
                         self.orderbook.best_ask_no = best_ask
 
-                if best_bid is not None:
+                if best_bid is not None and 0.001 <= best_bid <= 0.999:
                     if is_yes_data:
                         self.orderbook.best_bid_yes = best_bid
                     else:
@@ -293,20 +294,24 @@ class LastSecondTrader:
                     if best_ask is not None and best_ask != "":
                         try:
                             ask_val = float(best_ask)
-                            if is_yes_change:
-                                self.orderbook.best_ask_yes = ask_val
-                            else:
-                                self.orderbook.best_ask_no = ask_val
+                            # Filter invalid prices
+                            if 0.001 <= ask_val <= 0.999:
+                                if is_yes_change:
+                                    self.orderbook.best_ask_yes = ask_val
+                                else:
+                                    self.orderbook.best_ask_no = ask_val
                         except (ValueError, TypeError):
                             pass
 
                     if best_bid is not None and best_bid != "":
                         try:
                             bid_val = float(best_bid)
-                            if is_yes_change:
-                                self.orderbook.best_bid_yes = bid_val
-                            else:
-                                self.orderbook.best_bid_no = bid_val
+                            # Filter invalid prices
+                            if 0.001 <= bid_val <= 0.999:
+                                if is_yes_change:
+                                    self.orderbook.best_bid_yes = bid_val
+                                else:
+                                    self.orderbook.best_bid_no = bid_val
                         except (ValueError, TypeError):
                             pass
 
@@ -317,20 +322,24 @@ class LastSecondTrader:
                 if best_ask is not None and best_ask != "":
                     try:
                         val = float(best_ask)
-                        if is_yes_data:
-                            self.orderbook.best_ask_yes = val
-                        else:
-                            self.orderbook.best_ask_no = val
+                        # Filter invalid prices
+                        if 0.001 <= val <= 0.999:
+                            if is_yes_data:
+                                self.orderbook.best_ask_yes = val
+                            else:
+                                self.orderbook.best_ask_no = val
                     except (ValueError, TypeError):
                         pass
 
                 if best_bid is not None and best_bid != "":
                     try:
                         val = float(best_bid)
-                        if is_yes_data:
-                            self.orderbook.best_bid_yes = val
-                        else:
-                            self.orderbook.best_bid_no = val
+                        # Filter invalid prices
+                        if 0.001 <= val <= 0.999:
+                            if is_yes_data:
+                                self.orderbook.best_bid_yes = val
+                            else:
+                                self.orderbook.best_bid_no = val
                     except (ValueError, TypeError):
                         pass
 
