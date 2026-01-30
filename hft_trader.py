@@ -364,13 +364,12 @@ class LastSecondTrader:
             if should_log:
                 yes_price = self.orderbook.best_ask_yes or 0.0
                 no_price = self.orderbook.best_ask_no or 0.0
-                print(
+                self._log(
                     f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
                     f"[{self.market_name}] "
                     f"Time: {time_remaining:.2f}s | "
-                    f"YES ask: ${yes_price:.4f} | "
-                    f"NO ask: ${no_price:.4f} | "
-                    f"Sum: ${self.orderbook.sum_asks or 0.0:.4f} | "
+                    f"YES: ${yes_price:.4f} | "
+                    f"NO: ${no_price:.4f} | "
                     f"Winner: {self.winning_side or 'None'}"
                 )
                 self.last_log_time = current_time
@@ -380,7 +379,7 @@ class LastSecondTrader:
             await self.check_trigger(time_remaining)
 
         except Exception as e:
-            print(f"Error processing market update: {e}")
+            self._log(f"Error processing market update: {e}")
 
     def _update_winning_side(self) -> None:
         """Update winning side based on current orderbook state."""
@@ -628,6 +627,27 @@ class LastSecondTrader:
         except Exception as e:
             self._log(f"❌ [{self.market_name}] Error in market listener: {e}")
 
+    async def _trigger_check_loop(self):
+        """Periodically check trigger conditions every 5 seconds.
+
+        This ensures we don't miss the trigger window even if WebSocket
+        is silent (no orderbook changes).
+        """
+        while True:
+            time_remaining = self.get_time_remaining()
+
+            if time_remaining <= 0:
+                break
+
+            # Check trigger if we have any price data
+            if (
+                self.orderbook.best_ask_yes is not None
+                or self.orderbook.best_ask_no is not None
+            ):
+                await self.check_trigger(time_remaining)
+
+            await asyncio.sleep(5)  # Check every 5 seconds
+
     async def run(self):
         """Main entry point: Connect and start trading."""
         try:
@@ -636,7 +656,11 @@ class LastSecondTrader:
                 self._log("Failed to connect to WebSocket. Exiting.")
                 return
 
-            await self.listen_to_market()
+            # Run both WebSocket listener and periodic trigger check concurrently
+            await asyncio.gather(
+                self.listen_to_market(),
+                self._trigger_check_loop(),
+            )
 
         except KeyboardInterrupt:
             self._log("⚠️  Interrupted by user. Shutting down...")
