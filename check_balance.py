@@ -57,7 +57,9 @@ def main():
             # Convert from smallest unit (6 decimals for USDC)
             try:
                 balance_usdc = int(balance) / 1_000_000 if balance != "N/A" else "N/A"
-                allowance_usdc = int(allowance) / 1_000_000 if allowance != "N/A" else "N/A"
+                allowance_usdc = (
+                    int(allowance) / 1_000_000 if allowance != "N/A" else "N/A"
+                )
             except (ValueError, TypeError):
                 balance_usdc = balance
                 allowance_usdc = allowance
