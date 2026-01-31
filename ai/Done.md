@@ -1,5 +1,47 @@
 # Выполненные задачи
 
+## 14. Добавлена проверка баланса перед торговлей ✅
+**Дата:** 1 февраля 2026  
+**Проблема:** Бот мог пытаться выставить ордер без достаточного баланса USDC, что приводило к failed orders в критический момент (последние секунды перед закрытием рынка).
+
+**Решение:**
+1. Добавлен метод `_check_balance()` в класс `LastSecondTrader`:
+   - Использует `client.get_balance_allowance()` для проверки USDC
+   - Валидирует **оба** параметра: balance и allowance
+   - Возвращает детальные сообщения об ошибках с указанием на решение
+   - Работает асинхронно через `asyncio.to_thread()`
+
+2. Интегрирован в `check_trigger()`:
+   - Проверка выполняется **один раз** на рынок (кэшируется флагом `_balance_checked`)
+   - Срабатывает до выставления ордера, но после всех остальных условий
+   - При недостаточном балансе: логируется FATAL error, `order_executed=True` (останавливает повторные попытки)
+
+3. Создан полноценный test suite (`tests/test_balance_check.py`):
+   - **10 unit tests** с использованием pytest + unittest.mock
+   - Тесты покрывают:
+     - ✅ Достаточный баланс и allowance
+     - ✅ Недостаточный balance
+     - ✅ Недостаточный allowance
+     - ✅ Нулевой баланс
+     - ✅ Отсутствие CLOB client
+     - ✅ API errors
+     - ✅ Integration с check_trigger (останавливает execution)
+     - ✅ Проверка выполняется только 1 раз
+     - ✅ Edge case: точное совпадение суммы
+   - Все тесты **PASSED** (10/10 in 0.34s)
+
+**Результат:**
+- ✅ Предотвращает бесполезные API calls в критические секунды
+- ✅ Даёт actionable error messages (напр. "Run: uv run python approve.py")
+- ✅ Нулевая вероятность submit order без средств
+- ✅ Код quality: ruff clean, type hints добавлены
+- ✅ **Security improvement**: критичная проблема закрыта
+
+**Файлы:**
+- `hft_trader.py`: добавлен метод `_check_balance()`, обновлен `check_trigger()`
+- `tests/__init__.py`: новая директория
+- `tests/test_balance_check.py`: 10 unit tests
+
 ## 13. Исправление ошибки минимального размера BUY order ✅
 **Дата:** 28 января 2026  
 **Проблема:** `PolyApiException[status_code=400, error_message={'error': 'invalid amount for a marketable BUY order ($0.99), min size: $1'}]`

@@ -121,6 +121,10 @@ class LastSecondTrader:
         self.orderbook = OrderBook()
         self.winning_side: Optional[str] = None  # "YES" or "NO"
         self.order_executed = False
+        self.order_in_progress = False  # Prevent duplicate orders
+        self.order_attempts = 0  # Track retry attempts
+        self.max_order_attempts = 3  # Max retries
+        self.last_order_attempt_time = 0.0  # Track last attempt timestamp
         self.ws = None
 
         # Track last log time to avoid spam
@@ -457,6 +461,57 @@ class LastSecondTrader:
             return self.orderbook.best_bid_no
         return None
 
+    async def _check_balance(self) -> bool:
+        """
+        Check if we have sufficient USDC balance and allowance for the trade.
+
+        Returns:
+            True if balance and allowance are sufficient, False otherwise
+        """
+        if not self.client:
+            self._log(f"❌ [{self.market_name}] CLOB client not initialized")
+            return False
+
+        try:
+            # Get balance and allowance for USDC
+            balance_data = await asyncio.to_thread(
+                self.client.get_balance_allowance
+            )
+
+            # Extract USDC balance (in dollars, already converted from wei)
+            usdc_balance = float(balance_data.get("balance", 0))
+            usdc_allowance = float(balance_data.get("allowance", 0))
+
+            required_amount = self.trade_size
+
+            # Check both balance and allowance
+            if usdc_balance < required_amount:
+                self._log(
+                    f"❌ [{self.market_name}] Insufficient balance: "
+                    f"${usdc_balance:.2f} < ${required_amount:.2f}"
+                )
+                return False
+
+            if usdc_allowance < required_amount:
+                self._log(
+                    f"❌ [{self.market_name}] Insufficient allowance: "
+                    f"${usdc_allowance:.2f} < ${required_amount:.2f}"
+                )
+                self._log(
+                    "   → Run: uv run python approve.py to approve USDC spending"
+                )
+                return False
+
+            self._log(
+                f"✓ [{self.market_name}] Balance check passed: "
+                f"${usdc_balance:.2f} available (need ${required_amount:.2f})"
+            )
+            return True
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Balance check failed: {e}")
+            return False
+
     async def check_trigger(self, time_remaining: float):
         """
         Check if trigger conditions are met and execute trade if appropriate.
@@ -466,9 +521,30 @@ class LastSecondTrader:
         2. Winning side is determined (higher ask price)
         3. Best ask <= $0.99 (at or better than our limit)
         4. Order not already executed
+        5. Order not currently in progress (prevent duplicates)
+        6. Sufficient USDC balance and allowance
         """
-        if self.order_executed or time_remaining <= 0:
+        if self.order_executed or self.order_in_progress or time_remaining <= 0:
             return
+
+        # Check retry limit
+        if self.order_attempts >= self.max_order_attempts:
+            if not hasattr(self, "_logged_max_attempts"):
+                self._log(
+                    f"⚠️  [{self.market_name}] Max order attempts ({self.max_order_attempts}) reached"
+                )
+                self._logged_max_attempts = True
+            return
+
+        # Cooldown between attempts (prevent spam)
+        import time
+
+        current_time = time.time()
+        if (
+            self.order_attempts > 0
+            and (current_time - self.last_order_attempt_time) < 2.0
+        ):
+            return  # Wait at least 2 seconds between attempts
 
         if time_remaining > self.TRIGGER_THRESHOLD:
             return
@@ -497,6 +573,18 @@ class LastSecondTrader:
                 )
                 self._logged_price_high = True
             return
+
+        # Check balance before executing order (only check once per market)
+        if not hasattr(self, "_balance_checked"):
+            balance_ok = await self._check_balance()
+            self._balance_checked = True  # Only check once per market
+
+            if not balance_ok:
+                self._log(
+                    f"❌ [{self.market_name}] FATAL: Insufficient funds. Stopping trader."
+                )
+                self.order_executed = True  # Stop trying to trade
+                return
 
         # All conditions met - execute trade!
         self._log(
@@ -599,9 +687,22 @@ class LastSecondTrader:
             self._log(f"❌ [{self.market_name}] CLOB client not initialized")
             return
 
+        # Set in-progress flag and update attempt tracking
+        import time
+
+        self.order_in_progress = True
+        self.order_attempts += 1
+        self.last_order_attempt_time = time.time()
+
+        attempt_msg = (
+            f" (attempt {self.order_attempts}/{self.max_order_attempts})"
+            if self.order_attempts > 1
+            else ""
+        )
+
         try:
             self._log(
-                f"🔴 [{self.market_name}] MARKET ORDER: {self.winning_side} ${amount} @ max ${price}"
+                f"🔴 [{self.market_name}] MARKET ORDER{attempt_msg}: {self.winning_side} ${amount} @ max ${price}"
             )
 
             # Use MarketOrderArgs - specifies amount (dollars) not size (tokens)
@@ -629,6 +730,18 @@ class LastSecondTrader:
 
             self._log(f"✓ [{self.market_name}] FOK order posted: {response}")
 
+            # Calculate executed price
+            try:
+                taking_amount = float(response.get("takingAmount", 0))
+                making_amount = float(response.get("makingAmount", 0))
+                if taking_amount > 0:
+                    executed_price = making_amount / taking_amount
+                    self._log(
+                        f"💰 [{self.market_name}] Executed: {taking_amount:.6f} tokens @ ${executed_price:.4f} (spent ${making_amount:.2f})"
+                    )
+            except (KeyError, ValueError, ZeroDivisionError) as e:
+                self._log(f"⚠️  [{self.market_name}] Could not calculate price: {e}")
+
             # Extract and verify
             try:
                 order_id = response["orderID"]
@@ -640,12 +753,16 @@ class LastSecondTrader:
             except Exception as e:
                 self._log(f"⚠️  [{self.market_name}] Verification setup failed: {e}")
 
-            # Set flag only after successful post
+            # Set flags only after successful post
             self.order_executed = True
+            self.order_in_progress = False
 
         except Exception as e:
             error_str = str(e)
             self._log(f"❌ [{self.market_name}] Order failed: {error_str}")
+
+            # Clear in-progress flag to allow retries
+            self.order_in_progress = False
 
             # Stop retrying for permanent errors
             if "not enough balance" in error_str or "allowance" in error_str:
@@ -655,6 +772,13 @@ class LastSecondTrader:
                 self.order_executed = True  # Stop retrying
             elif "403" in error_str:
                 self._log("  → Possible rate limit. Wait 5-10 min or switch IP.")
+                self.order_executed = True  # Stop retrying
+            elif self.order_attempts < self.max_order_attempts:
+                self._log(
+                    f"  → Will retry ({self.order_attempts}/{self.max_order_attempts} attempts used)"
+                )
+            else:
+                self._log("  → Max retry attempts reached. Giving up.")
                 self.order_executed = True  # Stop retrying
 
     async def listen_to_market(self):
