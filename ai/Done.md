@@ -1,5 +1,51 @@
 # Выполненные задачи
 
+## 15. Исправлена аккумуляция logger handlers ✅
+**Дата:** 1 февраля 2026  
+**Проблема:** При перезапуске бота или повторном вызове `setup_logging()` логгеры добавляли handlers без очистки предыдущих, что приводило к дублированию сообщений в логах (каждое сообщение печаталось 2x, 3x, 4x раза).
+
+**Причина:** В `main.py:setup_logging()` методы `addHandler()` вызывались напрямую без проверки существующих handlers. При каждом вызове количество handlers удваивалось.
+
+**Решение:**
+1. Добавлена проверка `if logger.hasHandlers()` перед добавлением новых handlers
+2. Вызов `logger.handlers.clear()` для очистки существующих handlers
+3. Применено для обоих логгеров: `finder_logger` и `trader_logger`
+4. Код теперь idempotent — можно вызывать `setup_logging()` много раз без side effects
+
+**Изменения в `main.py`:**
+```python
+# Finder logger
+if self.finder_logger.hasHandlers():
+    self.finder_logger.handlers.clear()
+
+# Trader logger  
+if self.trader_logger.hasHandlers():
+    self.trader_logger.handlers.clear()
+```
+
+**Тесты (`tests/test_logger_setup.py`):**
+- **7 unit tests** проверяют корректность управления handlers
+- Тесты покрывают:
+  - ✅ Handler accumulation prevention (многократный setup)
+  - ✅ `hasHandlers()` detection
+  - ✅ `handlers.clear()` functionality
+  - ✅ Anti-pattern (без clear — дублирование)
+  - ✅ Correct pattern (с clear — нет дублирования)
+  - ✅ FileHandler vs StreamHandler distinction
+  - ✅ Multiple setup cycles (10 итераций)
+- Все тесты **PASSED** (7/7 in 0.02s)
+
+**Результат:**
+- ✅ Нет дублирования логов при перезапусках
+- ✅ Стабильная работа 24/7 без раздувания log files
+- ✅ Idempotent setup — безопасно вызывать многократно
+- ✅ Code quality: ruff clean
+- ✅ **Reliability improvement**: критичная проблема для long-running процессов решена
+
+**Файлы:**
+- `main.py`: добавлены проверки `hasHandlers()` и `handlers.clear()` в `setup_logging()`
+- `tests/test_logger_setup.py`: 7 unit tests для handler management
+
 ## 14. Добавлена проверка баланса перед торговлей ✅
 **Дата:** 1 февраля 2026  
 **Проблема:** Бот мог пытаться выставить ордер без достаточного баланса USDC, что приводило к failed orders в критический момент (последние секунды перед закрытием рынка).

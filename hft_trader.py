@@ -474,9 +474,7 @@ class LastSecondTrader:
 
         try:
             # Get balance and allowance for USDC
-            balance_data = await asyncio.to_thread(
-                self.client.get_balance_allowance
-            )
+            balance_data = await asyncio.to_thread(self.client.get_balance_allowance)
 
             # Extract USDC balance (in dollars, already converted from wei)
             usdc_balance = float(balance_data.get("balance", 0))
@@ -497,9 +495,7 @@ class LastSecondTrader:
                     f"❌ [{self.market_name}] Insufficient allowance: "
                     f"${usdc_allowance:.2f} < ${required_amount:.2f}"
                 )
-                self._log(
-                    "   → Run: uv run python approve.py to approve USDC spending"
-                )
+                self._log("   → Run: uv run python approve.py to approve USDC spending")
                 return False
 
             self._log(
