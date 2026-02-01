@@ -133,32 +133,26 @@ class PositionSettler:
 
     async def get_open_positions(self) -> List[Dict[str, Any]]:
         """
-        Fetch all open positions from CLOB API.
+        Fetch all open positions by checking balance/allowance for CONDITIONAL tokens.
+        
+        Note: CLOB API doesn't have get_positions() method. We need to track
+        token_ids from our trades and check balances for each.
 
         Returns:
             List of position dicts with asset_id, size, and other metadata
         """
         try:
             self.logger.info("Fetching open positions...")
-
-            # Get positions from API (synchronous call, wrapped in executor)
-            loop = asyncio.get_event_loop()
-            positions = await loop.run_in_executor(None, self.client.get_positions)
-
-            if not positions:
-                self.logger.info("No open positions found")
-                return []
-
-            # Filter for CONDITIONAL tokens only (not USDC)
-            conditional_positions = [
-                p for p in positions if p.get("asset_type") == "CONDITIONAL"
-            ]
-
-            self.logger.info(
-                f"Found {len(conditional_positions)} conditional position(s)"
-            )
-
-            return conditional_positions
+            
+            # TODO: Implement proper position tracking
+            # For now, return empty list since we need to track token_ids from trades
+            # Real implementation would:
+            # 1. Load token_ids from trades log
+            # 2. For each token_id, call get_balance_allowance(CONDITIONAL, token_id)
+            # 3. Filter non-zero balances
+            
+            self.logger.warning("Position tracking not yet implemented")
+            return []
 
         except Exception as e:
             self.logger.error(f"Error fetching positions: {e}", exc_info=True)
