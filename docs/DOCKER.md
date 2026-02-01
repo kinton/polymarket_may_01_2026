@@ -377,8 +377,8 @@ services:
 # Never commit .env to git
 echo ".env" >> .gitignore
 
-# Use Docker secrets (production)
-docker secret create private_key ./private_key.txt
+# Set secure permissions
+chmod 600 .env
 ```
 
 ### 2. Run as Non-Root User
