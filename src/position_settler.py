@@ -30,7 +30,6 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds
 
 # Load environment variables
 load_dotenv()
@@ -95,29 +94,41 @@ class PositionSettler:
         self.logger.addHandler(file_handler)
 
     def setup_clob_client(self):
-        """Initialize CLOB API client."""
-        host = os.getenv("CLOB_API_URL", "https://clob.polymarket.com")
-        key = os.getenv("CLOB_API_KEY", "")
-        secret = os.getenv("CLOB_SECRET", "")
-        passphrase = os.getenv("CLOB_PASSPHRASE", "")
-        chain_id = int(os.getenv("CHAIN_ID", "137"))  # Polygon mainnet
-
-        if not key or not secret or not passphrase:
-            self.logger.error(
-                "Missing CLOB credentials. Set CLOB_API_KEY, CLOB_SECRET, CLOB_PASSPHRASE in .env"
-            )
-            sys.exit(1)
+        """Initialize CLOB API client using private key (same as hft_trader)."""
+        if self.dry_run:
+            self.logger.info("Dry run mode: Skipping CLOB client initialization")
+            self.client = None
+            return
 
         try:
-            creds = ApiCreds(
-                api_key=key,
-                api_secret=secret,
-                api_passphrase=passphrase,
+            private_key = os.getenv("PRIVATE_KEY")
+            chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
+            host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
+            funder = os.getenv("POLYMARKET_PROXY_ADDRESS")
+
+            if not private_key:
+                self.logger.error("Missing PRIVATE_KEY in .env")
+                sys.exit(1)
+
+            # Initialize client with private key (same as hft_trader)
+            self.client = ClobClient(
+                host=host,
+                key=private_key,
+                chain_id=chain_id,
+                signature_type=2,  # POLY_PROXY
+                funder=funder,
             )
-            self.client = ClobClient(host, key=key, chain_id=chain_id, creds=creds)
-            self.logger.info("CLOB client initialized successfully")
+
+            # Derive API credentials from private key
+            api_creds = self.client.create_or_derive_api_creds()
+            self.client.set_api_creds(api_creds)
+
+            self.logger.info(f"CLOB client initialized ({host})")
+            if funder:
+                self.logger.info(f"  Proxy wallet: {funder}")
+
         except Exception as e:
-            self.logger.error(f"Failed to initialize CLOB client: {e}")
+            self.logger.error(f"Failed to initialize CLOB client: {e}", exc_info=True)
             sys.exit(1)
 
     async def get_open_positions(self) -> List[Dict[str, Any]]:
