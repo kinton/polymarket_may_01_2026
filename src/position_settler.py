@@ -239,9 +239,7 @@ class PositionSettler:
                 return None
 
         except Exception as e:
-            self.logger.error(
-                f"Error redeeming token {token_id}: {e}", exc_info=True
-            )
+            self.logger.error(f"Error redeeming token {token_id}: {e}", exc_info=True)
             return None
 
     def calculate_pnl(
