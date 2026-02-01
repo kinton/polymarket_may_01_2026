@@ -151,17 +151,17 @@ class PositionSettler:
 
             # Step 1: Get trade history to find token_ids we've traded
             from py_clob_client.clob_types import TradeParams
-            
+
             trades = self.client.get_trades(
                 params=TradeParams(maker_address=self.client.get_address())
             )
-            
+
             if not trades:
                 self.logger.info("No trade history found")
                 return []
-            
+
             self.logger.info(f"Found {len(trades)} historical trades")
-            
+
             # Step 2: Extract unique token_ids from trades (only BUY orders)
             token_ids = set()
             for trade in trades:
@@ -170,24 +170,23 @@ class PositionSettler:
                     token_id = trade.get("asset_id")
                     if token_id:
                         token_ids.add(token_id)
-            
+
             self.logger.info(f"Tracking {len(token_ids)} unique tokens from buy orders")
-            
+
             # Step 3: Check balance for each token
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
-            
+
             positions = []
             for token_id in token_ids:
                 try:
                     balance_info = self.client.get_balance_allowance(
                         params=BalanceAllowanceParams(
-                            asset_type=AssetType.CONDITIONAL,
-                            token_id=token_id
+                            asset_type=AssetType.CONDITIONAL, token_id=token_id
                         )
                     )
-                    
+
                     balance = float(balance_info.get("balance", 0))
-                    
+
                     # Only include tokens with non-zero balance
                     if balance > 0.01:  # Minimum 0.01 tokens to avoid dust
                         # Get current market price (BUY side = what we can sell for)
@@ -195,25 +194,29 @@ class PositionSettler:
                             price_info = self.client.get_price(token_id, "BUY")
                             current_price = float(price_info.get("price", 0))
                         except Exception as e:
-                            self.logger.warning(f"Failed to get price for {token_id}: {e}")
+                            self.logger.warning(
+                                f"Failed to get price for {token_id}: {e}"
+                            )
                             current_price = 0.0
-                        
-                        positions.append({
-                            "token_id": token_id,
-                            "balance": balance,
-                            "current_price": current_price,
-                            "estimated_value": balance * current_price
-                        })
-                        
+
+                        positions.append(
+                            {
+                                "token_id": token_id,
+                                "balance": balance,
+                                "current_price": current_price,
+                                "estimated_value": balance * current_price,
+                            }
+                        )
+
                         self.logger.info(
                             f"  Position: {balance:.2f} tokens @ ${current_price:.3f} "
                             f"(~${balance * current_price:.2f})"
                         )
-                
+
                 except Exception as e:
                     self.logger.warning(f"Failed to check balance for {token_id}: {e}")
                     continue
-            
+
             self.logger.info(f"Found {len(positions)} open positions with balance > 0")
             return positions
 
@@ -221,7 +224,9 @@ class PositionSettler:
             self.logger.error(f"Error fetching positions: {e}", exc_info=True)
             return []
 
-    async def sell_position_if_profitable(self, position: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def sell_position_if_profitable(
+        self, position: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         """
         Sell position if current price >= 0.999 (profitable exit).
 
@@ -234,42 +239,42 @@ class PositionSettler:
         token_id = position["token_id"]
         balance = position["balance"]
         current_price = position["current_price"]
-        
+
         # Sell threshold: 0.999 or higher (99.9% = almost guaranteed win)
         SELL_THRESHOLD = 0.999
-        
+
         if current_price < SELL_THRESHOLD:
             self.logger.debug(
                 f"Price ${current_price:.4f} below sell threshold ${SELL_THRESHOLD:.4f} - holding"
             )
             return None
-        
+
         self.logger.info(
             f"💰 Price ${current_price:.4f} >= ${SELL_THRESHOLD:.4f} - SELLING {balance:.2f} tokens"
         )
-        
+
         if self.dry_run:
             self.logger.info(
                 f"DRY RUN: Would sell {balance:.2f} tokens @ ${current_price:.4f} "
                 f"(~${balance * current_price:.2f} revenue)"
             )
             return {"status": "dry_run", "token_id": token_id, "price": current_price}
-        
+
         try:
             # Create market sell order (FOK)
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
             from py_clob_client.order_builder.constants import SELL
-            
+
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 amount=balance,  # Sell all tokens
                 side=SELL,
-                order_type=OrderType.FOK  # Fill-or-Kill
+                order_type=OrderType.FOK,  # Fill-or-Kill
             )
-            
+
             signed_order = self.client.create_market_order(order_args)
             result = self.client.post_order(signed_order, orderType=OrderType.FOK)
-            
+
             if result.get("success") or result.get("orderID"):
                 self.logger.info(
                     f"✅ Successfully sold {balance:.2f} tokens @ ${current_price:.4f} "
@@ -279,7 +284,7 @@ class PositionSettler:
             else:
                 self.logger.warning(f"Failed to sell position: {result}")
                 return None
-                
+
         except Exception as e:
             self.logger.error(f"Error selling position {token_id}: {e}", exc_info=True)
             return None
@@ -473,7 +478,7 @@ class PositionSettler:
             return
 
         self.logger.info(f"Processing {len(positions)} position(s)...")
-        
+
         processed = 0
         sold = 0
         held = 0
@@ -495,7 +500,7 @@ class PositionSettler:
 
                 # Strategy 1: Try to sell if price >= 0.999 (99.9% chance of winning)
                 sell_result = await self.sell_position_if_profitable(position)
-                
+
                 if sell_result:
                     sold += 1
                     self.logger.info("✅ Position sold profitably")
@@ -504,10 +509,10 @@ class PositionSettler:
                     self.logger.info(
                         f"📊 Holding position (price ${current_price:.4f} < $0.999 threshold)"
                     )
-                    
+
                     # TODO: Add claim logic for resolved markets
                     # For now, we just track positions that might be claimable later
-                
+
                 processed += 1
 
             except Exception as e:
@@ -515,8 +520,7 @@ class PositionSettler:
                 continue
 
         self.logger.info(
-            f"Summary: Processed {processed} position(s) - "
-            f"Sold: {sold}, Held: {held}"
+            f"Summary: Processed {processed} position(s) - Sold: {sold}, Held: {held}"
         )
 
     async def run(self, interval: int = 300):
