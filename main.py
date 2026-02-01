@@ -368,8 +368,8 @@ async def main():
     parser.add_argument(
         "--size",
         type=float,
-        default=1.01,
-        help="Trade size in dollars (default: $1.01, buys 1.02 tokens at $0.99/token via rounding up)",
+        default=2.0,
+        help="Trade size in dollars (default: $2.00)",
     )
     parser.add_argument(
         "--poll-interval",
