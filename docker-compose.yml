@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # Main trading bot - discovers markets and executes trades
+  trading-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polymarket-trading-bot
+    command: python main.py --live
+    env_file:
+      - .env
+    volumes:
+      - ./log:/app/log  # Persist logs on host
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - polymarket
+
+  # Position settler - redeems winnings and tracks P&L
+  position-settler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polymarket-position-settler
+    command: python -m src.position_settler --daemon --live --interval 300
+    env_file:
+      - .env
+    volumes:
+      - ./log:/app/log  # Share log directory with trading-bot
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - polymarket
+    depends_on:
+      - trading-bot
+
+networks:
+  polymarket:
+    driver: bridge
+
+# Optional: Healthcheck monitoring with Watchtower for auto-updates
+# Uncomment to enable automatic container updates on git push
+#
+# watchtower:
+#   image: containrrr/watchtower
+#   container_name: polymarket-watchtower
+#   volumes:
+#     - /var/run/docker.sock:/var/run/docker.sock
+#   command: --interval 300 --cleanup
+#   restart: unless-stopped

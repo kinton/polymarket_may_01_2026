@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv
+venv/
+ENV/
+
+# uv
+.ruff_cache
+.pytest_cache
+
+# Logs (will be mounted as volume)
+log/
+*.log
+
+# Environment (will be passed via env_file)
+.env
+.env.*
+
+# Documentation (not needed in runtime)
+docs/
+*.md
+!README.md
+
+# Development files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Test files
+test_*.py
+tests/
+
+# Backups
+*.backup
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
