@@ -39,14 +39,14 @@ from typing import Any, Dict, Optional
 import websockets
 from dotenv import load_dotenv
 
-from clob_types import (
+from src.clob_types import (
     BUY_PRICE,
     CLOB_WS_URL,
     PRICE_TIE_EPS,
     TRIGGER_THRESHOLD,
     OrderBook,
 )
-from market_parser import (
+from src.market_parser import (
     determine_winning_side,
     extract_best_ask_from_book,
     extract_best_bid_from_book,

@@ -1,11 +1,12 @@
 """
-Query Polymarket Gamma API to find currently active short-duration "Up or Down" markets.
+Query Polymarket Gamma API to find currently active binary markets.
 
 Features:
 - Get current time in ET timezone
 - Search for markets ending within max_minutes_ahead (default: 20 minutes)
-- Query https://gamma-api.polymarket.com/public-search for "Up or Down" markets (overridable via env)
+- Wide search mode (default): fetch all markets without query restrictions
 - Filter for markets ending within the specified time window
+- Return only strictly binary markets (exactly 2 outcomes: YES/NO)
 - Return condition_id, token_id for YES/NO, end_time, title, slug
 
 Usage:
@@ -30,22 +31,27 @@ import aiohttp
 
 
 class GammaAPI15mFinder:
-    """Find active short-duration "Up or Down" markets on Polymarket."""
+    """Find active binary markets on Polymarket."""
 
     BASE_URL = "https://gamma-api.polymarket.com/public-search"
     ET_TZ = timezone(timedelta(hours=-5))  # EST (adjust to -4 for EDT if needed)
 
-    def __init__(self, max_minutes_ahead: int = 20):
+    def __init__(self, max_minutes_ahead: int = 20, use_wide_search: bool = True):
         """Initialize finder.
 
         Args:
             max_minutes_ahead: Maximum minutes ahead to search for markets (default: 20)
+            use_wide_search: If True, fetch all markets without query restrictions (default: True)
         """
         self.current_time_et = None
         self.current_window = None
         self.max_minutes_ahead = max_minutes_ahead
-        # Allow overriding base queries via env; default to broad "Up or Down"
-        self.base_queries = self._load_base_queries()
+        self.use_wide_search = use_wide_search
+        # Allow overriding via env (set MARKET_QUERIES to disable wide search)
+        if not use_wide_search or os.getenv("MARKET_QUERIES"):
+            self.base_queries = self._load_base_queries()
+        else:
+            self.base_queries = []
 
     def _load_base_queries(self) -> List[str]:
         """Load base queries from env or use broad defaults for binary markets.
@@ -123,7 +129,7 @@ class GammaAPI15mFinder:
         """
         Filter markets to find those ending within max_minutes_ahead minutes.
         Works with Polymarket 'events' objects from Gamma API.
-        Searches for ALL 5/15-minute markets, not restricted to a specific time window.
+        Only returns strictly binary markets (exactly 2 outcomes: YES/NO).
         """
         now = self.get_current_time_et()
         filtered_markets = []
@@ -274,8 +280,11 @@ class GammaAPI15mFinder:
 
     async def find_active_market(self) -> Optional[List[Dict[str, Any]]]:
         """
-        Main function to find active short-duration "Up or Down" markets.
+        Main function to find active binary markets.
         Searches for markets ending in the next max_minutes_ahead minutes (default 20).
+
+        If use_wide_search=True (default), fetches all markets without query restrictions
+        and relies on filter_markets() to select binary markets with correct timing.
         """
         now = self.get_current_time_et()
         print(f"Current time (ET): {now.strftime('%H:%M:%S')}")
@@ -287,45 +296,58 @@ class GammaAPI15mFinder:
         # Step 2: Query API for markets
         print("Querying Polymarket Gamma API...")
 
-        # Build time-specific queries to cover the search window
-        # API search works better with specific time patterns for hourly “Up or Down” markets
-        current_hour_24 = now.hour
-        current_date = now.strftime("January %d")
-
-        hour_12 = current_hour_24 % 12 or 12
-
-        # Current and next hour to catch near-cutoff markets
-        hours_to_search = [hour_12, ((current_hour_24 + 1) % 24) % 12 or 12]
-
-        queries = []
-
-        for base in self.base_queries:
-            # Hourly pattern only if it looks like an Up or Down template
-            if "Up or Down" in base:
-                for hour in hours_to_search:
-                    queries.append(f"{base} - {current_date}, {hour}:")
-            # Always add the plain base query
-            queries.append(base)
-
         all_events = []
         seen_ids = set()
 
-        for query in queries:
-            markets_data = await self.search_markets(query=query)
-            events = markets_data.get("events", [])
+        if self.use_wide_search and not self.base_queries:
+            # Wide search mode: fetch all markets with minimal query
+            # Try common single-letter queries to get maximum coverage
+            wide_queries = ["a", "b", "c", "d", "e"]
+            print("Using wide search mode (fetching all markets)...")
 
-            if events:
-                print(f"Query '{query[:50]}...' returned {len(events)} events")
+            for query in wide_queries:
+                markets_data = await self.search_markets(query=query)
+                events = markets_data.get("events", [])
 
-                # Deduplicate events by ID
-                for event in events:
-                    event_id = event.get("id")
-                    if event_id and event_id not in seen_ids:
-                        seen_ids.add(event_id)
-                        all_events.append(event)
+                if events:
+                    print(f"Query '{query}' returned {len(events)} events")
+
+                    # Deduplicate events by ID
+                    for event in events:
+                        event_id = event.get("id")
+                        if event_id and event_id not in seen_ids:
+                            seen_ids.add(event_id)
+                            all_events.append(event)
+        else:
+            # Targeted search mode with specific queries
+            print("Using targeted search mode with specific queries...")
+            current_hour_24 = now.hour
+            current_date = now.strftime("January %d")
+            hour_12 = current_hour_24 % 12 or 12
+            hours_to_search = [hour_12, ((current_hour_24 + 1) % 24) % 12 or 12]
+
+            queries = []
+            for base in self.base_queries:
+                if "Up or Down" in base:
+                    for hour in hours_to_search:
+                        queries.append(f"{base} - {current_date}, {hour}:")
+                queries.append(base)
+
+            for query in queries:
+                markets_data = await self.search_markets(query=query)
+                events = markets_data.get("events", [])
+
+                if events:
+                    print(f"Query '{query[:50]}...' returned {len(events)} events")
+
+                    for event in events:
+                        event_id = event.get("id")
+                        if event_id and event_id not in seen_ids:
+                            seen_ids.add(event_id)
+                            all_events.append(event)
 
         if not all_events:
-            print("No markets found with any query")
+            print("No markets found")
             return None
 
         print(f"\nFound {len(all_events)} unique events total")

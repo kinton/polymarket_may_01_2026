@@ -32,8 +32,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 # Import our modules
-from gamma_15m_finder import GammaAPI15mFinder
-from hft_trader import LastSecondTrader
+from src.gamma_15m_finder import GammaAPI15mFinder
+from src.hft_trader import LastSecondTrader
 
 
 class TradingBotRunner:
@@ -97,11 +97,11 @@ class TradingBotRunner:
         # Finder logger (market discovery)
         self.finder_logger = logging.getLogger("finder")
         self.finder_logger.setLevel(logging.INFO)
-        
+
         # Clear existing handlers to prevent accumulation on restarts
         if self.finder_logger.hasHandlers():
             self.finder_logger.handlers.clear()
-        
+
         finder_handler = logging.FileHandler(log_dir / "finder.log")
         finder_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
@@ -121,11 +121,11 @@ class TradingBotRunner:
 
         self.trader_logger = logging.getLogger("trader")
         self.trader_logger.setLevel(logging.INFO)
-        
+
         # Clear existing handlers to prevent accumulation on restarts
         if self.trader_logger.hasHandlers():
             self.trader_logger.handlers.clear()
-        
+
         trader_handler = logging.FileHandler(self.trader_log_file)
         trader_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
