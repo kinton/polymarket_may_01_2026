@@ -11,13 +11,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from hft_trader import LastSecondTrader
+from src.hft_trader import LastSecondTrader
 
 
 @pytest.fixture
 def mock_trader():
     """Create a trader instance with mocked dependencies for testing."""
-    with patch("hft_trader.load_dotenv"), patch("hft_trader.ClobClient"):
+    with patch("src.hft_trader.load_dotenv"), patch("src.hft_trader.ClobClient"):
         # Create trader with known parameters
         end_time = datetime.now(timezone.utc).replace(
             hour=12, minute=0, second=0, microsecond=0
