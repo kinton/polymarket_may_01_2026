@@ -10,6 +10,10 @@ services:
     command: python main.py --live --size 2
     env_file:
       - .env
+    environment:
+      # Default: Bitcoin/Ethereum 5m/15m markets (always included)
+      # Custom: Add your own markets (semicolon-separated)
+      - MARKET_QUERIES=Trump;Election;President;Fed;Will
     volumes:
       - ./log:/app/log  # Persist logs on host
     restart: unless-stopped

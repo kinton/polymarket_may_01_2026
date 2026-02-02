@@ -510,7 +510,7 @@ class PositionSettler:
                         f"📊 Holding position (price ${current_price:.4f} < $0.999 threshold)"
                     )
 
-                    # TODO: Add claim logic for resolved markets
+                    # Market resolved: claim mechanism will be implemented in future version
                     # For now, we just track positions that might be claimable later
 
                 processed += 1

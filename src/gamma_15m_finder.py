@@ -41,38 +41,43 @@ class GammaAPI15mFinder:
 
         Args:
             max_minutes_ahead: Maximum minutes ahead to search for markets (default: 20)
-            use_wide_search: If True, fetch all markets without query restrictions (default: False - use targeted Bitcoin/Ethereum search)
+            use_wide_search: If True, also use wide search with single letters (default: False)
         """
         self.current_time_et = None
         self.current_window = None
         self.max_minutes_ahead = max_minutes_ahead
         self.use_wide_search = use_wide_search
-        # Allow overriding via env (set MARKET_QUERIES to disable wide search)
-        if not use_wide_search or os.getenv("MARKET_QUERIES"):
-            self.base_queries = self._load_base_queries()
-        else:
-            self.base_queries = []
+        # Always load base queries (Bitcoin/Ethereum + custom from env)
+        self.base_queries = self._load_base_queries()
 
     def _load_base_queries(self) -> List[str]:
-        """Load base queries from env or use broad defaults for binary markets.
+        """Load base queries from env or use defaults.
 
         Env format: MARKET_QUERIES="Query1;Query2;Query3"
-        Default: Wide range of binary market queries (Up or Down, Will, yes, by, etc)
+        
+        Default queries target Bitcoin/Ethereum 5m/15m markets.
+        You can add more via env variable to trade on other markets.
+        
+        Examples:
+            MARKET_QUERIES="Trump;Election;Will"  # Add political markets
+            MARKET_QUERIES="AAPL;TSLA;Stock"      # Add stock markets
         """
         env_val = os.getenv("MARKET_QUERIES")
-        if env_val:
-            queries = [q.strip() for q in env_val.split(";") if q.strip()]
-            return queries or self._default_queries()
-        return self._default_queries()
-
-    def _default_queries(self) -> List[str]:
-        """Default queries targeting Bitcoin/Ethereum 5m/15m markets."""
-        return [
+        
+        # Start with Bitcoin/Ethereum defaults
+        default_queries = [
             "Bitcoin Up or Down",
             "Ethereum Up or Down",
             "BTC Up or Down",
             "ETH Up or Down",
         ]
+        
+        if env_val:
+            # Add custom queries from env
+            custom_queries = [q.strip() for q in env_val.split(";") if q.strip()]
+            return default_queries + custom_queries
+        
+        return default_queries
 
     def get_current_time_et(self) -> datetime:
         """Get current time in ET timezone."""
@@ -320,11 +325,38 @@ class GammaAPI15mFinder:
         all_events = []
         seen_ids = set()
 
-        if self.use_wide_search and not self.base_queries:
-            # Wide search mode: fetch all markets with minimal query
-            # Try common single-letter queries to get maximum coverage
+        # Step 1: Run targeted searches with specific queries
+        print(f"Using targeted search with {len(self.base_queries)} base queries...")
+        current_hour_24 = now.hour
+        current_date = now.strftime("January %d")
+        hour_12 = current_hour_24 % 12 or 12
+        hours_to_search = [hour_12, ((current_hour_24 + 1) % 24) % 12 or 12]
+
+        queries = []
+        for base in self.base_queries:
+            if "Up or Down" in base:
+                # Add time-specific queries for "Up or Down" markets
+                for hour in hours_to_search:
+                    queries.append(f"{base} - {current_date}, {hour}:")
+            queries.append(base)
+
+        for query in queries:
+            markets_data = await self.search_markets(query=query)
+            events = markets_data.get("events", [])
+
+            if events:
+                print(f"Query '{query[:50]}...' returned {len(events)} events")
+
+                for event in events:
+                    event_id = event.get("id")
+                    if event_id and event_id not in seen_ids:
+                        seen_ids.add(event_id)
+                        all_events.append(event)
+
+        # Step 2: Optionally run wide search if enabled
+        if self.use_wide_search:
+            print("\nAdditionally running wide search (a-e)...")
             wide_queries = ["a", "b", "c", "d", "e"]
-            print("Using wide search mode (fetching all markets)...")
 
             for query in wide_queries:
                 markets_data = await self.search_markets(query=query)
@@ -332,34 +364,6 @@ class GammaAPI15mFinder:
 
                 if events:
                     print(f"Query '{query}' returned {len(events)} events")
-
-                    # Deduplicate events by ID
-                    for event in events:
-                        event_id = event.get("id")
-                        if event_id and event_id not in seen_ids:
-                            seen_ids.add(event_id)
-                            all_events.append(event)
-        else:
-            # Targeted search mode with specific queries
-            print("Using targeted search mode with specific queries...")
-            current_hour_24 = now.hour
-            current_date = now.strftime("January %d")
-            hour_12 = current_hour_24 % 12 or 12
-            hours_to_search = [hour_12, ((current_hour_24 + 1) % 24) % 12 or 12]
-
-            queries = []
-            for base in self.base_queries:
-                if "Up or Down" in base:
-                    for hour in hours_to_search:
-                        queries.append(f"{base} - {current_date}, {hour}:")
-                queries.append(base)
-
-            for query in queries:
-                markets_data = await self.search_markets(query=query)
-                events = markets_data.get("events", [])
-
-                if events:
-                    print(f"Query '{query[:50]}...' returned {len(events)} events")
 
                     for event in events:
                         event_id = event.get("id")
