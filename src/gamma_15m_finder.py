@@ -55,19 +55,26 @@ class GammaAPI15mFinder:
 
         Env format: MARKET_QUERIES="Query1;Query2;Query3"
 
-        Default: "Up or Down" - finds ALL 5/15-min binary markets
-        (crypto, stocks, commodities, indices, etc.)
+        Default queries target Bitcoin/Ethereum/Solana 5m/15m markets.
+        You can add more via env variable to trade on other markets.
 
-        Custom queries via MARKET_QUERIES for specific events:
-            MARKET_QUERIES="Trump;Election;President"  # Political
-            MARKET_QUERIES="Fed;rates;FOMC"            # Economic
+        Examples:
+            MARKET_QUERIES="Trump;Election;Will"  # Add political markets
+            MARKET_QUERIES="AAPL;TSLA;Stock"      # Add stock markets
         """
         env_val = os.getenv("MARKET_QUERIES")
 
-        # Universal "Up or Down" query finds ALL 5m/15m binary markets
-        # (Bitcoin, Ethereum, Solana, Stocks, Gold, Oil, etc.)
+        # Start with crypto "Up or Down" defaults (5m/15m markets)
+        # Note: Recent format uses time ranges: "2:45PM-3:00PM ET"
         default_queries = [
-            "Up or Down",
+            "Bitcoin Up or Down",
+            "Ethereum Up or Down",
+            "Solana Up or Down",
+            "BTC Up or Down",
+            "ETH Up or Down",
+            "SOL Up or Down",
+            "BTC 15 Minute Up or Down",
+            "ETH 15 Minute Up or Down",
         ]
 
         if env_val:
