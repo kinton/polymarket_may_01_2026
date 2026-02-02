@@ -36,12 +36,12 @@ class GammaAPI15mFinder:
     BASE_URL = "https://gamma-api.polymarket.com/public-search"
     ET_TZ = timezone(timedelta(hours=-5))  # EST (adjust to -4 for EDT if needed)
 
-    def __init__(self, max_minutes_ahead: int = 20, use_wide_search: bool = True):
+    def __init__(self, max_minutes_ahead: int = 20, use_wide_search: bool = False):
         """Initialize finder.
 
         Args:
             max_minutes_ahead: Maximum minutes ahead to search for markets (default: 20)
-            use_wide_search: If True, fetch all markets without query restrictions (default: True)
+            use_wide_search: If True, fetch all markets without query restrictions (default: False - use targeted Bitcoin/Ethereum search)
         """
         self.current_time_et = None
         self.current_window = None
@@ -66,14 +66,12 @@ class GammaAPI15mFinder:
         return self._default_queries()
 
     def _default_queries(self) -> List[str]:
-        """Default broad binary market queries."""
+        """Default queries targeting Bitcoin/Ethereum 5m/15m markets."""
         return [
-            "Up or Down",
-            "Will",
-            "by",
-            "yes",
-            "no",
-            "binary",
+            "Bitcoin Up or Down",
+            "Ethereum Up or Down",
+            "BTC Up or Down",
+            "ETH Up or Down",
         ]
 
     def get_current_time_et(self) -> datetime:
@@ -144,11 +142,24 @@ class GammaAPI15mFinder:
         markets_skipped_no_endtime = 0
         markets_skipped_time_window = 0
         markets_skipped_non_binary = 0
+        events_skipped_inactive = 0
 
         for event in events:
             try:
-                # Skip inactive or closed events
-                if not event.get("active", False) or event.get("closed", False):
+                # Debug: Log first 3 events to see what we're getting
+                if events_skipped_inactive < 3:
+                    event_title = event.get("title") or event.get("question", "N/A")
+                    event_active = event.get("active", False)
+                    event_closed = event.get("closed", False)
+                    print(
+                        f"  DEBUG Event: '{event_title[:60]}...' "
+                        f"(active={event_active}, closed={event_closed})"
+                    )
+
+                # Skip only INACTIVE events (not closed - we filter by time instead)
+                # Closed events will be filtered out by end_time check
+                if not event.get("active", False):
+                    events_skipped_inactive += 1
                     continue
 
                 # Events can have nested markets array
@@ -161,8 +172,8 @@ class GammaAPI15mFinder:
                 for market in markets_in_event:
                     markets_checked += 1
 
-                    # Skip inactive or closed markets
-                    if not market.get("active", False) or market.get("closed", False):
+                    # Skip only INACTIVE markets (not closed - we filter by time instead)
+                    if not market.get("active", False):
                         markets_skipped_inactive += 1
                         continue
 
@@ -276,6 +287,8 @@ class GammaAPI15mFinder:
                 continue
 
         print("\nFilter statistics:")
+        print(f"  Events checked: {len(events)}")
+        print(f"  Events skipped (inactive/closed): {events_skipped_inactive}")
         print(f"  Markets checked: {markets_checked}")
         print(f"  Skipped (inactive/closed): {markets_skipped_inactive}")
         print(f"  Skipped (no end time): {markets_skipped_no_endtime}")
