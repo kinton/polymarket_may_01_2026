@@ -487,7 +487,14 @@ class LastSecondTrader:
 
             # Extract USDC balance (in dollars, already converted from wei)
             usdc_balance = float(balance_data.get("balance", 0))
-            usdc_allowance = float(balance_data.get("allowance", 0))
+
+            # API returns 'allowances' (dict of contract -> allowance), not 'allowance'
+            # Get the Exchange contract allowance (0xC5d563A36AE78145C45a50134d48A1215220f80a)
+            allowances_dict = balance_data.get("allowances", {})
+
+            # Exchange contract address (from polymarket docs)
+            EXCHANGE_CONTRACT = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+            usdc_allowance = float(allowances_dict.get(EXCHANGE_CONTRACT, 0))
 
             required_amount = self.trade_size
 
