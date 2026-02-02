@@ -310,7 +310,7 @@ class GammaAPI15mFinder:
         # Step 1: Run targeted searches with specific queries
         print(f"Using targeted search with {len(self.base_queries)} base queries...")
         current_hour_24 = now.hour
-        current_date = now.strftime("%B %d")  # e.g., "February 02"
+        current_date = now.strftime("%B %-d")  # e.g., "February 2" (no leading zero)
         hour_12 = current_hour_24 % 12 or 12
         hours_to_search = [hour_12, ((current_hour_24 + 1) % 24) % 12 or 12]
 
