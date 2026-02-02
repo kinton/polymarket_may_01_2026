@@ -55,7 +55,7 @@ class GammaAPI15mFinder:
 
         Env format: MARKET_QUERIES="Query1;Query2;Query3"
 
-        Default: "Up or Down" - finds ALL 5/15-min binary markets 
+        Default: "Up or Down" - finds ALL 5/15-min binary markets
         (crypto, stocks, commodities, indices, etc.)
 
         Custom queries via MARKET_QUERIES for specific events:
@@ -310,7 +310,7 @@ class GammaAPI15mFinder:
         # Step 1: Run targeted searches with specific queries
         print(f"Using targeted search with {len(self.base_queries)} base queries...")
         current_hour_24 = now.hour
-        current_date = now.strftime("January %d")
+        current_date = now.strftime("%B %d")  # e.g., "February 02"
         hour_12 = current_hour_24 % 12 or 12
         hours_to_search = [hour_12, ((current_hour_24 + 1) % 24) % 12 or 12]
 
