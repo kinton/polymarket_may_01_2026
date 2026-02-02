@@ -19,10 +19,12 @@
 - ✅ Все критические баги исправлены
 
 **Текущие рынки:**
-- **Crypto (5m/15m "Up or Down"):** Bitcoin, Ethereum, BTC, ETH, Solana, SOL
-- **Political:** Trump, Election, President
+- **Crypto (5m/15m "Up or Down"):** Bitcoin, Ethereum, Solana, BTC, ETH, SOL
+- **Political:** Trump, Election, President  
 - **Economic:** Fed (Federal Reserve decisions)
 - **Binary questions:** Will
+
+*Примечание: Crypto рынки используют автоматическую генерацию временных запросов (e.g., "Bitcoin Up or Down - February 2, 3:").*
 
 ---
 

@@ -54,29 +54,31 @@ class GammaAPI15mFinder:
         """Load base queries from env or use defaults.
 
         Env format: MARKET_QUERIES="Query1;Query2;Query3"
-        
+
         Default queries target Bitcoin/Ethereum 5m/15m markets.
         You can add more via env variable to trade on other markets.
-        
+
         Examples:
             MARKET_QUERIES="Trump;Election;Will"  # Add political markets
             MARKET_QUERIES="AAPL;TSLA;Stock"      # Add stock markets
         """
         env_val = os.getenv("MARKET_QUERIES")
-        
-        # Start with Bitcoin/Ethereum defaults
+
+        # Start with crypto "Up or Down" defaults (5m/15m markets)
         default_queries = [
             "Bitcoin Up or Down",
             "Ethereum Up or Down",
+            "Solana Up or Down",
             "BTC Up or Down",
             "ETH Up or Down",
+            "SOL Up or Down",
         ]
-        
+
         if env_val:
             # Add custom queries from env
             custom_queries = [q.strip() for q in env_val.split(";") if q.strip()]
             return default_queries + custom_queries
-        
+
         return default_queries
 
     def get_current_time_et(self) -> datetime:
