@@ -309,19 +309,24 @@ class GammaAPI15mFinder:
 
         # Step 1: Run targeted searches with specific queries
         print(f"Using targeted search with {len(self.base_queries)} base queries...")
+        
+        # Generate date strings for today
+        # Polymarket inconsistently uses "February 2" vs "February 02"
+        # So we generate both formats to be safe
+        current_date_no_zero = now.strftime("%B %-d")  # "February 2"
+        current_date_with_zero = now.strftime("%B %d")  # "February 02"
+        
+        # Get current hour in 12h format
         current_hour_24 = now.hour
-        current_date = now.strftime("%B %-d")  # e.g., "February 2" (no leading zero)
-        # Search current hour + next 2 hours (to cover 20-min window + buffer)
         hour_12 = current_hour_24 % 12 or 12
-        next_hour_12 = ((current_hour_24 + 1) % 24) % 12 or 12
-        hours_to_search = [hour_12, next_hour_12]
-
+        
         queries = []
         for base in self.base_queries:
             if "Up or Down" in base:
-                # Add time-specific queries for "Up or Down" markets
-                for hour in hours_to_search:
-                    queries.append(f"{base} - {current_date}, {hour}:")
+                # Add date+hour queries (both date formats for reliability)
+                # This helps API find recent markets instead of old popular ones
+                queries.append(f"{base} - {current_date_no_zero}, {hour_12}:")
+                queries.append(f"{base} - {current_date_with_zero}, {hour_12}:")
             queries.append(base)
 
         for query in queries:
