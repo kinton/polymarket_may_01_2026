@@ -56,6 +56,7 @@ from src.market_parser import (
 try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import (
+        AssetType,
         BalanceAllowanceParams,
         CreateOrderOptions,
         MarketOrderArgs,
@@ -477,8 +478,8 @@ class LastSecondTrader:
             # Get balance and allowance for USDC
             # pass a params object — py-clob-client expects a params instance
             # (calling with None causes an AttributeError inside the client)
-            params = (
-                BalanceAllowanceParams()
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL  # USDC is collateral asset
             )  # signature_type defaults to -1 and will be filled by client
             balance_data = await asyncio.to_thread(
                 self.client.get_balance_allowance, params
