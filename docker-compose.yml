@@ -11,9 +11,10 @@ services:
     env_file:
       - .env
     environment:
-      # Default: Bitcoin/Ethereum 5m/15m markets (always included)
-      # Custom: Add your own markets (semicolon-separated)
-      - MARKET_QUERIES=Trump;Election;President;Fed;Will
+      # Crypto markets (5m/15m "Up or Down")
+      # Default: Bitcoin, Ethereum, BTC, ETH (built-in)
+      # Custom: Solana, SOL + political/economic events
+      - MARKET_QUERIES=Solana;SOL;Trump;Election;President;Fed;Will
     volumes:
       - ./log:/app/log  # Persist logs on host
     restart: unless-stopped

@@ -18,7 +18,11 @@
 - ✅ Расширяемость через env переменные без изменения кода
 - ✅ Все критические баги исправлены
 
-**Текущие рынки:** Bitcoin/Ethereum (5m/15m) + Trump + Election + President + Fed + Will
+**Текущие рынки:**
+- **Crypto (5m/15m "Up or Down"):** Bitcoin, Ethereum, BTC, ETH, Solana, SOL
+- **Political:** Trump, Election, President
+- **Economic:** Fed (Federal Reserve decisions)
+- **Binary questions:** Will
 
 ---
 
