@@ -195,11 +195,20 @@ class GammaAPI15mFinder:
                     else:
                         continue
 
+                    # Get market title early for debug logging
+                    title = market.get("question") or market.get("title", "N/A")
+
                     # Check if market ends within max_minutes_ahead minutes (using ET)
                     time_until_end = (end_time_et - now).total_seconds() / 60
 
                     if time_until_end < 0 or time_until_end > max_minutes_ahead:
                         markets_skipped_time_window += 1
+                        # Debug: Log first 5 skipped markets to understand timing
+                        if markets_skipped_time_window <= 5:
+                            print(
+                                f"  DEBUG: Skipped '{title[:60]}...' - "
+                                f"ends in {time_until_end:.1f} min (at {end_time_et.strftime('%H:%M:%S')} ET)"
+                            )
                         continue
 
                     # Market is ending within the time window - add it
@@ -209,7 +218,6 @@ class GammaAPI15mFinder:
                         or market.get("condition_id")
                         or market.get("id")
                     )
-                    title = market.get("question") or market.get("title", "N/A")
 
                     # Extract token IDs from clobTokenIds if available
                     # Only accept strictly binary markets (exactly 2 outcomes: YES/NO)
