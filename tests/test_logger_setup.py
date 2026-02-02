@@ -10,7 +10,6 @@ import logging
 import tempfile
 
 
-
 def test_logger_handler_accumulation():
     """Test that calling setup_logging multiple times doesn't accumulate handlers."""
     # Get logger instances
@@ -136,11 +135,14 @@ def test_file_and_stream_handler_distinction():
     test_logger.addHandler(logging.FileHandler(tempfile.mktemp()))
 
     # Check we have both types
-    file_handlers = [h for h in test_logger.handlers if isinstance(h, logging.FileHandler)]
+    file_handlers = [
+        h for h in test_logger.handlers if isinstance(h, logging.FileHandler)
+    ]
     stream_handlers = [
         h
         for h in test_logger.handlers
-        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        if isinstance(h, logging.StreamHandler)
+        and not isinstance(h, logging.FileHandler)
     ]
 
     assert len(file_handlers) == 1
@@ -165,7 +167,9 @@ def test_multiple_setup_cycles():
         cycle_logger.addHandler(logging.FileHandler(tempfile.mktemp()))
 
         # Should always be 2, not 2*i
-        assert len(cycle_logger.handlers) == 2, f"Cycle {i}: expected 2, got {len(cycle_logger.handlers)}"
+        assert len(cycle_logger.handlers) == 2, (
+            f"Cycle {i}: expected 2, got {len(cycle_logger.handlers)}"
+        )
 
     # Clean up
     cycle_logger.handlers.clear()

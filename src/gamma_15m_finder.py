@@ -309,17 +309,17 @@ class GammaAPI15mFinder:
 
         # Step 1: Run targeted searches with specific queries
         print(f"Using targeted search with {len(self.base_queries)} base queries...")
-        
+
         # Generate date strings for today
         # Polymarket inconsistently uses "February 2" vs "February 02"
         # So we generate both formats to be safe
         current_date_no_zero = now.strftime("%B %-d")  # "February 2"
         current_date_with_zero = now.strftime("%B %d")  # "February 02"
-        
+
         # Get current hour in 12h format
         current_hour_24 = now.hour
         hour_12 = current_hour_24 % 12 or 12
-        
+
         queries = []
         for base in self.base_queries:
             if "Up or Down" in base:

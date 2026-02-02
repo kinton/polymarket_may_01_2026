@@ -4,6 +4,7 @@ Creates a minimal test order to identify the exact failure point.
 """
 
 import os
+import time
 
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
@@ -66,8 +67,6 @@ except Exception as e:
 print("\n4. Attempting to post order (FOK)...")
 print("   NOTE: This will attempt a real order submission!")
 print("   Waiting 3 seconds... (Ctrl+C to cancel)")
-
-import time
 
 time.sleep(3)
 
