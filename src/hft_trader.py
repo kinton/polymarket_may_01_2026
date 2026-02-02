@@ -56,6 +56,7 @@ from src.market_parser import (
 try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import (
+        BalanceAllowanceParams,
         CreateOrderOptions,
         MarketOrderArgs,
         OrderType,
@@ -474,7 +475,14 @@ class LastSecondTrader:
 
         try:
             # Get balance and allowance for USDC
-            balance_data = await asyncio.to_thread(self.client.get_balance_allowance)
+            # pass a params object — py-clob-client expects a params instance
+            # (calling with None causes an AttributeError inside the client)
+            params = (
+                BalanceAllowanceParams()
+            )  # signature_type defaults to -1 and will be filled by client
+            balance_data = await asyncio.to_thread(
+                self.client.get_balance_allowance, params
+            )
 
             # Extract USDC balance (in dollars, already converted from wei)
             usdc_balance = float(balance_data.get("balance", 0))
