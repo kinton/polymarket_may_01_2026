@@ -153,16 +153,6 @@ class GammaAPI15mFinder:
 
         for event in events:
             try:
-                # Debug: Log first 3 events to see what we're getting
-                if events_skipped_inactive < 3:
-                    event_title = event.get("title") or event.get("question", "N/A")
-                    event_active = event.get("active", False)
-                    event_closed = event.get("closed", False)
-                    print(
-                        f"  DEBUG Event: '{event_title[:60]}...' "
-                        f"(active={event_active}, closed={event_closed})"
-                    )
-
                 # Skip only INACTIVE events (not closed - we filter by time instead)
                 # Closed events will be filtered out by end_time check
                 if not event.get("active", False):
@@ -221,12 +211,6 @@ class GammaAPI15mFinder:
 
                     if time_until_end < 0 or time_until_end > max_minutes_ahead:
                         markets_skipped_time_window += 1
-                        # Debug: Log first 5 skipped markets to understand timing
-                        if markets_skipped_time_window <= 5:
-                            print(
-                                f"  DEBUG: Skipped '{title[:60]}...' - "
-                                f"ends in {time_until_end:.1f} min (at {end_time_et.strftime('%H:%M:%S')} ET)"
-                            )
                         continue
 
                     # Market is ending within the time window - add it

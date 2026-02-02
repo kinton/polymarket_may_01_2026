@@ -44,8 +44,8 @@ class TradingBotRunner:
 
     # Configuration
     POLL_INTERVAL = 120  # Check for new markets every 120 seconds to reduce API load
-    TRADER_START_BUFFER = 120  # Start trader 2 minutes before market ends
-    MIN_TIME_TO_START = 0  # Don't start trader if less than 30 seconds until close
+    TRADER_START_WINDOW_MAX = 240  # Start trader up to 4 minutes before market close
+    TRADER_START_WINDOW_MIN = 60   # But not less than 1 minute before close (too late)
 
     def __init__(
         self,
@@ -84,7 +84,7 @@ class TradingBotRunner:
         self.finder_logger.info(f"Trade Size: ${self.trade_size}")
         self.finder_logger.info(f"Poll Interval: {self.poll_interval}s")
         self.finder_logger.info(
-            f"Trader Start Buffer: {self.TRADER_START_BUFFER}s before market close"
+            f"Trader Start Window: {self.TRADER_START_WINDOW_MIN}s - {self.TRADER_START_WINDOW_MAX}s before market close"
         )
         self.finder_logger.info("=" * 80)
 
@@ -157,9 +157,9 @@ class TradingBotRunner:
         Determine if we should start a trader for this market.
 
         Logic:
-        - Market must have sufficient time remaining (>= MIN_TIME_TO_START)
-        - Market must be ending within TRADER_START_BUFFER
+        - Market must be within start window (60-240 seconds before close)
         - Market must not already be monitored
+        - Limit to 1 concurrent trader
         """
         condition_id = market.get("condition_id")
         minutes_until_end = market.get("minutes_until_end", 0)
@@ -169,15 +169,15 @@ class TradingBotRunner:
         if condition_id in self.monitored_markets:
             return False
 
-        # Check if too late to start
-        if seconds_until_end < self.MIN_TIME_TO_START:
+        # Check if too late to start (less than 60 seconds)
+        if seconds_until_end < self.TRADER_START_WINDOW_MIN:
             self.finder_logger.warning(
                 f"Market {condition_id} ends in {seconds_until_end:.1f}s - too late to start trader"
             )
             return False
 
-        # Check if within start buffer
-        if seconds_until_end > self.TRADER_START_BUFFER:
+        # Check if too early to start (more than 240 seconds)
+        if seconds_until_end > self.TRADER_START_WINDOW_MAX:
             self.finder_logger.info(
                 f"Market {condition_id} ends in {minutes_until_end:.1f}m - waiting to start trader"
             )
