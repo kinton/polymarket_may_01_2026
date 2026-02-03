@@ -33,6 +33,7 @@ Requirements:
 import asyncio
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -192,13 +193,21 @@ class LastSecondTrader:
                 self._log("⚠️ Missing PRIVATE_KEY in .env")
                 return None
 
+            # Normalize host to avoid Cloudflare blocks on polymarket.com
+            if "clob.polymarket.com" not in host:
+                self._log(
+                    "⚠️ CLOB_HOST should be https://clob.polymarket.com (overriding)"
+                )
+                host = "https://clob.polymarket.com"
+
             # signature_type=2 for Polymarket proxy wallets
             # funder = the proxy wallet address that holds the USDC
+            signature_type = 2 if funder else 0
             client = ClobClient(
                 host=host,
                 key=private_key,
                 chain_id=chain_id,
-                signature_type=2,  # POLY_PROXY
+                signature_type=signature_type,  # POLY_PROXY when funder is set
                 funder=funder or "",
             )
 
@@ -807,8 +816,21 @@ class LastSecondTrader:
                     "  → FATAL: Insufficient balance/allowance. Check wallet funding."
                 )
                 self.order_executed = True  # Stop retrying
-            elif "403" in error_str:
-                self._log("  → Possible rate limit. Wait 5-10 min or switch IP.")
+            elif "403" in error_str or "cloudflare" in error_str.lower():
+                ray_id = None
+                match = re.search(
+                    r"Cloudflare Ray ID:\s*<strong[^>]*>([^<]+)</strong>",
+                    error_str,
+                    re.IGNORECASE,
+                )
+                if match:
+                    ray_id = match.group(1).strip()
+                ray_note = f" Ray ID: {ray_id}" if ray_id else ""
+                self._log(
+                    "  → Cloudflare 403. Verify CLOB_HOST is https://clob.polymarket.com "
+                    "and API creds are set via create_or_derive_api_creds()."
+                    f"{ray_note} Cooldown or IP change may be required."
+                )
                 self.order_executed = True  # Stop retrying
             elif self.order_attempts < self.max_order_attempts:
                 self._log(

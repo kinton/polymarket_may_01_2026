@@ -110,12 +110,20 @@ class PositionSettler:
                 self.logger.error("Missing PRIVATE_KEY in .env")
                 sys.exit(1)
 
+            if "clob.polymarket.com" not in host:
+                self.logger.warning(
+                    "CLOB_HOST should be https://clob.polymarket.com (overriding)"
+                )
+                host = "https://clob.polymarket.com"
+
+            signature_type = 2 if funder else 0
+
             # Initialize client with private key (same as hft_trader)
             self.client = ClobClient(
                 host=host,
                 key=private_key,
                 chain_id=chain_id,
-                signature_type=2,  # POLY_PROXY
+                signature_type=signature_type,  # POLY_PROXY when funder is set
                 funder=funder or "",
             )
 
