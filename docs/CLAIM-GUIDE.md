@@ -1,103 +1,95 @@
-# How to Claim Winnings
+# How to Claim Winnings from Polymarket
 
-## Option 1: Use Polymarket UI (Recommended)
+## Quick Start (Easiest)
 
-**Easiest way:**
+**Use Polymarket UI:**
 1. Go to [Polymarket](https://polymarket.com)
-2. Click on your profile → Portfolio  
-3. Click "Claim winnings" button
-4. Confirm transaction in your wallet
-5. Done! USDC will be transferred to your balance
+2. Profile → Portfolio → "Claim winnings"
+3. Confirm in MetaMask
+4. Done!
 
-## Option 2: Use Command Line (Advanced)
+## Automatic Claiming via Bot
 
-### Step 1: Find Your Token IDs
+The bot uses `position_settler.py` to automatically:
+1. Detect open positions from trade history
+2. Sell positions when price ≥ $0.999 (99.9% win chance)
+3. Claim USDC from resolved markets
 
-**Method A: Browser DevTools**
-1. Open Polymarket in browser
-2. Press F12 (Developer Tools)
-3. Go to Network tab
-4. Click on your winning position
-5. Look for API calls containing `token_id`
-6. Copy the token_id (long number)
-
-**Method B: Polygonscan**
-1. Go to https://polygonscan.com/address/0x35d26795bE15E060A2C7AA42C2aCF9527E3acE47
-2. Click "Erc1155 Token Txns" tab
-3. Look for recent transfers FROM CTF contract
-4. Token ID is in the "Token ID" column
-5. Click on it to see balance
-
-### Step 2: Find Condition ID
-
-Each market has a unique `condition_id`. You need it to claim.
-
-**Method A: From Gamma API**
+**Run once:**
 ```bash
-# Search for your market
-curl "https://gamma-api.polymarket.com/public-search?q=Bitcoin%20Up%20or%20Down%20February%202"
-
-# Look for conditionId in response
+uv run python src/position_settler.py --once
 ```
 
-**Method B: From Market URL**
-1. Go to the market page on Polymarket
-2. URL looks like: `polymarket.com/event/bitcoin-up-or-down`
-3. Open DevTools → Network
-4. Look for API call with condition_id
-
-### Step 3: Claim via Script
-
+**Run continuously (daemon mode):**
 ```bash
-# Dry run first (safe)
-uv run python scripts/claim_winnings.py \
-  --condition-id <CONDITION_ID> \
-  --token-id <TOKEN_ID>
+# Check every 5 minutes (default)
+uv run python src/position_settler.py --daemon
 
-# If looks good, claim for real
-uv run python scripts/claim_winnings.py \
-  --condition-id <CONDITION_ID> \
-  --token-id <TOKEN_ID> \
-  --live
+# Custom interval (e.g., every 2 minutes)
+uv run python src/position_settler.py --daemon --interval 120
 ```
 
-## Example
+**Live mode (real transactions):**
+```bash
+uv run python src/position_settler.py --once --live
+```
 
-From your screenshot, you have:
-- **3.04 shares** @ $1.00 = **$3.04** to claim
-- Market: "Bitcoin Up or Down - February 2, 6:00PM-6:15PM ET"
-- Position: "Down" (winning side)
+## Limitations
 
-To claim this:
-1. **Option 1 (Easy):** Click "Claim winnings" in UI ✅
-2. **Option 2 (Manual):** Find token_id and run claim script
+⚠️ **Position settler only detects trades made via CLOB API** (i.e., trades made by this bot).
+
+If you traded manually through the Polymarket UI, those positions won't appear in the API trade history. In that case:
+- **Option 1:** Use Polymarket UI to claim (recommended)
+- **Option 2:** Get token IDs manually (see advanced section below)
+
+## Advanced: Manual Claiming (When Auto-Detection Fails)
+
+## Advanced: Manual Claiming (When Auto-Detection Fails)
+
+If the bot can't detect your positions (e.g., trades made through UI), you need to find token IDs manually.
+
+### Finding Token IDs
+
+**Method A: Polygonscan (Best for UI trades)**
+1. Go to https://polygonscan.com/address/YOUR_PROXY_ADDRESS
+2. Replace YOUR_PROXY_ADDRESS with value from .env: `POLYMARKET_PROXY_ADDRESS`
+3. Click "Erc1155 Token Txns" tab
+4. Look for transfers FROM CTF contract (0x4D97DCd97eC945f40cF65F87097ACe5EA0476045)
+5. Copy the Token ID
 
 ## After Claiming
 
-Check your new balance:
+Check your balance:
 ```bash
 uv run python scripts/check_balance.py
 ```
 
-Should show:
-- Before: $0.55 USDC
-- After: $3.59 USDC ($0.55 + $3.04)
-
 ## Troubleshooting
 
-**"No trades found"**
-- Trades were made through UI, not API
-- Use Polygonscan to find token IDs
+**"No positions to process"**
+- Bot only detects trades made via API (not UI trades)
+- Use Polymarket UI to claim, or find token IDs manually
 
 **"Transaction failed"**
-- Wrong condition_id or token_id
+- Wrong token_id or condition_id
 - Market not resolved yet
-- Insufficient MATIC for gas (need ~0.001 MATIC)
+- Insufficient MATIC for gas (~0.001 MATIC needed)
 
 **"Not enough gas"**
-- Need MATIC for transaction fees
-- Get some MATIC from faucet or exchange
-- Transfer to proxy address: `0x35d26795bE15E060A2C7AA42C2aCF9527E3acE47`
+- Need MATIC (Polygon) for transaction fees
+- Transfer MATIC to your proxy address (see `POLYMARKET_PROXY_ADDRESS` in .env)
+
+## Monitoring
+
+Check all positions:
+```bash
+uv run python scripts/check_all_positions.py
+```
+
+This shows:
+- All token balances
+- Current prices
+- Winning positions (price ≥ $0.99)
 
 ## Technical Details
 

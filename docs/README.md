@@ -77,6 +77,32 @@ uv run python main.py --live --size 10 --poll-interval 60
 - ✅ UTC/ET timezone handling
 - ✅ Live trading capability
 - ✅ Dry-run testing mode
+- ✅ Automatic position settlement and claiming
+
+## 🎯 Key Features
+
+### Trading Bot
+- Discovers 5m/15m Bitcoin/Ethereum markets automatically
+- Executes last-second trades (≤1s before close)
+- Buys winning side at $0.99 when available
+
+### Position Settlement
+- Auto-detects open positions from trade history
+- Sells positions when price ≥ $0.999 (near-certain win)
+- Claims USDC from resolved markets
+- Logs P&L to CSV
+
+**Run position settler:**
+```bash
+# Check once and exit
+uv run python src/position_settler.py --once
+
+# Continuous monitoring (every 5 minutes)
+uv run python src/position_settler.py --daemon
+
+# Live mode (real transactions)
+uv run python src/position_settler.py --once --live
+```
 
 ## 🔍 Validation Checklist
 
@@ -89,7 +115,21 @@ Before deployment:
 - [ ] Check market selection logic matches requirements
 - [ ] Validate trigger logic in dry-run mode
 - [ ] **Check USDC balance**: `uv run python scripts/check_balance.py`
-- [ ] **Sell open positions if needed**: `uv run python scripts/check_all_positions.py`
+- [ ] **Check open positions**: `uv run python scripts/check_all_positions.py`
+- [ ] **Test position settler**: `uv run python src/position_settler.py --once`
+
+## 🛠️ Available Scripts
+
+### Essential Scripts
+- `scripts/check_balance.py` - Check USDC balance and allowance
+- `scripts/check_all_positions.py` - List all token positions with prices
+- `scripts/approve.py` - Approve USDC spending for trading
+- `src/position_settler.py` - Settle positions and claim winnings
+
+### Testing Scripts
+- `scripts/test_clob_connection.py` - Test CLOB API connection
+- `scripts/test_order_submission.py` - Test order submission (dry-run)
+- `scripts/test_websocket.py` - Test WebSocket connection
 
 ## 📝 Implementation Notes
 
