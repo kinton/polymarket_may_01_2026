@@ -56,6 +56,10 @@ class GammaAPI15mFinder:
             os.getenv("GAMMA_MIN_REQUEST_INTERVAL", "0.35")
         )
         self._last_request_ts = 0.0
+        # Retry/backoff settings for transient errors
+        self.max_retries = int(os.getenv("GAMMA_MAX_RETRIES", "3"))
+        self.backoff_base = float(os.getenv("GAMMA_BACKOFF_BASE", "0.5"))
+        self.backoff_max = float(os.getenv("GAMMA_BACKOFF_MAX", "4.0"))
 
     async def _rate_limit(self) -> None:
         """Throttle Gamma API requests to avoid rate limits."""
@@ -66,6 +70,11 @@ class GammaAPI15mFinder:
         if wait_for > 0:
             await asyncio.sleep(wait_for)
         self._last_request_ts = time.monotonic()
+
+    async def _backoff_sleep(self, attempt: int) -> None:
+        """Exponential backoff with a max cap."""
+        delay = min(self.backoff_base * (2**attempt), self.backoff_max)
+        await asyncio.sleep(delay)
 
     def _load_base_queries(self) -> list[str]:
         """Load base queries from env or use defaults.
@@ -109,42 +118,65 @@ class GammaAPI15mFinder:
         return self.current_time_et
 
     async def search_markets(
-        self, query: str = "Up or Down", limit: int = 100, offset: int = 0
+        self,
+        query: str = "Up or Down",
+        limit: int = 100,
+        offset: int = 0,
+        session: aiohttp.ClientSession | None = None,
     ) -> dict[str, Any]:
         """
         Query Gamma API public search endpoint.
         Note: The API expects 'q' parameter, not 'query'
         """
         try:
-            await self._rate_limit()
-            async with aiohttp.ClientSession() as session:
-                # API expects 'q' parameter
-                params = {"q": query}
+            owns_session = session is None
+            if session is None:
+                session = aiohttp.ClientSession()
+            # API expects 'q' parameter
+            params = {"q": query}
 
-                async with session.get(
-                    self.BASE_URL,
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as response:
-                    if response.status == 200:
-                        try:
-                            return await response.json()
-                        except Exception as e:
-                            print(f"Failed to parse JSON response: {e}")
-                            return {"markets": []}
-                    elif response.status == 422:
-                        # API returns 422 for validation issues - try to get error details
-                        try:
-                            error_data = await response.json()
-                            print(f"API validation error: {error_data}")
-                        except Exception as e:
-                            print(
-                                f"API Error {response.status}: Could not parse error details - {e}"
-                            )
-                        return {"markets": []}
-                    else:
-                        print(f"API Error: {response.status}")
-                        return {"markets": []}
+            for attempt in range(self.max_retries):
+                await self._rate_limit()
+                try:
+                    async with session.get(
+                        self.BASE_URL,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as response:
+                        if response.status == 200:
+                            try:
+                                return await response.json()
+                            except Exception as e:
+                                print(f"Failed to parse JSON response: {e}")
+                                return {"markets": []}
+                            elif response.status == 422:
+                                # API returns 422 for validation issues - try to get error details
+                                try:
+                                    error_data = await response.json()
+                                    print(f"API validation error: {error_data}")
+                                except Exception as e:
+                                    print(
+                                        f"API Error {response.status}: Could not parse error details - {e}"
+                                    )
+                                return {"markets": []}
+                            elif response.status in {429, 500, 502, 503, 504}:
+                                if attempt < (self.max_retries - 1):
+                                    await self._backoff_sleep(attempt)
+                                    continue
+                                print(f"API Error: {response.status}")
+                                return {"markets": []}
+                            else:
+                                print(f"API Error: {response.status}")
+                                return {"markets": []}
+                except asyncio.TimeoutError:
+                    if attempt < (self.max_retries - 1):
+                        await self._backoff_sleep(attempt)
+                        continue
+                    print("API request timed out")
+                    return {"markets": []}
+        finally:
+            if "owns_session" in locals() and owns_session:
+                await session.close()  # type: ignore[union-attr]
         except asyncio.TimeoutError:
             print("API request timed out")
             return {"markets": []}
@@ -358,36 +390,38 @@ class GammaAPI15mFinder:
                 queries.append(f"{base} - {current_date_with_zero}, {hour_12}:")
             queries.append(base)
 
-        for query in queries:
-            markets_data = await self.search_markets(query=query)
-            events = markets_data.get("events", [])
-
-            if events:
-                print(f"Query '{query[:50]}...' returned {len(events)} events")
-
-                for event in events:
-                    event_id = event.get("id")
-                    if event_id and event_id not in seen_ids:
-                        seen_ids.add(event_id)
-                        all_events.append(event)
-
-        # Step 2: Optionally run wide search if enabled
-        if self.use_wide_search:
-            print("\nAdditionally running wide search (a-e)...")
-            wide_queries = ["a", "b", "c", "d", "e"]
-
-            for query in wide_queries:
-                markets_data = await self.search_markets(query=query)
+        async with aiohttp.ClientSession() as session:
+            for query in queries:
+                markets_data = await self.search_markets(query=query, session=session)
                 events = markets_data.get("events", [])
 
                 if events:
-                    print(f"Query '{query}' returned {len(events)} events")
+                    print(f"Query '{query[:50]}...' returned {len(events)} events")
 
                     for event in events:
                         event_id = event.get("id")
                         if event_id and event_id not in seen_ids:
                             seen_ids.add(event_id)
                             all_events.append(event)
+
+        # Step 2: Optionally run wide search if enabled
+        if self.use_wide_search:
+            print("\nAdditionally running wide search (a-e)...")
+            wide_queries = ["a", "b", "c", "d", "e"]
+
+            async with aiohttp.ClientSession() as session:
+                for query in wide_queries:
+                    markets_data = await self.search_markets(query=query, session=session)
+                    events = markets_data.get("events", [])
+
+                    if events:
+                        print(f"Query '{query}' returned {len(events)} events")
+
+                        for event in events:
+                            event_id = event.get("id")
+                            if event_id and event_id not in seen_ids:
+                                seen_ids.add(event_id)
+                                all_events.append(event)
 
         if not all_events:
             print("No markets found")

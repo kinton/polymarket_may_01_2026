@@ -53,6 +53,7 @@ class TradingBotRunner:
         trade_size: float = 1.01,
         poll_interval: int = 90,
         run_once: bool = False,
+        max_traders: int = 1,
     ):
         """
         Initialize the trading bot runner.
@@ -67,6 +68,7 @@ class TradingBotRunner:
         self.trade_size = trade_size
         self.poll_interval = poll_interval
         self.run_once = run_once
+        self.max_traders = max_traders
 
         # Active traders (track running tasks)
         self.active_traders = {}  # condition_id -> asyncio.Task
@@ -83,6 +85,7 @@ class TradingBotRunner:
         )
         self.finder_logger.info(f"Trade Size: ${self.trade_size}")
         self.finder_logger.info(f"Poll Interval: {self.poll_interval}s")
+        self.finder_logger.info(f"Max Concurrent Traders: {self.max_traders}")
         self.finder_logger.info(
             f"Trader Start Window: {self.TRADER_START_WINDOW_MIN}s - {self.TRADER_START_WINDOW_MAX}s before market close"
         )
@@ -184,9 +187,9 @@ class TradingBotRunner:
             return False
 
         # Limit concurrent traders to reduce API load
-        if len(self.active_traders) >= 1:
+        if len(self.active_traders) >= self.max_traders:
             self.finder_logger.info(
-                f"Skipping market {condition_id} because a trader is already running (limit=1)"
+                f"Skipping market {condition_id} because a trader is already running (limit={self.max_traders})"
             )
             return False
 
@@ -382,8 +385,19 @@ async def main():
         action="store_true",
         help="Run once and exit (default: continuous loop)",
     )
+    parser.add_argument(
+        "--max-traders",
+        type=int,
+        default=1,
+        help="Maximum concurrent traders (default: 1)",
+    )
 
     args = parser.parse_args()
+
+    if args.size <= 0:
+        parser.error("--size must be a positive number")
+    if args.max_traders < 1:
+        parser.error("--max-traders must be at least 1")
 
     # Safety warning for live mode
     if args.live:
@@ -401,6 +415,7 @@ async def main():
         trade_size=args.size,
         poll_interval=args.poll_interval,
         run_once=args.once,
+        max_traders=args.max_traders,
     )
 
     await runner.run()

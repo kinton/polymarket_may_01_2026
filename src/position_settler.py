@@ -299,6 +299,15 @@ class PositionSettler:
                 self.logger.info(
                     f"✅ Successfully sold {balance:.2f} tokens @ ${current_price:.4f} (~${balance * current_price:.2f})"
                 )
+                pnl = self.calculate_pnl(
+                    position, entry_price=0.99, exit_price=current_price
+                )
+                await self.log_pnl_to_csv(
+                    position=position,
+                    pnl=pnl,
+                    condition_id=position.get("condition_id", "N/A"),
+                    market_title=position.get("market_title", "N/A"),
+                )
                 return result
             else:
                 self.logger.warning(f"Failed to sell position: {result}")
@@ -392,7 +401,10 @@ class PositionSettler:
             return None
 
     def calculate_pnl(
-        self, position: dict[str, Any], entry_price: float = 0.99
+        self,
+        position: dict[str, Any],
+        entry_price: float = 0.99,
+        exit_price: float = 1.0,
     ) -> dict[str, float]:
         """
         Calculate P&L for a position.
@@ -400,13 +412,14 @@ class PositionSettler:
         Args:
             position: Position dict from API
             entry_price: Assumed entry price (default: 0.99)
+            exit_price: Realized exit price (default: 1.00)
 
         Returns:
             Dict with cost, exit_value, profit_loss, roi_percent
         """
-        size = float(position.get("size", 0))
+        size = float(position.get("size", position.get("balance", 0)))
         cost = size * entry_price
-        exit_value = size * 1.0  # Winning tokens worth $1.00 each
+        exit_value = size * exit_price
 
         profit_loss = exit_value - cost
         roi_percent = (profit_loss / cost * 100) if cost > 0 else 0.0
@@ -469,8 +482,9 @@ class PositionSettler:
                         ),
                         "market_title": market_title,
                         "condition_id": condition_id,
-                        "token_id": position.get("asset_id", "N/A"),
-                        "side": "YES/NO",  # Determined by token_id
+                        "token_id": position.get("token_id")
+                        or position.get("asset_id", "N/A"),
+                        "side": position.get("side", "UNKNOWN"),
                         "tokens_bought": pnl["tokens"],
                         "entry_price": 0.99,
                         "cost": pnl["cost"],

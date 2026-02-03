@@ -228,23 +228,28 @@ class LastSecondTrader:
 
     async def connect_websocket(self):
         """Connect to Polymarket WebSocket and subscribe to both YES and NO tokens."""
-        try:
-            # Single WebSocket connection for both tokens
-            self.ws = await websockets.connect(
-                self.WS_URL, ping_interval=20, ping_timeout=10
-            )
-            subscribe_msg = {
-                "assets_ids": [self.token_id_yes, self.token_id_no],
-                "type": "MARKET",
-            }
-            await self.ws.send(json.dumps(subscribe_msg))
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                # Single WebSocket connection for both tokens
+                self.ws = await websockets.connect(
+                    self.WS_URL, ping_interval=20, ping_timeout=10
+                )
+                subscribe_msg = {
+                    "assets_ids": [self.token_id_yes, self.token_id_no],
+                    "type": "MARKET",
+                }
+                await self.ws.send(json.dumps(subscribe_msg))
 
-            self._log("✓ WebSocket connected, subscribed to YES+NO tokens")
-            return True
+                self._log("✓ WebSocket connected, subscribed to YES+NO tokens")
+                return True
 
-        except Exception as e:
-            self._log(f"❌ WebSocket connection failed: {e}")
-            return False
+            except Exception as e:
+                self._log(f"❌ WebSocket connection failed: {e}")
+                if attempt < (max_attempts - 1):
+                    await asyncio.sleep(2**attempt)
+                else:
+                    return False
 
     async def process_market_update(self, data: dict[str, Any]):
         """
