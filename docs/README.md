@@ -88,6 +88,8 @@ Before deployment:
 - [ ] Verify WebSocket connection in logs
 - [ ] Check market selection logic matches requirements
 - [ ] Validate trigger logic in dry-run mode
+- [ ] **Check USDC balance**: `uv run python scripts/check_balance.py`
+- [ ] **Sell open positions if needed**: `uv run python scripts/check_all_positions.py`
 
 ## 📝 Implementation Notes
 

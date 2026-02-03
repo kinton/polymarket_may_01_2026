@@ -9,6 +9,7 @@ dependencies = [
     "asyncio>=4.0.0",
     "py-clob-client>=0.34.5",
     "python-dotenv>=1.2.1",
+    "web3>=7.14.0",
     "websockets>=15.0.1",
 ]
 
