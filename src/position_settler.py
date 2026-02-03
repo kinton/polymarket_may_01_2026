@@ -116,7 +116,7 @@ class PositionSettler:
                 key=private_key,
                 chain_id=chain_id,
                 signature_type=2,  # POLY_PROXY
-                funder=funder,
+                funder=funder or '',
             )
 
             # Derive API credentials from private key
@@ -152,8 +152,12 @@ class PositionSettler:
             # Step 1: Get trade history to find token_ids we've traded
             from py_clob_client.clob_types import TradeParams
 
+            if self.client is None:
+                self.logger.error("Client not initialized")
+                return []
+
             trades = self.client.get_trades(
-                params=TradeParams(maker_address=self.client.get_address())
+                params=TradeParams(maker_address=self.client.get_address() or '')
             )
 
             if not trades:
@@ -179,11 +183,12 @@ class PositionSettler:
             positions = []
             for token_id in token_ids:
                 try:
-                    balance_info = self.client.get_balance_allowance(
+                    balance_info_raw = self.client.get_balance_allowance(
                         params=BalanceAllowanceParams(
-                            asset_type=AssetType.CONDITIONAL, token_id=token_id
+                            asset_type=AssetType.CONDITIONAL, token_id=token_id  # type: ignore
                         )
                     )
+                    balance_info: dict[str, Any] = balance_info_raw  # type: ignore
 
                     balance = float(balance_info.get("balance", 0))
 
@@ -191,7 +196,8 @@ class PositionSettler:
                     if balance > 0.01:  # Minimum 0.01 tokens to avoid dust
                         # Get current market price (BUY side = what we can sell for)
                         try:
-                            price_info = self.client.get_price(token_id, "BUY")
+                            price_info_raw = self.client.get_price(token_id, "BUY")
+                            price_info: dict[str, Any] = price_info_raw  # type: ignore
                             current_price = float(price_info.get("price", 0))
                         except Exception as e:
                             self.logger.warning(
@@ -209,8 +215,7 @@ class PositionSettler:
                         )
 
                         self.logger.info(
-                            f"  Position: {balance:.2f} tokens @ ${current_price:.3f} "
-                            f"(~${balance * current_price:.2f})"
+                            f"  Position: {balance:.2f} tokens @ ${current_price:.3f} (~${balance * current_price:.2f})"
                         )
 
                 except Exception as e:
@@ -255,8 +260,7 @@ class PositionSettler:
 
         if self.dry_run:
             self.logger.info(
-                f"DRY RUN: Would sell {balance:.2f} tokens @ ${current_price:.4f} "
-                f"(~${balance * current_price:.2f} revenue)"
+                f"DRY RUN: Would sell {balance:.2f} tokens @ ${current_price:.4f} (~${balance * current_price:.2f} revenue)"
             )
             return {"status": "dry_run", "token_id": token_id, "price": current_price}
 
@@ -265,20 +269,24 @@ class PositionSettler:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
             from py_clob_client.order_builder.constants import SELL
 
+            if self.client is None:
+                self.logger.error("Client not initialized")
+                return None
+
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 amount=balance,  # Sell all tokens
                 side=SELL,
-                order_type=OrderType.FOK,  # Fill-or-Kill
+                order_type=OrderType.FOK,  # type: ignore  # Fill-or-Kill
             )
 
             signed_order = self.client.create_market_order(order_args)
-            result = self.client.post_order(signed_order, orderType=OrderType.FOK)
+            result_raw = self.client.post_order(signed_order, orderType=OrderType.FOK)  # type: ignore
+            result: dict[str, Any] = result_raw  # type: ignore
 
             if result.get("success") or result.get("orderID"):
                 self.logger.info(
-                    f"✅ Successfully sold {balance:.2f} tokens @ ${current_price:.4f} "
-                    f"(~${balance * current_price:.2f})"
+                    f"✅ Successfully sold {balance:.2f} tokens @ ${current_price:.4f} (~${balance * current_price:.2f})"
                 )
                 return result
             else:
@@ -301,10 +309,15 @@ class PositionSettler:
         """
         try:
             # Get market info from CLOB API
+            if self.client is None:
+                self.logger.error("Client not initialized")
+                return None
+
             loop = asyncio.get_event_loop()
-            market_info = await loop.run_in_executor(
+            market_info_raw = await loop.run_in_executor(
                 None, self.client.get_market, condition_id
             )
+            market_info: dict[str, Any] = market_info_raw  # type: ignore
 
             if not market_info:
                 self.logger.warning(f"Market {condition_id} not found")
@@ -350,10 +363,14 @@ class PositionSettler:
         try:
             self.logger.info(f"Redeeming token {token_id} for condition {condition_id}")
 
+            if self.client is None:
+                self.logger.error("Client not initialized")
+                return None
+
             # Call CLOB API to redeem position
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, self.client.redeem_position, token_id
+                None, lambda: self.client.redeem_position(token_id)  # type: ignore
             )
 
             if result:
@@ -494,8 +511,7 @@ class PositionSettler:
                     continue
 
                 self.logger.info(
-                    f"Position {processed + 1}/{len(positions)}: "
-                    f"{balance:.2f} tokens @ ${current_price:.4f}"
+                    f"Position {processed + 1}/{len(positions)}: {balance:.2f} tokens @ ${current_price:.4f}"
                 )
 
                 # Strategy 1: Try to sell if price >= 0.999 (99.9% chance of winning)
