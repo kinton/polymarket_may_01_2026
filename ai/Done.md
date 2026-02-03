@@ -1,5 +1,41 @@
 # Выполненные задачи
 
+## 17. Fix USDC Balance Conversion (Critical) ✅
+**Дата:** 3 февраля 2026  
+**Проблема:** Бот показывал баланс $550,884, проходил balance check, но при попытке выставить ордер получал ошибку `"not enough balance / allowance"`. 
+
+**Причина:** API Polymarket возвращает баланс в **микро-USDC** (6 десятичных знаков), но код не делал конвертацию:
+- API: `"550884"` = 550,884 микро-USDC = **$0.55 USDC**
+- Код думал: `550884.00` = **$550,884 USD**
+
+Реальный баланс был **$0.55**, а для трейда нужно минимум **$2**.
+
+**Решение:**
+1. Добавлена конвертация `/1e6` для `balance` в `hft_trader.py:_check_balance()`
+2. Добавлена конвертация `/1e6` для `allowance` (для consistency)
+3. Теперь отображается реальный баланс: `$0.55 USDC` вместо `$550,884`
+
+**Изменения:**
+```python
+# Before:
+usdc_balance = float(balance_data.get("balance", 0))
+usdc_allowance = float(allowances_dict.get(EXCHANGE_CONTRACT, 0))
+
+# After:
+usdc_balance = float(balance_data.get("balance", 0)) / 1e6
+usdc_allowance = float(allowances_dict.get(EXCHANGE_CONTRACT, 0)) / 1e6
+```
+
+**Результат:**
+- ✅ Balance check теперь показывает реальные значения
+- ✅ Пользователь понимает, что нужно пополнить кошелёк
+- ✅ Предотвращены ложные срабатывания при недостатке средств
+- ℹ️ Нужно пополнить Proxy wallet: `0x35d26795bE15E060A2C7AA42C2aCF9527E3acE47` минимум на $2 USDC
+
+*Примечание: USDC на Polygon использует 6 decimal places, как и на Ethereum. Allowance уже был в порядке (max uint256).*
+
+---
+
 ## 16. Production-Ready Deployment: Hybrid Market Discovery ✅
 **Дата:** 2 февраля 2026  
 **Проблема:** Система находила 0 рынков из-за использования широкого поиска (a,b,c,d,e), который возвращал неподходящие долгосрочные рынки. Нужна была расширяемая система для торговли на разных типах рынков.
