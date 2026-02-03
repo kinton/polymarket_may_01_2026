@@ -26,6 +26,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aiohttp
 
@@ -34,7 +35,7 @@ class GammaAPI15mFinder:
     """Find active binary markets on Polymarket."""
 
     BASE_URL = "https://gamma-api.polymarket.com/public-search"
-    ET_TZ = timezone(timedelta(hours=-5))  # EST (adjust to -4 for EDT if needed)
+    ET_TZ = ZoneInfo("America/New_York")  # Handles DST correctly
 
     def __init__(self, max_minutes_ahead: int = 20, use_wide_search: bool = False):
         """Initialize finder.

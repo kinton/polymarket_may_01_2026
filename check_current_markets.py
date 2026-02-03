@@ -2,18 +2,19 @@
 """Quick script to check what markets are currently available."""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import aiohttp
-import pytz
 
 
 async def check_markets():
-    ET_TZ = pytz.timezone("US/Eastern")
+    ET_TZ = ZoneInfo("America/New_York")
     now = datetime.now(ET_TZ)
+    window_end = now + timedelta(minutes=20)
     print(f"Current time ET: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print(
-        f"Looking for markets ending between {now.strftime('%H:%M')} and {(now.replace(minute=now.minute + 20)).strftime('%H:%M')} ET\n"
+        f"Looking for markets ending between {now.strftime('%H:%M')} and {window_end.strftime('%H:%M')} ET\n"
     )
 
     url = "https://gamma-api.polymarket.com/public-search"
