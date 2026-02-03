@@ -35,6 +35,7 @@ uv run python main.py --live --size 2
 
 ## ⚙️ Configuration
 
+### Environment Variables
 Required `.env` variables:
 ```bash
 PRIVATE_KEY=0x...                           # Ethereum private key
@@ -42,6 +43,20 @@ POLYMARKET_PROXY_ADDRESS=0x...             # Polymarket proxy wallet
 POLYGON_CHAIN_ID=137
 CLOB_HOST=https://clob.polymarket.com
 ```
+
+### Trading Parameters
+Edit `src/clob_types.py` to adjust strategy:
+```python
+BUY_PRICE = 0.99           # Maximum price to pay (99¢)
+MIN_CONFIDENCE = 0.75      # Only buy if ≥75% confidence
+TRIGGER_THRESHOLD = 120.0  # Start trading 120s before close
+```
+
+**Example:** With `MIN_CONFIDENCE = 0.75`, bot will:
+- ✅ Buy YES if price is $0.75-$0.99 (75-99% chance)
+- ❌ Skip YES if price is $0.51 (51% chance - too risky!)
+
+This prevents buying positions that can easily flip in final seconds.
 
 ## 📊 Position Management
 
