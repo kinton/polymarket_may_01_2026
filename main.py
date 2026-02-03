@@ -45,7 +45,7 @@ class TradingBotRunner:
     # Configuration
     POLL_INTERVAL = 120  # Check for new markets every 120 seconds to reduce API load
     TRADER_START_WINDOW_MAX = 240  # Start trader up to 4 minutes before market close
-    TRADER_START_WINDOW_MIN = 60  # But not less than 1 minute before close (too late)
+    TRADER_START_WINDOW_MIN = 20  # But not less than 20 seconds before close (too late)
 
     def __init__(
         self,
@@ -169,7 +169,7 @@ class TradingBotRunner:
         if condition_id in self.monitored_markets:
             return False
 
-        # Check if too late to start (less than 60 seconds)
+        # Check if too late to start (less than 20 seconds)
         if seconds_until_end < self.TRADER_START_WINDOW_MIN:
             self.finder_logger.warning(
                 f"Market {condition_id} ends in {seconds_until_end:.1f}s - too late to start trader"
