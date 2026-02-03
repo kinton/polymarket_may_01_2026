@@ -116,7 +116,7 @@ class PositionSettler:
                 key=private_key,
                 chain_id=chain_id,
                 signature_type=2,  # POLY_PROXY
-                funder=funder or '',
+                funder=funder or "",
             )
 
             # Derive API credentials from private key
@@ -157,7 +157,7 @@ class PositionSettler:
                 return []
 
             trades = self.client.get_trades(
-                params=TradeParams(maker_address=self.client.get_address() or '')
+                params=TradeParams(maker_address=self.client.get_address() or "")
             )
 
             if not trades:
@@ -185,7 +185,8 @@ class PositionSettler:
                 try:
                     balance_info_raw = self.client.get_balance_allowance(
                         params=BalanceAllowanceParams(
-                            asset_type=AssetType.CONDITIONAL, token_id=token_id  # type: ignore
+                            asset_type=AssetType.CONDITIONAL,  # type: ignore
+                            token_id=token_id,
                         )
                     )
                     balance_info: dict[str, Any] = balance_info_raw  # type: ignore
@@ -370,7 +371,8 @@ class PositionSettler:
             # Call CLOB API to redeem position
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, lambda: self.client.redeem_position(token_id)  # type: ignore
+                None,
+                lambda: self.client.redeem_position(token_id),  # type: ignore
             )
 
             if result:

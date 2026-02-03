@@ -198,7 +198,7 @@ class LastSecondTrader:
                 key=private_key,
                 chain_id=chain_id,
                 signature_type=2,  # POLY_PROXY
-                funder=funder or '',
+                funder=funder or "",
             )
 
             # Derive API credentials from private key (required for auth)
