@@ -33,6 +33,7 @@ Requirements:
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -134,6 +135,9 @@ class LastSecondTrader:
         # Track last log time to avoid spam
         self.last_log_time = 0.0
         self.last_logged_state = None
+        
+        # Track which warnings we've already logged (to avoid spam)
+        self._logged_warnings = set()
 
         # Initialize CLOB client
         load_dotenv()
@@ -142,7 +146,7 @@ class LastSecondTrader:
         # Log init
         mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
         self._log(
-            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE} | Min confidence: {self.MIN_CONFIDENCE*100:.0f}%"
+            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE} | Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
         )
 
     def _extract_market_name(self, title: Optional[str]) -> str:
@@ -545,16 +549,14 @@ class LastSecondTrader:
 
         # Check retry limit
         if self.order_attempts >= self.max_order_attempts:
-            if not hasattr(self, "_logged_max_attempts"):
+            if "max_attempts" not in self._logged_warnings:
                 self._log(
                     f"⚠️  [{self.market_name}] Max order attempts ({self.max_order_attempts}) reached"
                 )
-                self._logged_max_attempts = True
+                self._logged_warnings.add("max_attempts")
             return
 
         # Cooldown between attempts (prevent spam)
-        import time
-
         current_time = time.time()
         if (
             self.order_attempts > 0
@@ -566,44 +568,44 @@ class LastSecondTrader:
             return
 
         if self.winning_side is None:
-            if not hasattr(self, "_logged_no_winner"):
+            if "no_winner" not in self._logged_warnings:
                 self._log(
                     f"⚠️  [{self.market_name}] No winning side at {time_remaining:.3f}s"
                 )
-                self._logged_no_winner = True
+                self._logged_warnings.add("no_winner")
             return
 
         winning_ask = self._get_winning_ask()
         if winning_ask is None:
-            if not hasattr(self, "_logged_no_ask"):
+            if "no_ask" not in self._logged_warnings:
                 self._log(
                     f"⚠️  [{self.market_name}] No ask price at {time_remaining:.3f}s"
                 )
-                self._logged_no_ask = True
+                self._logged_warnings.add("no_ask")
             return
 
         # Check minimum confidence: only buy if winning side is ≥ MIN_CONFIDENCE
         # For example, if MIN_CONFIDENCE = 0.75, only buy if ask ≥ $0.75
         if winning_ask < self.MIN_CONFIDENCE:
-            if not hasattr(self, "_logged_low_confidence"):
+            if "low_confidence" not in self._logged_warnings:
                 self._log(
-                    f"⚠️  [{self.market_name}] Low confidence: ${winning_ask:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE*100:.0f}%)"
+                    f"⚠️  [{self.market_name}] Low confidence: ${winning_ask:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE * 100:.0f}%)"
                 )
-                self._logged_low_confidence = True
+                self._logged_warnings.add("low_confidence")
             return
 
         if winning_ask > self.BUY_PRICE + self.PRICE_TIE_EPS:
-            if not hasattr(self, "_logged_price_high"):
+            if "price_high" not in self._logged_warnings:
                 self._log(
                     f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.BUY_PRICE}"
                 )
-                self._logged_price_high = True
+                self._logged_warnings.add("price_high")
             return
 
         # Check balance before executing order (only check once per market)
-        if not hasattr(self, "_balance_checked"):
+        if "balance_checked" not in self._logged_warnings:
             balance_ok = await self._check_balance()
-            self._balance_checked = True  # Only check once per market
+            self._logged_warnings.add("balance_checked")
 
             if not balance_ok:
                 self._log(

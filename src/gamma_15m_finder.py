@@ -111,15 +111,16 @@ class GammaAPI15mFinder:
                     if response.status == 200:
                         try:
                             return await response.json()
-                        except Exception:
+                        except Exception as e:
+                            print(f"Failed to parse JSON response: {e}")
                             return {"markets": []}
                     elif response.status == 422:
                         # API returns 422 for validation issues - try to get error details
                         try:
                             error_data = await response.json()
                             print(f"API validation error: {error_data}")
-                        except Exception:
-                            print(f"API Error: {response.status}")
+                        except Exception as e:
+                            print(f"API Error {response.status}: Could not parse error details - {e}")
                         return {"markets": []}
                     else:
                         print(f"API Error: {response.status}")
@@ -250,7 +251,8 @@ class GammaAPI15mFinder:
                             else:
                                 markets_skipped_non_binary += 1
                                 continue
-                        except Exception:
+                        except Exception as e:
+                            print(f"Error parsing token IDs: {e}")
                             markets_skipped_non_binary += 1
                             continue
                     else:
