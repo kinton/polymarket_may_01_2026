@@ -35,7 +35,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import websockets
 from dotenv import load_dotenv
@@ -94,9 +94,9 @@ class LastSecondTrader:
         end_time: datetime,
         dry_run: bool = True,
         trade_size: float = 1.0,
-        title: Optional[str] = None,
-        slug: Optional[str] = None,
-        trader_logger: Optional[Any] = None,
+        title: str | None = None,
+        slug: str | None = None,
+        trader_logger: Any | None = None,
     ):
         """
         Initialize the trader.
@@ -124,7 +124,7 @@ class LastSecondTrader:
 
         # Market state
         self.orderbook = OrderBook()
-        self.winning_side: Optional[str] = None  # "YES" or "NO"
+        self.winning_side: str | None = None  # "YES" or "NO"
         self.order_executed = False
         self.order_in_progress = False  # Prevent duplicate orders
         self.order_attempts = 0  # Track retry attempts
@@ -149,7 +149,7 @@ class LastSecondTrader:
             f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE} | Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
         )
 
-    def _extract_market_name(self, title: Optional[str]) -> str:
+    def _extract_market_name(self, title: str | None) -> str:
         """Extract short market name from title for logging."""
         if not title:
             return "UNKNOWN"
@@ -174,7 +174,7 @@ class LastSecondTrader:
         if self.logger:
             self.logger.info(message)
 
-    def _init_clob_client(self) -> Optional[ClobClient]:
+    def _init_clob_client(self) -> ClobClient | None:
         """Initialize the CLOB client for order execution."""
         if self.dry_run:
             print("Dry run mode: Skipping CLOB client initialization\n")
@@ -432,7 +432,7 @@ class LastSecondTrader:
             tie_epsilon=self.PRICE_TIE_EPS,
         )
 
-    def _get_winning_token_id(self) -> Optional[str]:
+    def _get_winning_token_id(self) -> str | None:
         """Get token ID for the winning side."""
         if self.winning_side is None:
             return None
@@ -440,7 +440,7 @@ class LastSecondTrader:
             self.winning_side, self.token_id_yes, self.token_id_no
         )
 
-    def _get_winning_ask(self) -> Optional[float]:
+    def _get_winning_ask(self) -> float | None:
         """
         Get best ask price for winning side.
 
@@ -461,7 +461,7 @@ class LastSecondTrader:
             return None
         return None
 
-    def _get_winning_bid(self) -> Optional[float]:
+    def _get_winning_bid(self) -> float | None:
         """Get best bid price for winning side (what buyers are willing to pay)."""
         if self.winning_side == "YES":
             return self.orderbook.best_bid_yes

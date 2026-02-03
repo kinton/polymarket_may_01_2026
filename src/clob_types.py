@@ -4,7 +4,6 @@ Common type definitions and constants for trading system.
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 
 @dataclass
@@ -23,11 +22,11 @@ class Market:
 class OrderBook:
     """Current order book state for a market."""
 
-    best_ask_yes: Optional[float] = None
-    best_bid_yes: Optional[float] = None
-    best_ask_no: Optional[float] = None
-    best_bid_no: Optional[float] = None
-    sum_asks: Optional[float] = None  # YES ask + NO ask (should be ~1.0)
+    best_ask_yes: float | None = None
+    best_bid_yes: float | None = None
+    best_ask_no: float | None = None
+    best_bid_no: float | None = None
+    sum_asks: float | None = None  # YES ask + NO ask (should be ~1.0)
 
     def update(self) -> None:
         """Recalculate derived values."""

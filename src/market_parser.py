@@ -2,10 +2,8 @@
 Utilities for parsing WebSocket market data and determining trade logic.
 """
 
-from typing import Optional
 
-
-def extract_best_ask_from_book(asks: list) -> Optional[float]:
+def extract_best_ask_from_book(asks: list) -> float | None:
     """Extract minimum ask price from orderbook asks array."""
     if not asks:
         return None
@@ -17,7 +15,7 @@ def extract_best_ask_from_book(asks: list) -> Optional[float]:
         return None
 
 
-def extract_best_bid_from_book(bids: list) -> Optional[float]:
+def extract_best_bid_from_book(bids: list) -> float | None:
     """Extract maximum bid price from orderbook bids array."""
     if not bids:
         return None
@@ -31,7 +29,7 @@ def extract_best_bid_from_book(bids: list) -> Optional[float]:
 
 def extract_prices_from_price_change(
     changes: list, expected_token_id: str
-) -> tuple[Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None]:
     """
     Extract best_ask and best_bid from price_change event's changes list.
     Returns (best_ask, best_bid) for the matching token.
@@ -66,12 +64,12 @@ def extract_prices_from_price_change(
 
 
 def determine_winning_side(
-    best_bid_yes: Optional[float],
-    best_bid_no: Optional[float],
-    best_ask_yes: Optional[float] = None,
-    best_ask_no: Optional[float] = None,
+    best_bid_yes: float | None,
+    best_bid_no: float | None,
+    best_ask_yes: float | None = None,
+    best_ask_no: float | None = None,
     tie_epsilon: float = 1e-6,
-) -> Optional[str]:
+) -> str | None:
     """
     Determine winning side based on BID prices (who is willing to pay more).
 
@@ -123,10 +121,10 @@ def determine_winning_side(
 
 
 def get_winning_token_id(
-    winning_side: Optional[str],
+    winning_side: str | None,
     token_id_yes: str,
     token_id_no: str,
-) -> Optional[str]:
+) -> str | None:
     """Get token ID for the winning side."""
     if winning_side == "YES":
         return token_id_yes

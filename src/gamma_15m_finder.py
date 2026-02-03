@@ -25,7 +25,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import aiohttp
 
@@ -297,7 +297,7 @@ class GammaAPI15mFinder:
 
         return filtered_markets
 
-    async def find_active_market(self) -> Optional[List[Dict[str, Any]]]:
+    async def find_active_market(self) -> list[dict[str, Any]] | None:
         """
         Main function to find active binary markets.
         Searches for markets ending in the next max_minutes_ahead minutes (default 20).

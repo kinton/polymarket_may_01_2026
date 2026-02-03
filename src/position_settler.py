@@ -26,7 +26,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
@@ -226,7 +226,7 @@ class PositionSettler:
 
     async def sell_position_if_profitable(
         self, position: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Sell position if current price >= 0.999 (profitable exit).
 
@@ -289,7 +289,7 @@ class PositionSettler:
             self.logger.error(f"Error selling position {token_id}: {e}", exc_info=True)
             return None
 
-    async def check_market_resolution(self, condition_id: str) -> Optional[str]:
+    async def check_market_resolution(self, condition_id: str) -> str | None:
         """
         Check if market is resolved and get winning outcome.
 
@@ -332,7 +332,7 @@ class PositionSettler:
 
     async def redeem_position(
         self, token_id: str, condition_id: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Redeem winning tokens for USDC.
 
