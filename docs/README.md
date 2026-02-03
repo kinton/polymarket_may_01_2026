@@ -115,16 +115,15 @@ Before deployment:
 - [ ] Check market selection logic matches requirements
 - [ ] Validate trigger logic in dry-run mode
 - [ ] **Check USDC balance**: `uv run python scripts/check_balance.py`
-- [ ] **Check open positions**: `uv run python scripts/check_all_positions.py`
-- [ ] **Test position settler**: `uv run python src/position_settler.py --once`
+- [ ] **Check open positions**: `uv run python src/position_settler.py --once`
+- [ ] **Test position settler in live mode**: `uv run python src/position_settler.py --once --live`
 
 ## 🛠️ Available Scripts
 
 ### Essential Scripts
 - `scripts/check_balance.py` - Check USDC balance and allowance
-- `scripts/check_all_positions.py` - List all token positions with prices
 - `scripts/approve.py` - Approve USDC spending for trading
-- `src/position_settler.py` - Settle positions and claim winnings
+- `src/position_settler.py` - Settle positions and claim winnings (replaces check_all_positions.py)
 
 ### Testing Scripts
 - `scripts/test_clob_connection.py` - Test CLOB API connection

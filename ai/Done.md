@@ -4,18 +4,17 @@
 **Дата:** 3 февраля 2026  
 **Проблема:** После исправления balance bug и добавления claim functionality накопилось много дублирующихся и устаревших скриптов для диагностики (debug_*, claim_*, check_proxy*, etc). Это загромождало кодовую базу и затрудняло поддержку.
 
-**Удалено 12 скриптов:**
+**Удалено 13 скриптов:**
 - Debug scripts (5): `debug_allowance.py`, `debug_balance_api.py`, `debug_raw_balance.py`, `test_all_balances.py`, `list_client_methods.py`
 - Helper scripts (2): `quick_balance.py`, `show_addresses.py`
 - Obsolete claim scripts (3): `claim_winnings.py`, `find_claimable_positions.py`, `find_positions.py`
-- Duplicate check scripts (2): `check_proxy.py`, `check_onchain_balance.py`, `check_proxy_onchain.py`, `check_positions.py`
+- Duplicate check scripts (3): `check_proxy.py`, `check_onchain_balance.py`, `check_proxy_onchain.py`, `check_positions.py`, `check_all_positions.py`
 
 **Оставлено (Essential Scripts):**
 - `scripts/check_balance.py` - проверка USDC баланса через CLOB API
-- `scripts/check_all_positions.py` - список всех позиций с ценами
 - `scripts/approve.py` - approve USDC spending
 - `scripts/test_*.py` - test скрипты для WebSocket, CLOB connection, orders
-- `src/position_settler.py` - **единый инструмент для claiming** (заменяет все claim скрипты)
+- `src/position_settler.py` - **единый инструмент для claiming** (заменяет все claim скрипты и check_all_positions.py)
 
 **Изменения в документации:**
 - `docs/CLAIM-GUIDE.md` - обновлён, теперь рекомендует `position_settler.py` как основной инструмент

@@ -83,13 +83,14 @@ uv run python scripts/check_balance.py
 
 Check all positions:
 ```bash
-uv run python scripts/check_all_positions.py
+uv run python src/position_settler.py --once
 ```
 
 This shows:
 - All token balances
 - Current prices
-- Winning positions (price ≥ $0.99)
+- Winning positions (price ≥ $0.999)
+- Auto-sells positions when profitable
 
 ## Technical Details
 

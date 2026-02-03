@@ -45,9 +45,9 @@
   - *Решение*: Добавить web3.py для взаимодействия с CTF контрактом, создать скрипты для claim.
   - *Статус*: ✅ **COMPLETED 2026-02-03** - добавлен position_settler.py для автоматического claim, документация в CLAIM-GUIDE.md
 - [x] **Clean Up Debug/Obsolete Scripts**
-  - Много дублирующихся и устаревших скриптов для диагностики (debug_*, claim_*, check_proxy*, etc).
-  - *Решение*: Удалить все debug скрипты, оставить только essential: check_balance.py, check_all_positions.py, approve.py, position_settler.py
-  - *Статус*: ✅ **COMPLETED 2026-02-03** - удалено 12 скриптов, обновлена документация
+  - Много дублирующихся и устаревших скриптов для диагностики (debug_*, claim_*, check_proxy*, check_all_positions.py).
+  - *Решение*: Удалить все debug скрипты и дубликаты, оставить только essential: check_balance.py, approve.py, position_settler.py
+  - *Статус*: ✅ **COMPLETED 2026-02-03** - удалено 13 скриптов (включая check_all_positions.py), обновлена документация
 - [ ] **Create Real Unit Tests**
   - Текущие тесты (`test_*.py`) — это скрипты проверки связи.
   - *Решение*: Создать папку `tests/`. Написать `pytest` тесты с моками (`unittest.mock`) для:
