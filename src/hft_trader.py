@@ -86,6 +86,7 @@ class LastSecondTrader:
     MIN_CONFIDENCE = MIN_CONFIDENCE  # Minimum confidence to buy (e.g. 0.75 = 75%)
 
     WS_URL = CLOB_WS_URL
+    WS_STALE_SECONDS = 2.0  # Require fresh WS data for trigger checks
 
     def __init__(
         self,
@@ -140,6 +141,8 @@ class LastSecondTrader:
         # Track which warnings we've already logged (to avoid spam)
         self._logged_warnings = set()
         self._trigger_lock = asyncio.Lock()
+        self.last_ws_update_ts = 0.0
+        self._last_stale_log_ts = 0.0
 
         # Initialize CLOB client
         load_dotenv()
@@ -385,6 +388,7 @@ class LastSecondTrader:
             # Update derived values and determine winning side
             self.orderbook.update()
             self._update_winning_side()
+            self.last_ws_update_ts = time.time()
 
             # Get time remaining
             time_remaining = self.get_time_remaining()
@@ -880,8 +884,11 @@ class LastSecondTrader:
                 self._log("Failed to connect to WebSocket. Exiting.")
                 return
 
-            # Rely solely on WebSocket events for trade decisions
-            await self.listen_to_market()
+            # Rely on WebSocket events, with a time-based fallback for logging
+            await asyncio.gather(
+                self.listen_to_market(),
+                self._trigger_check_loop(),
+            )
 
         except KeyboardInterrupt:
             self._log("⚠️  Interrupted by user. Shutting down...")
@@ -889,3 +896,31 @@ class LastSecondTrader:
             if self.ws:
                 await self.ws.close()
             self._log("✓ Trader shut down cleanly")
+
+    async def _trigger_check_loop(self):
+        """Fallback loop for time-based checks without trading on stale data."""
+        while True:
+            time_remaining = self.get_time_remaining()
+            if time_remaining <= 0:
+                break
+
+            # Only check trigger if WS data is fresh
+            if (
+                self.orderbook.best_ask_yes is not None
+                or self.orderbook.best_ask_no is not None
+            ):
+                now_ts = time.time()
+                ws_fresh = (now_ts - self.last_ws_update_ts) <= self.WS_STALE_SECONDS
+                if ws_fresh:
+                    await self.check_trigger(time_remaining)
+                else:
+                    # Log stale WS status occasionally for visibility
+                    if now_ts - self._last_stale_log_ts >= 5.0:
+                        self._log(
+                            f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
+                            f"[{self.market_name}] WS stale ({now_ts - self.last_ws_update_ts:.1f}s). "
+                            f"Time: {time_remaining:.2f}s"
+                        )
+                        self._last_stale_log_ts = now_ts
+
+            await asyncio.sleep(1.0)
