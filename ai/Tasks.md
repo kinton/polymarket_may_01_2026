@@ -64,10 +64,6 @@
   - *Решение*: Проверять `if logger.hasHandlers(): logger.handlers.clear()` перед добавлением.
   - *Статус*: ✅ **COMPLETED 2026-02-01** - добавлены проверки в `setup_logging()`, создан test suite (7 tests)
 
-- [ ] **Client-side Rate Limiting**
-  - Для предотвращения Cloudflare 403.
-  - *Решение*: Добавить декоратор или логику `await asyncio.sleep` между частыми вызовами API (особенно в `GammaAPI15mFinder`).
-
 - [ ] **API Retry Logic (Exponential Backoff)**
   - Ошибки сети (502, 503) просто логгируются как ошибки, но могут прервать процесс трейдинга.
   - *Решение*: Добавить `tenacity.retry` для критических запросов (получение orderbook, отправка ордера, поиск рынков).

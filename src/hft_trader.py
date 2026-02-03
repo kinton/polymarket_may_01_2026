@@ -614,6 +614,14 @@ class LastSecondTrader:
                 f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {self.winning_side} @ ${winning_ask:.4f}"
             )
 
+            # Final sanity check in case we crossed close during async work
+            if self.get_time_remaining() <= 0:
+                self._log(
+                    f"⏰ [{self.market_name}] Market closed before order submission. Skipping."
+                )
+                self.order_executed = True
+                return
+
             await self.execute_order()
 
     async def verify_order(self, order_id: str) -> None:
@@ -837,27 +845,6 @@ class LastSecondTrader:
         except Exception as e:
             self._log(f"❌ [{self.market_name}] Error in market listener: {e}")
 
-    async def _trigger_check_loop(self):
-        """Periodically check trigger conditions every 5 seconds.
-
-        This ensures we don't miss the trigger window even if WebSocket
-        is silent (no orderbook changes).
-        """
-        while True:
-            time_remaining = self.get_time_remaining()
-
-            if time_remaining <= 0:
-                break
-
-            # Check trigger if we have any price data
-            if (
-                self.orderbook.best_ask_yes is not None
-                or self.orderbook.best_ask_no is not None
-            ):
-                await self.check_trigger(time_remaining)
-
-            await asyncio.sleep(5)  # Check every 5 seconds
-
     async def run(self):
         """Main entry point: Connect and start trading."""
         try:
@@ -866,11 +853,8 @@ class LastSecondTrader:
                 self._log("Failed to connect to WebSocket. Exiting.")
                 return
 
-            # Run both WebSocket listener and periodic trigger check concurrently
-            await asyncio.gather(
-                self.listen_to_market(),
-                self._trigger_check_loop(),
-            )
+            # Rely solely on WebSocket events for trade decisions
+            await self.listen_to_market()
 
         except KeyboardInterrupt:
             self._log("⚠️  Interrupted by user. Shutting down...")

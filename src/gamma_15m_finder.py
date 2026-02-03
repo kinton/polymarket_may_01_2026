@@ -24,6 +24,7 @@ The script will output:
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -50,6 +51,21 @@ class GammaAPI15mFinder:
         self.use_wide_search = use_wide_search
         # Always load base queries (Bitcoin/Ethereum + custom from env)
         self.base_queries = self._load_base_queries()
+        # Rate limiting to avoid Cloudflare 403
+        self.min_request_interval = float(
+            os.getenv("GAMMA_MIN_REQUEST_INTERVAL", "0.35")
+        )
+        self._last_request_ts = 0.0
+
+    async def _rate_limit(self) -> None:
+        """Throttle Gamma API requests to avoid rate limits."""
+        if self.min_request_interval <= 0:
+            return
+        now = time.monotonic()
+        wait_for = self.min_request_interval - (now - self._last_request_ts)
+        if wait_for > 0:
+            await asyncio.sleep(wait_for)
+        self._last_request_ts = time.monotonic()
 
     def _load_base_queries(self) -> list[str]:
         """Load base queries from env or use defaults.
@@ -100,6 +116,7 @@ class GammaAPI15mFinder:
         Note: The API expects 'q' parameter, not 'query'
         """
         try:
+            await self._rate_limit()
             async with aiohttp.ClientSession() as session:
                 # API expects 'q' parameter
                 params = {"q": query}
