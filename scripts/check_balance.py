@@ -35,12 +35,12 @@ def main():
             key=private_key,
             chain_id=POLYGON,
             signature_type=2,  # POLY_PROXY
-            funder=proxy_address,
+            funder=proxy_address or '',
         )
         client.set_api_creds(client.create_or_derive_api_creds())
 
         # Get balance and allowance
-        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)  # type: ignore
         balance_info = client.get_balance_allowance(params)
 
         print("=" * 50)

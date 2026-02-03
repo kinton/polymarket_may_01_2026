@@ -83,10 +83,13 @@ except Exception as e:
 # Test balance check
 print("\n5. Testing Balance Check...")
 try:
-    balances = client.get_balances()
+    from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+    params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)  # type: ignore
+    balance_info = client.get_balance_allowance(params)
     print("   ✓ Balance retrieved")
-    if balances:
-        print(f"   Available balance: ${float(balances.get('available', 0)):.2f}")
+    if balance_info:
+        balance = float(balance_info.get('balance', 0)) / 1e6  # Convert from micro-USDC
+        print(f"   Available balance: ${balance:.2f}")
     print("   ✓ All API tests passed!")
 except Exception as e:
     print(f"   ✗ Error getting balance: {e}")

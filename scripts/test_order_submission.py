@@ -22,7 +22,7 @@ private_key = os.getenv("PRIVATE_KEY")
 chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
 host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
 
-client = ClobClient(host=host, key=private_key, chain_id=chain_id)
+client = ClobClient(host=host, key=private_key or '', chain_id=chain_id)
 api_creds = client.create_or_derive_api_creds()
 client.set_api_creds(api_creds)
 print("   ✓ Client initialized")
@@ -49,7 +49,7 @@ try:
 
     created_order = client.create_order(
         order_args,
-        CreateOrderOptions(tick_size="0.01", neg_risk=False),
+        CreateOrderOptions(tick_size="0.01", neg_risk=False),  # type: ignore
     )
     print("   ✓ Order created successfully")
     print(f"   Order type: {type(created_order)}")
@@ -71,7 +71,7 @@ print("   Waiting 3 seconds... (Ctrl+C to cancel)")
 time.sleep(3)
 
 try:
-    response = client.post_order(created_order, OrderType.FOK)
+    response = client.post_order(created_order, OrderType.FOK)  # type: ignore
     print("   ✓ Order posted successfully!")
     print(f"   Response: {response}")
 
