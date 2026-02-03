@@ -35,7 +35,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any
 
 import websockets
 from dotenv import load_dotenv
@@ -245,7 +245,7 @@ class LastSecondTrader:
             self._log(f"❌ WebSocket connection failed: {e}")
             return False
 
-    async def process_market_update(self, data: Dict[str, Any]):
+    async def process_market_update(self, data: dict[str, Any]):
         """
         Process incoming market data from WebSocket.
 

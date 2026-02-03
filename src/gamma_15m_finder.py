@@ -25,7 +25,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any
 
 import aiohttp
 
@@ -50,7 +50,7 @@ class GammaAPI15mFinder:
         # Always load base queries (Bitcoin/Ethereum + custom from env)
         self.base_queries = self._load_base_queries()
 
-    def _load_base_queries(self) -> List[str]:
+    def _load_base_queries(self) -> list[str]:
         """Load base queries from env or use defaults.
 
         Env format: MARKET_QUERIES="Query1;Query2;Query3"
@@ -93,7 +93,7 @@ class GammaAPI15mFinder:
 
     async def search_markets(
         self, query: str = "Up or Down", limit: int = 100, offset: int = 0
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Query Gamma API public search endpoint.
         Note: The API expects 'q' parameter, not 'query'
@@ -135,8 +135,8 @@ class GammaAPI15mFinder:
             return {"markets": []}
 
     def filter_markets(
-        self, events: List[Dict[str, Any]], max_minutes_ahead: int = 20
-    ) -> List[Dict[str, Any]]:
+        self, events: list[dict[str, Any]], max_minutes_ahead: int = 20
+    ) -> list[dict[str, Any]]:
         """
         Filter markets to find those ending within max_minutes_ahead minutes.
         Works with Polymarket 'events' objects from Gamma API.

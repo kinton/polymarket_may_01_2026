@@ -26,7 +26,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
@@ -131,7 +131,7 @@ class PositionSettler:
             self.logger.error(f"Failed to initialize CLOB client: {e}", exc_info=True)
             sys.exit(1)
 
-    async def get_open_positions(self) -> List[Dict[str, Any]]:
+    async def get_open_positions(self) -> list[dict[str, Any]]:
         """
         Fetch all open positions by:
         1. Getting trade history from CLOB API
@@ -225,7 +225,7 @@ class PositionSettler:
             return []
 
     async def sell_position_if_profitable(
-        self, position: Dict[str, Any]
+        self, position: dict[str, Any]
     ) -> dict[str, Any] | None:
         """
         Sell position if current price >= 0.999 (profitable exit).
@@ -368,8 +368,8 @@ class PositionSettler:
             return None
 
     def calculate_pnl(
-        self, position: Dict[str, Any], entry_price: float = 0.99
-    ) -> Dict[str, float]:
+        self, position: dict[str, Any], entry_price: float = 0.99
+    ) -> dict[str, float]:
         """
         Calculate P&L for a position.
 
@@ -397,8 +397,8 @@ class PositionSettler:
 
     async def log_pnl_to_csv(
         self,
-        position: Dict[str, Any],
-        pnl: Dict[str, float],
+        position: dict[str, Any],
+        pnl: dict[str, float],
         condition_id: str,
         market_title: str = "N/A",
     ):
