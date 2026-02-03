@@ -138,6 +138,7 @@ class LastSecondTrader:
 
         # Track which warnings we've already logged (to avoid spam)
         self._logged_warnings = set()
+        self._trigger_lock = asyncio.Lock()
 
         # Initialize CLOB client
         load_dotenv()
@@ -537,82 +538,83 @@ class LastSecondTrader:
         6. Order not currently in progress (prevent duplicates)
         7. Sufficient USDC balance and allowance
         """
-        if self.order_executed or self.order_in_progress or time_remaining <= 0:
-            return
-
-        # Check retry limit
-        if self.order_attempts >= self.max_order_attempts:
-            if "max_attempts" not in self._logged_warnings:
-                self._log(
-                    f"⚠️  [{self.market_name}] Max order attempts ({self.max_order_attempts}) reached"
-                )
-                self._logged_warnings.add("max_attempts")
-            return
-
-        # Cooldown between attempts (prevent spam)
-        current_time = time.time()
-        if (
-            self.order_attempts > 0
-            and (current_time - self.last_order_attempt_time) < 2.0
-        ):
-            return  # Wait at least 2 seconds between attempts
-
-        if time_remaining > self.TRIGGER_THRESHOLD:
-            return
-
-        if self.winning_side is None:
-            if "no_winner" not in self._logged_warnings:
-                self._log(
-                    f"⚠️  [{self.market_name}] No winning side at {time_remaining:.3f}s"
-                )
-                self._logged_warnings.add("no_winner")
-            return
-
-        winning_ask = self._get_winning_ask()
-        if winning_ask is None:
-            if "no_ask" not in self._logged_warnings:
-                self._log(
-                    f"⚠️  [{self.market_name}] No ask price at {time_remaining:.3f}s"
-                )
-                self._logged_warnings.add("no_ask")
-            return
-
-        # Check minimum confidence: only buy if winning side is ≥ MIN_CONFIDENCE
-        # For example, if MIN_CONFIDENCE = 0.75, only buy if ask ≥ $0.75
-        if winning_ask < self.MIN_CONFIDENCE:
-            if "low_confidence" not in self._logged_warnings:
-                self._log(
-                    f"⚠️  [{self.market_name}] Low confidence: ${winning_ask:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE * 100:.0f}%)"
-                )
-                self._logged_warnings.add("low_confidence")
-            return
-
-        if winning_ask > self.BUY_PRICE + self.PRICE_TIE_EPS:
-            if "price_high" not in self._logged_warnings:
-                self._log(
-                    f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.BUY_PRICE}"
-                )
-                self._logged_warnings.add("price_high")
-            return
-
-        # Check balance before executing order (only check once per market)
-        if "balance_checked" not in self._logged_warnings:
-            balance_ok = await self._check_balance()
-            self._logged_warnings.add("balance_checked")
-
-            if not balance_ok:
-                self._log(
-                    f"❌ [{self.market_name}] FATAL: Insufficient funds. Stopping trader."
-                )
-                self.order_executed = True  # Stop trying to trade
+        async with self._trigger_lock:
+            if self.order_executed or self.order_in_progress or time_remaining <= 0:
                 return
 
-        # All conditions met - execute trade!
-        self._log(
-            f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {self.winning_side} @ ${winning_ask:.4f}"
-        )
+            # Check retry limit
+            if self.order_attempts >= self.max_order_attempts:
+                if "max_attempts" not in self._logged_warnings:
+                    self._log(
+                        f"⚠️  [{self.market_name}] Max order attempts ({self.max_order_attempts}) reached"
+                    )
+                    self._logged_warnings.add("max_attempts")
+                return
 
-        await self.execute_order()
+            # Cooldown between attempts (prevent spam)
+            current_time = time.time()
+            if (
+                self.order_attempts > 0
+                and (current_time - self.last_order_attempt_time) < 2.0
+            ):
+                return  # Wait at least 2 seconds between attempts
+
+            if time_remaining > self.TRIGGER_THRESHOLD:
+                return
+
+            if self.winning_side is None:
+                if "no_winner" not in self._logged_warnings:
+                    self._log(
+                        f"⚠️  [{self.market_name}] No winning side at {time_remaining:.3f}s"
+                    )
+                    self._logged_warnings.add("no_winner")
+                return
+
+            winning_ask = self._get_winning_ask()
+            if winning_ask is None:
+                if "no_ask" not in self._logged_warnings:
+                    self._log(
+                        f"⚠️  [{self.market_name}] No ask price at {time_remaining:.3f}s"
+                    )
+                    self._logged_warnings.add("no_ask")
+                return
+
+            # Check minimum confidence: only buy if winning side is ≥ MIN_CONFIDENCE
+            # For example, if MIN_CONFIDENCE = 0.75, only buy if ask ≥ $0.75
+            if winning_ask < self.MIN_CONFIDENCE:
+                if "low_confidence" not in self._logged_warnings:
+                    self._log(
+                        f"⚠️  [{self.market_name}] Low confidence: ${winning_ask:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE * 100:.0f}%)"
+                    )
+                    self._logged_warnings.add("low_confidence")
+                return
+
+            if winning_ask > self.BUY_PRICE + self.PRICE_TIE_EPS:
+                if "price_high" not in self._logged_warnings:
+                    self._log(
+                        f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.BUY_PRICE}"
+                    )
+                    self._logged_warnings.add("price_high")
+                return
+
+            # Check balance before executing order (only check once per market)
+            if "balance_checked" not in self._logged_warnings:
+                balance_ok = await self._check_balance()
+                self._logged_warnings.add("balance_checked")
+
+                if not balance_ok:
+                    self._log(
+                        f"❌ [{self.market_name}] FATAL: Insufficient funds. Stopping trader."
+                    )
+                    self.order_executed = True  # Stop trying to trade
+                    return
+
+            # All conditions met - execute trade!
+            self._log(
+                f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {self.winning_side} @ ${winning_ask:.4f}"
+            )
+
+            await self.execute_order()
 
     async def verify_order(self, order_id: str) -> None:
         """

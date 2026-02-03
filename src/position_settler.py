@@ -156,8 +156,9 @@ class PositionSettler:
                 self.logger.error("Client not initialized")
                 return []
 
-            trades = self.client.get_trades(
-                params=TradeParams(maker_address=self.client.get_address() or "")
+            trades = await asyncio.to_thread(
+                self.client.get_trades,
+                params=TradeParams(maker_address=self.client.get_address() or ""),
             )
 
             if not trades:
@@ -183,11 +184,12 @@ class PositionSettler:
             positions = []
             for token_id in token_ids:
                 try:
-                    balance_info_raw = self.client.get_balance_allowance(
+                    balance_info_raw = await asyncio.to_thread(
+                        self.client.get_balance_allowance,
                         params=BalanceAllowanceParams(
                             asset_type=AssetType.CONDITIONAL,  # type: ignore
                             token_id=token_id,
-                        )
+                        ),
                     )
                     balance_info: dict[str, Any] = balance_info_raw  # type: ignore
 
@@ -197,7 +199,9 @@ class PositionSettler:
                     if balance > 0.01:  # Minimum 0.01 tokens to avoid dust
                         # Get current market price (BUY side = what we can sell for)
                         try:
-                            price_info_raw = self.client.get_price(token_id, "BUY")
+                            price_info_raw = await asyncio.to_thread(
+                                self.client.get_price, token_id, "BUY"
+                            )
                             price_info: dict[str, Any] = price_info_raw  # type: ignore
                             current_price = float(price_info.get("price", 0))
                         except Exception as e:
@@ -281,8 +285,14 @@ class PositionSettler:
                 order_type=OrderType.FOK,  # type: ignore  # Fill-or-Kill
             )
 
-            signed_order = self.client.create_market_order(order_args)
-            result_raw = self.client.post_order(signed_order, orderType=OrderType.FOK)  # type: ignore
+            signed_order = await asyncio.to_thread(
+                self.client.create_market_order, order_args
+            )
+            result_raw = await asyncio.to_thread(
+                self.client.post_order,
+                signed_order,
+                orderType=OrderType.FOK,  # type: ignore
+            )
             result: dict[str, Any] = result_raw  # type: ignore
 
             if result.get("success") or result.get("orderID"):
@@ -314,9 +324,8 @@ class PositionSettler:
                 self.logger.error("Client not initialized")
                 return None
 
-            loop = asyncio.get_event_loop()
-            market_info_raw = await loop.run_in_executor(
-                None, self.client.get_market, condition_id
+            market_info_raw = await asyncio.to_thread(
+                self.client.get_market, condition_id
             )
             market_info: dict[str, Any] = market_info_raw  # type: ignore
 
@@ -369,11 +378,7 @@ class PositionSettler:
                 return None
 
             # Call CLOB API to redeem position
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self.client.redeem_position(token_id),  # type: ignore
-            )
+            result = await asyncio.to_thread(self.client.redeem_position, token_id)  # type: ignore
 
             if result:
                 self.logger.info(f"Successfully redeemed token {token_id}")
