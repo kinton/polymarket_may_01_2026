@@ -198,7 +198,7 @@ class LastSecondTrader:
                 key=private_key,
                 chain_id=chain_id,
                 signature_type=2,  # POLY_PROXY
-                funder=funder,
+                funder=funder or '',
             )
 
             # Derive API credentials from private key (required for auth)
@@ -406,12 +406,7 @@ class LastSecondTrader:
                     return f"${p:.2f}" if p is not None else "-"
 
                 self._log(
-                    f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
-                    f"[{self.market_name}] "
-                    f"Time: {time_remaining:.2f}s | "
-                    f"YES bid/ask: {fmt(yes_bid)}/{fmt(yes_ask)} | "
-                    f"NO bid/ask: {fmt(no_bid)}/{fmt(no_ask)} | "
-                    f"Winner: {self.winning_side or 'None'}"
+                    f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [{self.market_name}] Time: {time_remaining:.2f}s | YES bid/ask: {fmt(yes_bid)}/{fmt(yes_ask)} | NO bid/ask: {fmt(no_bid)}/{fmt(no_ask)} | Winner: {self.winning_side or 'None'}"
                 )
                 self.last_log_time = current_time
                 self.last_logged_state = current_state
@@ -485,11 +480,12 @@ class LastSecondTrader:
             # pass a params object — py-clob-client expects a params instance
             # (calling with None causes an AttributeError inside the client)
             params = BalanceAllowanceParams(
-                asset_type=AssetType.COLLATERAL  # USDC is collateral asset
+                asset_type=AssetType.COLLATERAL  # type: ignore  # USDC is collateral asset
             )  # signature_type defaults to -1 and will be filled by client
-            balance_data = await asyncio.to_thread(
+            balance_data_raw = await asyncio.to_thread(
                 self.client.get_balance_allowance, params
             )
+            balance_data: dict[str, Any] = balance_data_raw  # type: ignore
 
             # Extract USDC balance (API returns in 6-decimal units, divide by 1e6 to get dollars)
             usdc_balance = float(balance_data.get("balance", 0)) / 1e6
@@ -508,22 +504,19 @@ class LastSecondTrader:
             # Check both balance and allowance
             if usdc_balance < required_amount:
                 self._log(
-                    f"❌ [{self.market_name}] Insufficient balance: "
-                    f"${usdc_balance:.2f} < ${required_amount:.2f}"
+                    f"❌ [{self.market_name}] Insufficient balance: ${usdc_balance:.2f} < ${required_amount:.2f}"
                 )
                 return False
 
             if usdc_allowance < required_amount:
                 self._log(
-                    f"❌ [{self.market_name}] Insufficient allowance: "
-                    f"${usdc_allowance:.2f} < ${required_amount:.2f}"
+                    f"❌ [{self.market_name}] Insufficient allowance: ${usdc_allowance:.2f} < ${required_amount:.2f}"
                 )
                 self._log("   → Run: uv run python approve.py to approve USDC spending")
                 return False
 
             self._log(
-                f"✓ [{self.market_name}] Balance check passed: "
-                f"${usdc_balance:.2f} available (need ${required_amount:.2f})"
+                f"✓ [{self.market_name}] Balance check passed: ${usdc_balance:.2f} available (need ${required_amount:.2f})"
             )
             return True
 
@@ -634,7 +627,8 @@ class LastSecondTrader:
             await asyncio.sleep(0.5)
 
             # Client.get_order returns a dictionary
-            order_data = await asyncio.to_thread(self.client.get_order, order_id)
+            order_data_raw = await asyncio.to_thread(self.client.get_order, order_id)
+            order_data: dict[str, Any] = order_data_raw  # type: ignore
 
             # Exact key per py-clob-client documentation
             status = order_data.get("status", "unknown").lower()
@@ -745,23 +739,23 @@ class LastSecondTrader:
             created_order = await asyncio.to_thread(
                 self.client.create_market_order,
                 order_args,
-                CreateOrderOptions(tick_size="0.01", neg_risk=False),
+                CreateOrderOptions(tick_size="0.01", neg_risk=False),  # type: ignore
             )
             self._log(f"✓ [{self.market_name}] Market order created")
 
             # Post as Fill-or-Kill
-            response: dict[str, Any] = await asyncio.to_thread(
+            response = await asyncio.to_thread(
                 self.client.post_order,
                 created_order,
-                OrderType.FOK,
+                OrderType.FOK,  # type: ignore
             )
 
             self._log(f"✓ [{self.market_name}] FOK order posted: {response}")
 
             # Calculate executed price
             try:
-                taking_amount = float(response.get("takingAmount", 0))
-                making_amount = float(response.get("makingAmount", 0))
+                taking_amount = float(response.get("takingAmount", 0))  # type: ignore
+                making_amount = float(response.get("makingAmount", 0))  # type: ignore
                 if taking_amount > 0:
                     executed_price = making_amount / taking_amount
                     self._log(
@@ -772,7 +766,7 @@ class LastSecondTrader:
 
             # Extract and verify
             try:
-                order_id = response["orderID"]
+                order_id = response["orderID"]  # type: ignore
                 await self.verify_order(str(order_id))
             except KeyError:
                 self._log(
@@ -811,6 +805,9 @@ class LastSecondTrader:
 
     async def listen_to_market(self):
         """Listen to WebSocket and process market updates until market closes."""
+        if self.ws is None:
+            self._log("❌ WebSocket not initialized")
+            return
         try:
             async for message in self.ws:
                 try:
