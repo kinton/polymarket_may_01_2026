@@ -135,7 +135,7 @@ class LastSecondTrader:
         # Track last log time to avoid spam
         self.last_log_time = 0.0
         self.last_logged_state = None
-        
+
         # Track which warnings we've already logged (to avoid spam)
         self._logged_warnings = set()
 

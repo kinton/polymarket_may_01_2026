@@ -120,7 +120,9 @@ class GammaAPI15mFinder:
                             error_data = await response.json()
                             print(f"API validation error: {error_data}")
                         except Exception as e:
-                            print(f"API Error {response.status}: Could not parse error details - {e}")
+                            print(
+                                f"API Error {response.status}: Could not parse error details - {e}"
+                            )
                         return {"markets": []}
                     else:
                         print(f"API Error: {response.status}")
