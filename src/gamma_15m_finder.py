@@ -149,40 +149,40 @@ class GammaAPI15mFinder:
                             except Exception as e:
                                 print(f"Failed to parse JSON response: {e}")
                                 return {"markets": []}
-                            elif response.status == 422:
-                                # API returns 422 for validation issues - try to get error details
-                                try:
-                                    error_data = await response.json()
-                                    print(f"API validation error: {error_data}")
-                                except Exception as e:
-                                    print(
-                                        f"API Error {response.status}: Could not parse error details - {e}"
-                                    )
-                                return {"markets": []}
-                            elif response.status in {429, 500, 502, 503, 504}:
-                                if attempt < (self.max_retries - 1):
-                                    await self._backoff_sleep(attempt)
-                                    continue
-                                print(f"API Error: {response.status}")
-                                return {"markets": []}
-                            else:
-                                print(f"API Error: {response.status}")
-                                return {"markets": []}
+                        elif response.status == 422:
+                            # API returns 422 for validation issues - try to get error details
+                            try:
+                                error_data = await response.json()
+                                print(f"API validation error: {error_data}")
+                            except Exception as e:
+                                print(
+                                    f"API Error {response.status}: Could not parse error details - {e}"
+                                )
+                            return {"markets": []}
+                        elif response.status in {429, 500, 502, 503, 504}:
+                            if attempt < (self.max_retries - 1):
+                                await self._backoff_sleep(attempt)
+                                continue
+                            print(f"API Error: {response.status}")
+                            return {"markets": []}
+                        else:
+                            print(f"API Error: {response.status}")
+                            return {"markets": []}
                 except asyncio.TimeoutError:
                     if attempt < (self.max_retries - 1):
                         await self._backoff_sleep(attempt)
                         continue
                     print("API request timed out")
                     return {"markets": []}
-        finally:
-            if "owns_session" in locals() and owns_session:
-                await session.close()  # type: ignore[union-attr]
         except asyncio.TimeoutError:
             print("API request timed out")
             return {"markets": []}
         except Exception as e:
             print(f"Error querying API: {e}")
             return {"markets": []}
+        finally:
+            if "owns_session" in locals() and owns_session:
+                await session.close()  # type: ignore[union-attr]
 
     def filter_markets(
         self, events: list[dict[str, Any]], max_minutes_ahead: int = 20
