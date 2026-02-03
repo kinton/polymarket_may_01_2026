@@ -42,6 +42,7 @@ from dotenv import load_dotenv
 from src.clob_types import (
     BUY_PRICE,
     CLOB_WS_URL,
+    MIN_CONFIDENCE,
     PRICE_TIE_EPS,
     TRIGGER_THRESHOLD,
     OrderBook,
@@ -80,6 +81,7 @@ class LastSecondTrader:
     PRICE_THRESHOLD = 0.50  # Winning side threshold
     BUY_PRICE = BUY_PRICE
     PRICE_TIE_EPS = PRICE_TIE_EPS
+    MIN_CONFIDENCE = MIN_CONFIDENCE  # Minimum confidence to buy (e.g. 0.75 = 75%)
 
     WS_URL = CLOB_WS_URL
 
@@ -140,7 +142,7 @@ class LastSecondTrader:
         # Log init
         mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
         self._log(
-            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE}"
+            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE} | Min confidence: {self.MIN_CONFIDENCE*100:.0f}%"
         )
 
     def _extract_market_name(self, title: Optional[str]) -> str:
@@ -532,10 +534,11 @@ class LastSecondTrader:
         Trigger conditions:
         1. Time remaining <= TRIGGER_THRESHOLD seconds (but > 0)
         2. Winning side is determined (higher ask price)
-        3. Best ask <= $0.99 (at or better than our limit)
-        4. Order not already executed
-        5. Order not currently in progress (prevent duplicates)
-        6. Sufficient USDC balance and allowance
+        3. Best ask >= MIN_CONFIDENCE (e.g. 0.75 = 75% confidence)
+        4. Best ask <= $0.99 (at or better than our limit)
+        5. Order not already executed
+        6. Order not currently in progress (prevent duplicates)
+        7. Sufficient USDC balance and allowance
         """
         if self.order_executed or self.order_in_progress or time_remaining <= 0:
             return
@@ -577,6 +580,16 @@ class LastSecondTrader:
                     f"⚠️  [{self.market_name}] No ask price at {time_remaining:.3f}s"
                 )
                 self._logged_no_ask = True
+            return
+
+        # Check minimum confidence: only buy if winning side is ≥ MIN_CONFIDENCE
+        # For example, if MIN_CONFIDENCE = 0.75, only buy if ask ≥ $0.75
+        if winning_ask < self.MIN_CONFIDENCE:
+            if not hasattr(self, "_logged_low_confidence"):
+                self._log(
+                    f"⚠️  [{self.market_name}] Low confidence: ${winning_ask:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE*100:.0f}%)"
+                )
+                self._logged_low_confidence = True
             return
 
         if winning_ask > self.BUY_PRICE + self.PRICE_TIE_EPS:
