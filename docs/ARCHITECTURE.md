@@ -95,13 +95,13 @@ MIN_TIME_TO_START = 30      # minimum time left to start trader
 ```
 
 ### 3. LastSecondTrader (hft_trader.py)
-**Role:** High-frequency trading execution in final seconds
+**Role:** High-frequency trading execution in final window (≤ TRIGGER_THRESHOLD, default 120s)
 
 **Key Responsibilities:**
 - Connect to CLOB WebSocket for real-time prices
 - Monitor both YES and NO token prices
 - Determine winning side (price > 0.50)
-- Execute FOK order in final second
+- Execute FOK order once within the trigger window when conditions are met
 
 **Key Methods:**
 - `connect_websocket()` - Establish WebSocket connections
@@ -121,7 +121,7 @@ def _determine_winning_side(self):
 ```
 
 **Trigger Conditions:**
-- Time remaining ≤ 1.0 second
+- Time remaining ≤ TRIGGER_THRESHOLD seconds (default 120s)
 - Best ask ≤ $0.99
 - Order not yet executed
 
@@ -175,10 +175,10 @@ def _determine_winning_side(self):
   ├─ WebSocket connections established
   ├─ Monitoring begins
   │
-08:59:59 ← 1 second before close (TRIGGER_SECONDS)
+08:58:00 ← 2 minutes before close (TRIGGER_THRESHOLD = 120s)
   │
-  ├─ Trigger fires
-  ├─ Order submitted
+  ├─ Trigger window opens
+  ├─ Order submitted when conditions are met
   ├─ FOK order executed
   │
 09:00:00 ← MARKET CLOSES

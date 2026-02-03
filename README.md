@@ -6,7 +6,7 @@ High-frequency trading bot for Polymarket 5/15-minute Bitcoin/Ethereum markets.
 
 - **Automated Market Discovery** - Finds active 5m/15m markets via Gamma API
 - **Real-time Price Monitoring** - WebSocket connection for orderbook updates
-- **Last-Second Execution** - Buys winning side at $0.99 within final second
+- **Final-Window Execution** - Buys winning side at $0.99 within the final 120s window
 - **Position Settlement** - Auto-sells @ $0.999 and claims resolved markets
 - **Dry-run Mode** - Test safely before live trading
 

@@ -41,7 +41,7 @@ AI can independently solve these problems:
 | Search Window | 20 minutes | TZ requirement |
 | Market Types | 5m, 15m Bitcoin/Ethereum | TZ requirement |
 | Trader Start Buffer | 180s (3 min) | Code: `TRADER_START_BUFFER` |
-| Trigger Threshold | ≤1.0 second | Code: `TRIGGER_SECONDS` |
+| Trigger Threshold | ≤120s | Code: `TRIGGER_THRESHOLD` |
 | Winning Side | Price > 0.50 | Code: `_determine_winning_side()` |
 | Buy Price | $0.99 | Code: `BUY_PRICE` |
 | Poll Interval | 90s | Code: `POLL_INTERVAL` |
@@ -83,7 +83,7 @@ uv run python main.py --live --size 10 --poll-interval 60
 
 ### Trading Bot
 - Discovers 5m/15m Bitcoin/Ethereum markets automatically
-- Executes last-second trades (≤1s before close)
+- Executes trades in the final window (≤120s before close)
 - Buys winning side at $0.99 when available
 
 ### Position Settlement

@@ -2,12 +2,12 @@
 High-Frequency Trading Script for Polymarket 15-minute markets.
 
 This script connects to Polymarket's CLOB WebSocket to stream real-time market data
-and executes a last-second trading strategy.
+and executes a late-window trading strategy (final 120s by default).
 
 Strategy:
 - Monitor Level 1 order book (best bid/ask) via WebSocket
 - Track the winning side (price > 0.50)
-- When time remaining <= 60 seconds (but > 0):
+- When time remaining <= TRIGGER_THRESHOLD seconds (default 120s, but > 0):
   - Check if winning side is available below $0.99
   - Execute Fill-or-Kill (FOK) order at $0.99
 
@@ -72,7 +72,7 @@ except ImportError:
 class LastSecondTrader:
     """
     High-frequency trader that monitors market data via WebSocket
-    and executes trades in the final seconds before market close.
+    and executes trades in the final window before market close.
     """
 
     # Configuration
