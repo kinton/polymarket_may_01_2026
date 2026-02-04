@@ -27,6 +27,7 @@ import websockets
 
 RTDS_WS_URL = "wss://ws-live-data.polymarket.com"
 GAMMA_MARKET_BY_SLUG_URL = "https://gamma-api.polymarket.com/markets/slug/{slug}"
+GAMMA_PUBLIC_SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
 
 
 def _to_float(value: Any) -> float | None:
@@ -84,6 +85,60 @@ async def fetch_market_by_slug(session: aiohttp.ClientSession, slug: str) -> Mar
         lower_bound=_to_float(data.get("lowerBound")),
         upper_bound=_to_float(data.get("upperBound")),
     )
+
+
+async def find_market_slug_by_query(
+    session: aiohttp.ClientSession, query: str
+) -> tuple[str, str]:
+    """
+    Best-effort slug discovery using Gamma public-search.
+    Returns (slug, question/title).
+    """
+    async with session.get(
+        GAMMA_PUBLIC_SEARCH_URL,
+        params={"q": query},
+        timeout=aiohttp.ClientTimeout(total=15),
+    ) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+
+    events = data.get("events", [])
+    if not isinstance(events, list) or not events:
+        raise ValueError(f"No events returned for query={query!r}")
+
+    candidates: list[tuple[str, str]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+
+        markets = event.get("markets")
+        if isinstance(markets, list) and markets:
+            for m in markets:
+                if not isinstance(m, dict):
+                    continue
+                slug = m.get("slug")
+                text = m.get("question") or m.get("title") or event.get("title") or ""
+                if isinstance(slug, str) and slug:
+                    candidates.append((slug, str(text)))
+        else:
+            slug = event.get("slug")
+            text = event.get("question") or event.get("title") or ""
+            if isinstance(slug, str) and slug:
+                candidates.append((slug, str(text)))
+
+    if not candidates:
+        raise ValueError(f"No markets with slugs found for query={query!r}")
+
+    # Prefer exact-ish matches on title/question if available.
+    q_norm = query.strip().lower()
+    for slug, text in candidates:
+        if text.strip().lower() == q_norm:
+            return slug, text
+    for slug, text in candidates:
+        if q_norm in text.strip().lower():
+            return slug, text
+
+    return candidates[0]
 
 
 async def stream_chainlink_price(symbol: str, seconds: float) -> None:
@@ -147,10 +202,11 @@ async def main() -> None:
     parser = argparse.ArgumentParser(
         description="Fetch 'price to beat' (Gamma) and stream current price (RTDS)."
     )
+    parser.add_argument("--slug", default=None, help="Polymarket market slug.")
     parser.add_argument(
-        "--slug",
-        required=True,
-        help="Polymarket market slug (e.g. 'bitcoin-up-or-down-...').",
+        "--query",
+        default=None,
+        help="Market title/question to find via Gamma public-search (best-effort).",
     )
     parser.add_argument(
         "--symbol",
@@ -166,7 +222,14 @@ async def main() -> None:
     args = parser.parse_args()
 
     async with aiohttp.ClientSession() as session:
-        market = await fetch_market_by_slug(session, args.slug)
+        slug = args.slug
+        if slug is None:
+            if args.query is None:
+                raise SystemExit("Pass --slug or --query.")
+            slug, matched_text = await find_market_slug_by_query(session, args.query)
+            print(f"Resolved via search: slug={slug} (matched: {matched_text})")
+
+        market = await fetch_market_by_slug(session, slug)
 
     # "Price to beat" usually appears as groupItemThreshold for numeric markets.
     price_to_beat = market.group_item_threshold or market.y_axis_value
@@ -197,4 +260,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
