@@ -17,9 +17,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import websockets
@@ -53,6 +56,89 @@ def _guess_chainlink_symbol(market_question: str) -> str | None:
         return "eth/usd"
     if "solana" in q or "sol " in q or " sol" in q:
         return "sol/usd"
+    return None
+
+
+def _parse_market_window_start_ms(
+    question: str, end_date_iso: str | None
+) -> int | None:
+    """
+    Parse market question like:
+      "Bitcoin Up or Down - February 4, 5:00AM-5:15AM ET"
+    and return the start timestamp in milliseconds (ET timezone).
+    """
+    match = re.search(
+        r"-\s*([A-Za-z]+)\s+(\d{1,2}),\s*(\d{1,2}:\d{2})(AM|PM)-(\d{1,2}:\d{2})(AM|PM)\s*ET",
+        question,
+    )
+    if not match:
+        return None
+
+    month, day, start_time, start_ampm, _end_time, _end_ampm = match.groups()
+
+    year: int | None = None
+    if end_date_iso:
+        try:
+            end_dt = datetime.fromisoformat(end_date_iso.replace("Z", "+00:00"))
+            year = end_dt.year
+        except ValueError:
+            year = None
+    if year is None:
+        year = datetime.now(tz=ZoneInfo("America/New_York")).year
+
+    dt_str = f"{month} {day} {year} {start_time}{start_ampm}"
+    for fmt in ("%B %d %Y %I:%M%p", "%b %d %Y %I:%M%p"):
+        try:
+            naive = datetime.strptime(dt_str, fmt)
+            break
+        except ValueError:
+            naive = None
+    if naive is None:
+        return None
+
+    et = ZoneInfo("America/New_York")
+    start_dt = naive.replace(tzinfo=et)
+    return int(start_dt.timestamp() * 1000)
+
+
+def _pick_price_to_beat_from_points(
+    points: list[dict[str, Any]], start_ts_ms: int
+) -> float | None:
+    best_ts: int | None = None
+    best_price: float | None = None
+
+    for point in points:
+        ts_val = point.get("timestamp")
+        if not isinstance(ts_val, (int, float)):
+            continue
+        ts_ms = int(ts_val)
+        if ts_ms < start_ts_ms:
+            continue
+        price = _to_float(point.get("value"))
+        if price is None:
+            continue
+        if best_ts is None or ts_ms < best_ts:
+            best_ts = ts_ms
+            best_price = price
+
+    if best_price is not None:
+        return best_price
+
+    # Fallback: nearest BEFORE start time (within 5 minutes)
+    max_skew_ms = 5 * 60 * 1000
+    for point in reversed(points):
+        ts_val = point.get("timestamp")
+        if not isinstance(ts_val, (int, float)):
+            continue
+        ts_ms = int(ts_val)
+        if ts_ms > start_ts_ms:
+            continue
+        if start_ts_ms - ts_ms > max_skew_ms:
+            break
+        price = _to_float(point.get("value"))
+        if price is not None:
+            return price
+
     return None
 
 
@@ -142,7 +228,10 @@ async def find_market_slug_by_query(
 
 
 async def stream_chainlink_price(
-    symbol: str, seconds: float, price_to_beat: float | None
+    symbol: str,
+    seconds: float,
+    price_to_beat: float | None,
+    start_ts_ms: int | None,
 ) -> None:
     subscriptions = [
         {
@@ -211,6 +300,13 @@ async def stream_chainlink_price(
             else:
                 data = payload.get("data")
                 if isinstance(data, list) and data:
+                    if price_to_beat is None and start_ts_ms is not None:
+                        pick = _pick_price_to_beat_from_points(data, start_ts_ms)
+                        if pick is not None:
+                            price_to_beat = pick
+                            print(
+                                f"Resolved price_to_beat from RTDS: {price_to_beat:,.2f}"
+                            )
                     point = data[-1]
                     if isinstance(point, dict):
                         price = _to_float(point.get("value"))
@@ -268,6 +364,7 @@ async def main() -> None:
 
     # "Price to beat" usually appears as groupItemThreshold for numeric markets.
     price_to_beat = market.group_item_threshold or market.y_axis_value
+    start_ts_ms = _parse_market_window_start_ms(market.question, market.end_date)
 
     print("\nMarket:")
     print(f"  slug: {market.slug}")
@@ -276,6 +373,9 @@ async def main() -> None:
         print(f"  startDate: {market.start_date}")
     if market.end_date:
         print(f"  endDate: {market.end_date}")
+    if start_ts_ms is not None:
+        start_dt = datetime.fromtimestamp(start_ts_ms / 1000, tz=ZoneInfo("UTC"))
+        print(f"  window_start (UTC): {start_dt.isoformat()}")
     if price_to_beat is not None:
         print(f"  price_to_beat (Gamma): {price_to_beat:,.2f}")
     else:
@@ -291,7 +391,10 @@ async def main() -> None:
 
     print("\nStreaming current price (RTDS):")
     await stream_chainlink_price(
-        symbol=symbol, seconds=args.seconds, price_to_beat=price_to_beat
+        symbol=symbol,
+        seconds=args.seconds,
+        price_to_beat=price_to_beat,
+        start_ts_ms=start_ts_ms,
     )
 
 
