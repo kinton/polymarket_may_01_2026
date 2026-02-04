@@ -31,6 +31,7 @@ import websockets
 RTDS_WS_URL = "wss://ws-live-data.polymarket.com"
 GAMMA_MARKET_BY_SLUG_URL = "https://gamma-api.polymarket.com/markets/slug/{slug}"
 GAMMA_PUBLIC_SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
+POLY_EVENT_URL = "https://polymarket.com/event/{eslug}"
 
 
 def _to_float(value: Any) -> float | None:
@@ -140,6 +141,52 @@ def _pick_price_to_beat_from_points(
             return price
 
     return None
+
+
+def _extract_past_results_from_event_html(
+    html: str, asset: str, cadence: str, start_time_iso_z: str
+) -> tuple[float | None, float | None]:
+    """
+    Polymarket event pages embed dehydrated data that includes:
+      queryKey=["past-results", "<ASSET>", "<cadence>", "<START_ISO_Z>"]
+      state.data.openPrice / closePrice
+
+    Returns (open_price, close_price) if found.
+    """
+    key = (
+        f'"queryKey":["past-results","{asset}","{cadence}","{start_time_iso_z}"]'
+    )
+    idx = html.find(key)
+    if idx == -1:
+        return None, None
+
+    window = html[idx : idx + 2000]
+    m = re.search(
+        r'"state":\{"data":\{"openPrice":([0-9.]+),"closePrice":([0-9.]+)\}',
+        window,
+    )
+    if not m:
+        return None, None
+
+    return _to_float(m.group(1)), _to_float(m.group(2))
+
+
+async def fetch_past_results_from_event_page(
+    session: aiohttp.ClientSession,
+    eslug: str,
+    asset: str,
+    cadence: str,
+    start_time_iso_z: str,
+) -> tuple[float | None, float | None]:
+    url = POLY_EVENT_URL.format(eslug=eslug)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with session.get(
+        url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+    ) as resp:
+        if resp.status != 200:
+            return None, None
+        html = await resp.text()
+    return _extract_past_results_from_event_html(html, asset, cadence, start_time_iso_z)
 
 
 @dataclass(frozen=True)
@@ -280,7 +327,8 @@ async def stream_chainlink_price(
             if not isinstance(msg, dict):
                 continue
 
-            if msg.get("topic") not in {"crypto_prices_chainlink", "crypto_prices"}:
+            topic = msg.get("topic")
+            if topic not in {"crypto_prices_chainlink", "crypto_prices"}:
                 continue
 
             payload = msg.get("payload") or {}
@@ -300,13 +348,6 @@ async def stream_chainlink_price(
             else:
                 data = payload.get("data")
                 if isinstance(data, list) and data:
-                    if price_to_beat is None and start_ts_ms is not None:
-                        pick = _pick_price_to_beat_from_points(data, start_ts_ms)
-                        if pick is not None:
-                            price_to_beat = pick
-                            print(
-                                f"Resolved price_to_beat from RTDS: {price_to_beat:,.2f}"
-                            )
                     point = data[-1]
                     if isinstance(point, dict):
                         price = _to_float(point.get("value"))
@@ -322,10 +363,12 @@ async def stream_chainlink_price(
                 else "-"
             )
             if price_to_beat is None:
-                print(f"[{ts_str}] {symbol} = {price:,.2f} | price_to_beat: -")
+                print(
+                    f"[{ts_str}] ({topic}) {symbol} = {price:,.2f} | price_to_beat: -"
+                )
             else:
                 print(
-                    f"[{ts_str}] {symbol} = {price:,.2f} | price_to_beat: {price_to_beat:,.2f}"
+                    f"[{ts_str}] ({topic}) {symbol} = {price:,.2f} | price_to_beat: {price_to_beat:,.2f}"
                 )
 
 
@@ -365,6 +408,14 @@ async def main() -> None:
     # "Price to beat" usually appears as groupItemThreshold for numeric markets.
     price_to_beat = market.group_item_threshold or market.y_axis_value
     start_ts_ms = _parse_market_window_start_ms(market.question, market.end_date)
+    start_time_iso_z: str | None = None
+    if start_ts_ms is not None:
+        start_dt_utc = datetime.fromtimestamp(start_ts_ms / 1000, tz=ZoneInfo("UTC"))
+        start_time_iso_z = start_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Gamma sometimes returns placeholder values (e.g. '0') for this family of markets.
+    if price_to_beat is not None and price_to_beat <= 1.0:
+        price_to_beat = None
 
     print("\nMarket:")
     print(f"  slug: {market.slug}")
@@ -388,6 +439,26 @@ async def main() -> None:
         raise SystemExit(
             "Could not guess symbol from market question. Pass --symbol (e.g. btc/usd)."
         )
+
+    # For past markets, the Polymarket UI embeds the exact open/close prices used for
+    # "price to beat" (open) and "final price" (close). This matches what you see
+    # on the event page, but it does touch polymarket.com (Cloudflare risk).
+    if price_to_beat is None and start_time_iso_z is not None:
+        asset = symbol.split("/")[0].upper()
+        cadence = "fifteen"
+        async with aiohttp.ClientSession() as session:
+            open_p, close_p = await fetch_past_results_from_event_page(
+                session=session,
+                eslug=market.slug,
+                asset=asset,
+                cadence=cadence,
+                start_time_iso_z=start_time_iso_z,
+            )
+        if open_p is not None:
+            price_to_beat = open_p
+            print(f"  price_to_beat (event page): {price_to_beat:,.2f}")
+        if close_p is not None:
+            print(f"  final_price (event page): {close_p:,.2f}")
 
     print("\nStreaming current price (RTDS):")
     await stream_chainlink_price(
