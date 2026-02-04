@@ -69,6 +69,8 @@ except ImportError:
     print("Error: py-clob-client not installed. Run: uv pip install py-clob-client")
     exit(1)
 
+EXCHANGE_CONTRACT = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+
 
 class LastSecondTrader:
     """
@@ -87,6 +89,9 @@ class LastSecondTrader:
 
     WS_URL = CLOB_WS_URL
     WS_STALE_SECONDS = 2.0  # Require fresh WS data for trigger checks
+    MIN_TRADE_USDC = 1.5
+    BALANCE_RISK_PCT = 0.05
+    BALANCE_RISK_SWITCH_USDC = 30.0
 
     def __init__(
         self,
@@ -117,6 +122,7 @@ class LastSecondTrader:
         self.end_time = end_time
         self.dry_run = dry_run
         self.trade_size = trade_size  # dollars to spend
+        self.min_trade_usdc = max(self.MIN_TRADE_USDC, round(float(trade_size), 2))
         self.title = title
         self.slug = slug
         self.logger = trader_logger
@@ -143,6 +149,7 @@ class LastSecondTrader:
         self._trigger_lock = asyncio.Lock()
         self.last_ws_update_ts = 0.0
         self._last_stale_log_ts = 0.0
+        self._planned_trade_amount: float | None = None
 
         # Initialize CLOB client
         load_dotenv()
@@ -510,15 +517,23 @@ class LastSecondTrader:
             usdc_balance = float(balance_data.get("balance", 0)) / 1e6
 
             # API returns 'allowances' (dict of contract -> allowance), not 'allowance'
-            # Get the Exchange contract allowance (0xC5d563A36AE78145C45a50134d48A1215220f80a)
             allowances_dict = balance_data.get("allowances", {})
 
-            # Exchange contract address (from polymarket docs)
-            EXCHANGE_CONTRACT = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
             # Allowance is also in 6-decimal units (micro-USDC), convert to dollars
             usdc_allowance = float(allowances_dict.get(EXCHANGE_CONTRACT, 0)) / 1e6
 
-            required_amount = self.trade_size
+            # Dynamic sizing:
+            # - if balance < $30: use min_trade_usdc (default $1.50)
+            # - else: use 5% of balance (but not less than min_trade_usdc)
+            if usdc_balance < self.BALANCE_RISK_SWITCH_USDC:
+                required_amount = self.min_trade_usdc
+            else:
+                required_amount = max(
+                    self.min_trade_usdc,
+                    round(usdc_balance * self.BALANCE_RISK_PCT, 2),
+                )
+            required_amount = max(round(required_amount, 2), 1.00)
+            self._planned_trade_amount = required_amount
 
             # Check both balance and allowance
             if usdc_balance < required_amount:
@@ -721,7 +736,11 @@ class LastSecondTrader:
 
         # For market orders: specify amount (dollars) with 2 decimal places
         # Ensure minimum $1.00
-        amount = max(round(self.trade_size, 2), 1.00)
+        amount = (
+            self._planned_trade_amount
+            if self._planned_trade_amount is not None
+            else max(round(self.trade_size, 2), 1.00)
+        )
         price = round(self.BUY_PRICE, 2)  # Worst price we'll accept
 
         if self.dry_run:

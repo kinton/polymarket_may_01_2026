@@ -5,9 +5,9 @@ services:
   trading-bot:
     build:
       context: .
-      dockerfile: Dockerfile
+    dockerfile: Dockerfile
     container_name: polymarket-trading-bot
-    command: python main.py --live --size 2
+    command: python main.py --live --size 1.5
     env_file:
       - .env
     environment:
