@@ -50,7 +50,7 @@ class TradingBotRunner:
     def __init__(
         self,
         dry_run: bool = True,
-        trade_size: float = 1.5,
+        trade_size: float = LastSecondTrader.MIN_TRADE_USDC,
         poll_interval: int = 90,
         run_once: bool = False,
         max_traders: int = 1,
@@ -371,8 +371,8 @@ async def main():
     parser.add_argument(
         "--size",
         type=float,
-        default=1.5,
-        help="Trade size in dollars (default: $1.50)",
+        default=LastSecondTrader.MIN_TRADE_USDC,
+        help=f"Trade size in dollars (default: ${LastSecondTrader.MIN_TRADE_USDC:.2f})",
     )
     parser.add_argument(
         "--poll-interval",
