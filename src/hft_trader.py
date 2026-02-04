@@ -609,6 +609,12 @@ class LastSecondTrader:
         7. Sufficient USDC balance and allowance
         """
         async with self._trigger_lock:
+            # We sometimes call check_trigger with an explicit time_remaining (e.g. unit
+            # tests). Use monotonic time to guard against crossing the market close
+            # without depending on get_time_remaining() being consistent with the
+            # passed value.
+            trigger_start_mono = time.monotonic()
+
             if self.order_executed or self.order_in_progress or time_remaining <= 0:
                 return
 
@@ -685,7 +691,8 @@ class LastSecondTrader:
             )
 
             # Final sanity check in case we crossed close during async work
-            if self.get_time_remaining() <= 0:
+            elapsed = time.monotonic() - trigger_start_mono
+            if (time_remaining - elapsed) <= 0:
                 self._log(
                     f"⏰ [{self.market_name}] Market closed before order submission. Skipping."
                 )

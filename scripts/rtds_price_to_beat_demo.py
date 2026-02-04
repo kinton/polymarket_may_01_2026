@@ -1,425 +1,39 @@
 #!/usr/bin/env python3
 """
-Demo: fetch Polymarket "Price to beat" (from Gamma market metadata) and
-stream "Current price" (oracle/spot) via Polymarket RTDS.
+CLI demo: show Polymarket "Up or Down" oracle prices.
 
-Typical use case: "Up or Down" 15m markets where the UI shows:
-  - PRICE TO BEAT: fixed reference/threshold for the window
-  - CURRENT PRICE: live BTC/ETH/SOL price
+Behavior:
+- Live market: stream Chainlink current price (RTDS).
+  Also tries to capture price-to-beat (window open) and final price (window close)
+  based on the market window boundaries.
+- Closed market: fetch the exact price-to-beat/final price embedded in the
+  Polymarket event page HTML and exit (matches the UI).
 
-Notes:
-  - RTDS is a separate websocket feed from the CLOB orderbook websocket.
-  - RTDS supports Binance (crypto_prices) and Chainlink (crypto_prices_chainlink).
+This script is intentionally a thin wrapper around src/updown_prices.py so the
+logic can be reused elsewhere.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-import re
-import time
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
-from zoneinfo import ZoneInfo
 
 import aiohttp
-import websockets
+
+from src.updown_prices import (
+    ET_TZ,
+    EventPageClient,
+    GammaClient,
+    RtdsClient,
+    format_ts_local,
+    guess_chainlink_symbol,
+    parse_market_window,
+)
 
 
-RTDS_WS_URL = "wss://ws-live-data.polymarket.com"
-GAMMA_MARKET_BY_SLUG_URL = "https://gamma-api.polymarket.com/markets/slug/{slug}"
-GAMMA_PUBLIC_SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
-POLY_EVENT_URL = "https://polymarket.com/event/{eslug}"
-
-
-def _to_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        if value.strip() == "":
-            return None
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _guess_chainlink_symbol(market_question: str) -> str | None:
-    q = market_question.lower()
-    if "bitcoin" in q or "btc" in q:
-        return "btc/usd"
-    if "ethereum" in q or "eth" in q:
-        return "eth/usd"
-    if "solana" in q or "sol " in q or " sol" in q:
-        return "sol/usd"
-    return None
-
-
-def _parse_market_window_start_ms(
-    question: str, end_date_iso: str | None
-) -> int | None:
-    """
-    Parse market question like:
-      "Bitcoin Up or Down - February 4, 5:00AM-5:15AM ET"
-    and return the start timestamp in milliseconds (ET timezone).
-    """
-    match = re.search(
-        r"-\s*([A-Za-z]+)\s+(\d{1,2}),\s*(\d{1,2}:\d{2})(AM|PM)-(\d{1,2}:\d{2})(AM|PM)\s*ET",
-        question,
-    )
-    if not match:
-        return None
-
-    month, day, start_time, start_ampm, _end_time, _end_ampm = match.groups()
-
-    year: int | None = None
-    if end_date_iso:
-        try:
-            end_dt = datetime.fromisoformat(end_date_iso.replace("Z", "+00:00"))
-            year = end_dt.year
-        except ValueError:
-            year = None
-    if year is None:
-        year = datetime.now(tz=ZoneInfo("America/New_York")).year
-
-    dt_str = f"{month} {day} {year} {start_time}{start_ampm}"
-    for fmt in ("%B %d %Y %I:%M%p", "%b %d %Y %I:%M%p"):
-        try:
-            naive = datetime.strptime(dt_str, fmt)
-            break
-        except ValueError:
-            naive = None
-    if naive is None:
-        return None
-
-    et = ZoneInfo("America/New_York")
-    start_dt = naive.replace(tzinfo=et)
-    return int(start_dt.timestamp() * 1000)
-
-
-def _pick_price_to_beat_from_points(
-    points: list[dict[str, Any]], start_ts_ms: int
-) -> float | None:
-    best_ts: int | None = None
-    best_price: float | None = None
-
-    for point in points:
-        ts_val = point.get("timestamp")
-        if not isinstance(ts_val, (int, float)):
-            continue
-        ts_ms = int(ts_val)
-        if ts_ms < start_ts_ms:
-            continue
-        price = _to_float(point.get("value"))
-        if price is None:
-            continue
-        if best_ts is None or ts_ms < best_ts:
-            best_ts = ts_ms
-            best_price = price
-
-    if best_price is not None:
-        return best_price
-
-    # Fallback: nearest BEFORE start time (within 5 minutes)
-    max_skew_ms = 5 * 60 * 1000
-    for point in reversed(points):
-        ts_val = point.get("timestamp")
-        if not isinstance(ts_val, (int, float)):
-            continue
-        ts_ms = int(ts_val)
-        if ts_ms > start_ts_ms:
-            continue
-        if start_ts_ms - ts_ms > max_skew_ms:
-            break
-        price = _to_float(point.get("value"))
-        if price is not None:
-            return price
-
-    return None
-
-
-def _extract_past_results_from_event_html(
-    html: str, asset: str, cadence: str, start_time_iso_z: str
-) -> tuple[float | None, float | None]:
-    """
-    Polymarket event pages embed dehydrated data that includes:
-      queryKey=["past-results", "<ASSET>", "<cadence>", "<START_ISO_Z>"]
-      state.data.openPrice / closePrice
-
-    Returns (open_price, close_price) if found.
-    """
-    key = (
-        f'"queryKey":["past-results","{asset}","{cadence}","{start_time_iso_z}"]'
-    )
-    idx = html.find(key)
-    if idx == -1:
-        return None, None
-
-    window = html[idx : idx + 2000]
-    m = re.search(
-        r'"state":\{"data":\{"openPrice":([0-9.]+),"closePrice":([0-9.]+)\}',
-        window,
-    )
-    if not m:
-        return None, None
-
-    return _to_float(m.group(1)), _to_float(m.group(2))
-
-
-async def fetch_past_results_from_event_page(
-    session: aiohttp.ClientSession,
-    eslug: str,
-    asset: str,
-    cadence: str,
-    start_time_iso_z: str,
-) -> tuple[float | None, float | None]:
-    url = POLY_EVENT_URL.format(eslug=eslug)
-    headers = {"User-Agent": "Mozilla/5.0"}
-    async with session.get(
-        url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
-    ) as resp:
-        if resp.status != 200:
-            return None, None
-        html = await resp.text()
-    return _extract_past_results_from_event_html(html, asset, cadence, start_time_iso_z)
-
-
-@dataclass(frozen=True)
-class MarketMeta:
-    slug: str
-    question: str
-    end_date: str | None
-    start_date: str | None
-    group_item_threshold: float | None
-    y_axis_value: float | None
-    lower_bound: float | None
-    upper_bound: float | None
-
-
-async def fetch_market_by_slug(session: aiohttp.ClientSession, slug: str) -> MarketMeta:
-    url = GAMMA_MARKET_BY_SLUG_URL.format(slug=slug)
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-        resp.raise_for_status()
-        data = await resp.json()
-
-    question = str(data.get("question") or "")
-    return MarketMeta(
-        slug=str(data.get("slug") or slug),
-        question=question,
-        end_date=data.get("endDate"),
-        start_date=data.get("startDate"),
-        group_item_threshold=_to_float(data.get("groupItemThreshold")),
-        y_axis_value=_to_float(data.get("yAxisValue")),
-        lower_bound=_to_float(data.get("lowerBound")),
-        upper_bound=_to_float(data.get("upperBound")),
-    )
-
-
-async def find_market_slug_by_query(
-    session: aiohttp.ClientSession, query: str
-) -> tuple[str, str]:
-    """
-    Best-effort slug discovery using Gamma public-search.
-    Returns (slug, question/title).
-    """
-    async with session.get(
-        GAMMA_PUBLIC_SEARCH_URL,
-        params={"q": query},
-        timeout=aiohttp.ClientTimeout(total=15),
-    ) as resp:
-        resp.raise_for_status()
-        data = await resp.json()
-
-    events = data.get("events", [])
-    if not isinstance(events, list) or not events:
-        raise ValueError(f"No events returned for query={query!r}")
-
-    candidates: list[tuple[str, str]] = []
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-
-        markets = event.get("markets")
-        if isinstance(markets, list) and markets:
-            for m in markets:
-                if not isinstance(m, dict):
-                    continue
-                slug = m.get("slug")
-                text = m.get("question") or m.get("title") or event.get("title") or ""
-                if isinstance(slug, str) and slug:
-                    candidates.append((slug, str(text)))
-        else:
-            slug = event.get("slug")
-            text = event.get("question") or event.get("title") or ""
-            if isinstance(slug, str) and slug:
-                candidates.append((slug, str(text)))
-
-    if not candidates:
-        raise ValueError(f"No markets with slugs found for query={query!r}")
-
-    # Prefer exact-ish matches on title/question if available.
-    q_norm = query.strip().lower()
-    for slug, text in candidates:
-        if text.strip().lower() == q_norm:
-            return slug, text
-    for slug, text in candidates:
-        if q_norm in text.strip().lower():
-            return slug, text
-
-    return candidates[0]
-
-
-async def stream_chainlink_price(
-    symbol: str,
-    seconds: float,
-    price_to_beat: float | None,
-    start_ts_ms: int | None,
-    end_ts_ms: int | None,
-) -> None:
-    subscriptions = [
-        {
-            "topic": "crypto_prices_chainlink",
-            "type": "*",
-            "filters": json.dumps({"symbol": symbol}),
-        },
-        {
-            "topic": "crypto_prices",
-            "type": "*",
-            "filters": json.dumps({"symbol": symbol}),
-        },
-    ]
-    sub = {"action": "subscribe", "subscriptions": subscriptions}
-
-    async with websockets.connect(
-        RTDS_WS_URL,
-        ping_interval=20,
-        ping_timeout=10,
-        open_timeout=10,
-    ) as ws:
-        await ws.send(json.dumps(sub))
-        start = time.time()
-        deadline = start + seconds
-
-        print(f"RTDS connected: {RTDS_WS_URL}")
-        print(
-            f"Subscribed: crypto_prices_chainlink + crypto_prices, symbol={symbol}"
-        )
-
-        close_price: float | None = None
-        open_price: float | None = price_to_beat
-
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                return
-
-            try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=min(2.0, remaining))
-            except asyncio.TimeoutError:
-                continue
-
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-
-            if not isinstance(msg, dict):
-                continue
-
-            topic = msg.get("topic")
-            if topic not in {"crypto_prices_chainlink", "crypto_prices"}:
-                continue
-
-            payload = msg.get("payload") or {}
-            if not isinstance(payload, dict):
-                continue
-
-            payload_symbol = payload.get("symbol")
-            if isinstance(payload_symbol, str) and payload_symbol != symbol:
-                continue
-
-            price: float | None = None
-            ts_ms: int | float | None = None
-
-            if "value" in payload:
-                price = _to_float(payload.get("value"))
-                ts_ms = payload.get("timestamp")  # type: ignore[assignment]
-            else:
-                data = payload.get("data")
-                if isinstance(data, list) and data:
-                    # Some subscribe responses include a buffered series. If we
-                    # already know the window start, we can derive open/close
-                    # from this series.
-                    if topic == "crypto_prices_chainlink" and start_ts_ms is not None:
-                        if open_price is None:
-                            pick = _pick_price_to_beat_from_points(data, start_ts_ms)
-                            if pick is not None:
-                                open_price = pick
-                                print(
-                                    f"Resolved price_to_beat from RTDS (open): {open_price:,.2f}"
-                                )
-                        if (
-                            close_price is None
-                            and end_ts_ms is not None
-                            and isinstance(data[-1], dict)
-                        ):
-                            last_ts = data[-1].get("timestamp")
-                            if isinstance(last_ts, (int, float)) and int(last_ts) >= end_ts_ms:
-                                close_price = _to_float(data[-1].get("value"))
-                                if close_price is not None:
-                                    print(
-                                        f"Resolved final_price from RTDS (close): {close_price:,.2f}"
-                                    )
-                    point = data[-1]
-                    if isinstance(point, dict):
-                        price = _to_float(point.get("value"))
-                        ts_ms = point.get("timestamp")  # type: ignore[assignment]
-
-            if price is None:
-                continue
-
-            ts_s = (int(ts_ms) / 1000.0) if isinstance(ts_ms, (int, float)) else None
-            ts_str = (
-                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts_s))
-                if ts_s is not None
-                else "-"
-            )
-            # Prefer showing Chainlink as the canonical "current price" since it
-            # matches the resolution source for these markets.
-            if topic != "crypto_prices_chainlink":
-                continue
-
-            # Derive open/close on the fly for live markets.
-            if open_price is None and start_ts_ms is not None and isinstance(ts_ms, (int, float)):
-                if int(ts_ms) >= start_ts_ms:
-                    open_price = price
-                    print(f"Captured price_to_beat from RTDS (open): {open_price:,.2f}")
-
-            if (
-                close_price is None
-                and end_ts_ms is not None
-                and isinstance(ts_ms, (int, float))
-                and int(ts_ms) >= end_ts_ms
-            ):
-                close_price = price
-                print(f"Captured final_price from RTDS (close): {close_price:,.2f}")
-
-            if open_price is None:
-                print(f"[{ts_str}] (chainlink) {symbol} = {price:,.2f} | price_to_beat: -")
-            else:
-                print(
-                    f"[{ts_str}] (chainlink) {symbol} = {price:,.2f} | price_to_beat: {open_price:,.2f}"
-                )
-
-
-async def main() -> None:
+async def run() -> None:
     parser = argparse.ArgumentParser(
-        description="Fetch 'price to beat' (Gamma) and stream current price (RTDS)."
+        description="Show price-to-beat/current price for Polymarket 'Up or Down' markets."
     )
     parser.add_argument("--slug", default=None, help="Polymarket market slug.")
     parser.add_argument(
@@ -438,98 +52,105 @@ async def main() -> None:
         default=15.0,
         help="How long to stream RTDS prices before exiting.",
     )
+    parser.add_argument(
+        "--show-binance",
+        action="store_true",
+        help="Also print RTDS topic=crypto_prices (Binance) alongside Chainlink.",
+    )
     args = parser.parse_args()
 
     async with aiohttp.ClientSession() as session:
+        gamma = GammaClient(session)
+        event_page = EventPageClient(session)
+
         slug = args.slug
         if slug is None:
             if args.query is None:
                 raise SystemExit("Pass --slug or --query.")
-            slug, matched_text = await find_market_slug_by_query(session, args.query)
-            print(f"Resolved via search: slug={slug} (matched: {matched_text})")
+            slug, matched = await gamma.find_market_slug_by_query(args.query)
+            print(f"Resolved via search: slug={slug} (matched: {matched})")
 
-        market = await fetch_market_by_slug(session, slug)
+        market = await gamma.fetch_market_by_slug(slug)
+        window = parse_market_window(market.question, market.end_date)
 
-    # "Price to beat" usually appears as groupItemThreshold for numeric markets.
-    price_to_beat = market.group_item_threshold or market.y_axis_value
-    start_ts_ms = _parse_market_window_start_ms(market.question, market.end_date)
-    end_ts_ms: int | None = None
-    if market.end_date:
-        try:
-            end_dt = datetime.fromisoformat(market.end_date.replace("Z", "+00:00"))
-            end_ts_ms = int(end_dt.timestamp() * 1000)
-        except ValueError:
-            end_ts_ms = None
-    start_time_iso_z: str | None = None
-    if start_ts_ms is not None:
-        start_dt_utc = datetime.fromtimestamp(start_ts_ms / 1000, tz=ZoneInfo("UTC"))
-        start_time_iso_z = start_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        symbol = args.symbol or guess_chainlink_symbol(market.question)
+        if symbol is None:
+            raise SystemExit("Could not guess symbol from market question. Pass --symbol.")
 
-    # Gamma sometimes returns placeholder values (e.g. '0') for this family of markets.
-    if price_to_beat is not None and price_to_beat <= 1.0:
-        price_to_beat = None
+        print("\nMarket:")
+        print(f"  slug: {market.slug}")
+        print(f"  question: {market.question}")
+        if market.start_date:
+            print(f"  startDate: {market.start_date}")
+        if market.end_date:
+            print(f"  endDate: {market.end_date}")
+        if window.start_iso_z:
+            print(f"  window_start (UTC): {window.start_iso_z}")
+        if window.end_ms is not None:
+            # Human-readable ET is easier to eyeball.
+            end_dt = (window.end_ms / 1000.0)
+            # Convert to ET via timestamp.
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
 
-    print("\nMarket:")
-    print(f"  slug: {market.slug}")
-    print(f"  question: {market.question}")
-    if market.start_date:
-        print(f"  startDate: {market.start_date}")
-    if market.end_date:
-        print(f"  endDate: {market.end_date}")
-    if start_ts_ms is not None:
-        start_dt = datetime.fromtimestamp(start_ts_ms / 1000, tz=ZoneInfo("UTC"))
-        print(f"  window_start (UTC): {start_dt.isoformat()}")
-    if end_ts_ms is not None:
-        end_dt = datetime.fromtimestamp(end_ts_ms / 1000, tz=ZoneInfo("UTC"))
-        print(f"  window_end (UTC): {end_dt.isoformat()}")
-    if price_to_beat is not None:
-        print(f"  price_to_beat (Gamma): {price_to_beat:,.2f}")
-    else:
-        print("  price_to_beat (Gamma): <missing> (no groupItemThreshold/yAxisValue)")
-    if market.lower_bound is not None or market.upper_bound is not None:
-        print(f"  bounds: {market.lower_bound} .. {market.upper_bound}")
+            dt_utc = datetime.fromtimestamp(end_dt, tz=ZoneInfo("UTC"))
+            dt_et = dt_utc.astimezone(ET_TZ)
+            print(f"  window_end (ET): {dt_et.isoformat()}")
+        print(f"  symbol (Chainlink): {symbol}")
 
-    symbol = args.symbol or _guess_chainlink_symbol(market.question)
-    if symbol is None:
-        raise SystemExit(
-            "Could not guess symbol from market question. Pass --symbol (e.g. btc/usd)."
-        )
-
-    now_ms = int(time.time() * 1000)
-    is_closed = end_ts_ms is not None and now_ms >= end_ts_ms
-
-    # If the market is closed, prefer printing the exact UI values and exit.
-    # This does touch polymarket.com (Cloudflare risk), so we only do it in the
-    # closed case by default.
-    if is_closed and start_time_iso_z is not None:
-        asset = symbol.split("/")[0].upper()
-        cadence = "fifteen"
-        async with aiohttp.ClientSession() as session:
-            open_p, close_p = await fetch_past_results_from_event_page(
-                session=session,
+        if window.is_closed() and window.start_iso_z is not None:
+            asset = symbol.split("/")[0].upper()
+            open_p, close_p = await event_page.fetch_past_results(
                 eslug=market.slug,
                 asset=asset,
-                cadence=cadence,
-                start_time_iso_z=start_time_iso_z,
+                cadence="fifteen",
+                start_time_iso_z=window.start_iso_z,
             )
-        if open_p is not None:
-            price_to_beat = open_p
-            print(f"  price_to_beat (event page): {price_to_beat:,.2f}")
-        if close_p is not None:
-            print(f"  final_price (event page): {close_p:,.2f}")
+            if open_p is not None:
+                print(f"  price_to_beat: {open_p:,.2f}")
+            else:
+                print("  price_to_beat: -")
+            if close_p is not None:
+                print(f"  final_price: {close_p:,.2f}")
+            else:
+                print("  final_price: -")
+            print("\nMarket is closed; done.")
+            return
 
-        print("\nMarket is closed; done.")
-        return
+    # Live streaming uses only websocket, so it doesn't keep the HTTP session open.
+    print("\nStreaming current price (RTDS):")
+    rtds = RtdsClient()
+    topics = {"crypto_prices_chainlink"}
+    if args.show_binance:
+        topics.add("crypto_prices")
 
-    print("\nStreaming current price (RTDS, Chainlink):")
-    await stream_chainlink_price(
-        symbol=symbol,
-        seconds=args.seconds,
-        price_to_beat=price_to_beat,
-        start_ts_ms=start_ts_ms,
-        end_ts_ms=end_ts_ms,
-    )
+    open_price: float | None = None
+    close_price: float | None = None
+
+    async for tick in rtds.iter_prices(symbol=symbol, topics=topics, seconds=args.seconds):
+        # Capture open/close using Chainlink ticks only.
+        if tick.topic == "crypto_prices_chainlink":
+            if open_price is None and window.start_ms is not None and tick.ts_ms >= window.start_ms:
+                open_price = tick.price
+                print(f"Captured price_to_beat (open): {open_price:,.2f}")
+            if (
+                close_price is None
+                and window.end_ms is not None
+                and tick.ts_ms >= window.end_ms
+            ):
+                close_price = tick.price
+                print(f"Captured final_price (close): {close_price:,.2f}")
+
+        beat_str = "-" if open_price is None else f"{open_price:,.2f}"
+        tag = "chainlink" if tick.topic == "crypto_prices_chainlink" else "binance"
+        print(
+            f"[{format_ts_local(tick.ts_ms)}] ({tag}) {tick.symbol} = {tick.price:,.2f} | price_to_beat: {beat_str}"
+        )
+
+
+def main() -> None:
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
