@@ -25,7 +25,7 @@ import asyncio
 import json
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -128,10 +128,12 @@ class GammaAPI15mFinder:
         Query Gamma API public search endpoint.
         Note: The API expects 'q' parameter, not 'query'
         """
+        session_to_close: aiohttp.ClientSession | None = None
+        if session is None:
+            session_to_close = aiohttp.ClientSession()
+            session = session_to_close
+
         try:
-            owns_session = session is None
-            if session is None:
-                session = aiohttp.ClientSession()
             # API expects 'q' parameter
             params = {"q": query}
 
@@ -174,6 +176,10 @@ class GammaAPI15mFinder:
                         continue
                     print("API request timed out")
                     return {"markets": []}
+
+            # If we exhausted retries, return an empty result
+            return {"markets": []}
+
         except asyncio.TimeoutError:
             print("API request timed out")
             return {"markets": []}
@@ -181,8 +187,8 @@ class GammaAPI15mFinder:
             print(f"Error querying API: {e}")
             return {"markets": []}
         finally:
-            if "owns_session" in locals() and owns_session:
-                await session.close()  # type: ignore[union-attr]
+            if session_to_close is not None:
+                await session_to_close.close()
 
     def filter_markets(
         self, events: list[dict[str, Any]], max_minutes_ahead: int = 20

@@ -2,46 +2,74 @@
 Utilities for parsing WebSocket market data and determining trade logic.
 """
 
+from typing import Any
 
-def extract_best_ask_from_book(asks: list) -> float | None:
+
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        if value == "":
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def extract_best_ask_from_book(asks: list[Any]) -> float | None:
     """Extract minimum ask price from orderbook asks array."""
     if not asks:
         return None
-    try:
-        return min(
-            float(a["price"]) if isinstance(a, dict) else float(a[0]) for a in asks
-        )
-    except (ValueError, IndexError, KeyError):
-        return None
+    prices: list[float] = []
+    for a in asks:
+        price: float | None = None
+        if isinstance(a, dict):
+            price = _to_float(a.get("price"))
+        elif isinstance(a, (list, tuple)) and len(a) > 0:
+            price = _to_float(a[0])
+        if price is not None:
+            prices.append(price)
+    return min(prices) if prices else None
 
 
-def extract_best_bid_from_book(bids: list) -> float | None:
+def extract_best_bid_from_book(bids: list[Any]) -> float | None:
     """Extract maximum bid price from orderbook bids array."""
     if not bids:
         return None
-    try:
-        return max(
-            float(b["price"]) if isinstance(b, dict) else float(b[0]) for b in bids
-        )
-    except (ValueError, IndexError, KeyError):
-        return None
+    prices: list[float] = []
+    for b in bids:
+        price: float | None = None
+        if isinstance(b, dict):
+            price = _to_float(b.get("price"))
+        elif isinstance(b, (list, tuple)) and len(b) > 0:
+            price = _to_float(b[0])
+        if price is not None:
+            prices.append(price)
+    return max(prices) if prices else None
 
 
-def extract_best_ask_with_size_from_book(asks: list) -> tuple[float | None, float | None]:
+def extract_best_ask_with_size_from_book(
+    asks: list[Any],
+) -> tuple[float | None, float | None]:
     """Extract (best_ask_price, best_ask_size) from orderbook asks array."""
     if not asks:
         return None, None
     best_price: float | None = None
     best_size: float | None = None
     for a in asks:
-        try:
-            if isinstance(a, dict):
-                price = float(a["price"])
-                size = float(a.get("size")) if a.get("size") is not None else None
-            else:
-                price = float(a[0])
-                size = float(a[1]) if len(a) > 1 else None
-        except (ValueError, TypeError, IndexError, KeyError):
+        price: float | None = None
+        size: float | None = None
+        if isinstance(a, dict):
+            price = _to_float(a.get("price"))
+            size = _to_float(a.get("size"))
+        elif isinstance(a, (list, tuple)) and len(a) > 0:
+            price = _to_float(a[0])
+            size = _to_float(a[1]) if len(a) > 1 else None
+        if price is None:
             continue
         if best_price is None or price < best_price:
             best_price = price
@@ -49,21 +77,24 @@ def extract_best_ask_with_size_from_book(asks: list) -> tuple[float | None, floa
     return best_price, best_size
 
 
-def extract_best_bid_with_size_from_book(bids: list) -> tuple[float | None, float | None]:
+def extract_best_bid_with_size_from_book(
+    bids: list[Any],
+) -> tuple[float | None, float | None]:
     """Extract (best_bid_price, best_bid_size) from orderbook bids array."""
     if not bids:
         return None, None
     best_price: float | None = None
     best_size: float | None = None
     for b in bids:
-        try:
-            if isinstance(b, dict):
-                price = float(b["price"])
-                size = float(b.get("size")) if b.get("size") is not None else None
-            else:
-                price = float(b[0])
-                size = float(b[1]) if len(b) > 1 else None
-        except (ValueError, TypeError, IndexError, KeyError):
+        price: float | None = None
+        size: float | None = None
+        if isinstance(b, dict):
+            price = _to_float(b.get("price"))
+            size = _to_float(b.get("size"))
+        elif isinstance(b, (list, tuple)) and len(b) > 0:
+            price = _to_float(b[0])
+            size = _to_float(b[1]) if len(b) > 1 else None
+        if price is None:
             continue
         if best_price is None or price > best_price:
             best_price = price

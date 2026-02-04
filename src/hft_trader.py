@@ -51,8 +51,6 @@ from src.clob_types import (
 )
 from src.market_parser import (
     determine_winning_side,
-    extract_best_ask_from_book,
-    extract_best_bid_from_book,
     extract_best_ask_with_size_from_book,
     extract_best_bid_with_size_from_book,
     get_winning_token_id,
@@ -461,15 +459,18 @@ class LastSecondTrader:
                         return "-"
                     return f"${p * s:.2f}"
 
-                self._log(
-                    f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [{self.market_name}] "
-                    f"Time: {time_remaining:.2f}s | "
-                    f"YES bid: {fmt(yes_bid)} x {fmt_sz(yes_bid_sz)} (= {fmt_notional(yes_bid, yes_bid_sz)}) | "
-                    f"YES ask: {fmt(yes_ask)} x {fmt_sz(yes_ask_sz)} (= {fmt_notional(yes_ask, yes_ask_sz)}) | "
-                    f"NO bid: {fmt(no_bid)} x {fmt_sz(no_bid_sz)} (= {fmt_notional(no_bid, no_bid_sz)}) | "
-                    f"NO ask: {fmt(no_ask)} x {fmt_sz(no_ask_sz)} (= {fmt_notional(no_ask, no_ask_sz)}) | "
-                    f"Winner: {self.winning_side or 'None'}"
+                msg = "".join(
+                    [
+                        f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [{self.market_name}] ",
+                        f"Time: {time_remaining:.2f}s | ",
+                        f"YES bid: {fmt(yes_bid)} x {fmt_sz(yes_bid_sz)} (= {fmt_notional(yes_bid, yes_bid_sz)}) | ",
+                        f"YES ask: {fmt(yes_ask)} x {fmt_sz(yes_ask_sz)} (= {fmt_notional(yes_ask, yes_ask_sz)}) | ",
+                        f"NO bid: {fmt(no_bid)} x {fmt_sz(no_bid_sz)} (= {fmt_notional(no_bid, no_bid_sz)}) | ",
+                        f"NO ask: {fmt(no_ask)} x {fmt_sz(no_ask_sz)} (= {fmt_notional(no_ask, no_ask_sz)}) | ",
+                        f"Winner: {self.winning_side or 'None'}",
+                    ]
                 )
+                self._log(msg)
                 self.last_log_time = current_time
                 self.last_logged_state = current_state
 
@@ -887,8 +888,8 @@ class LastSecondTrader:
                 ray_note = f" Ray ID: {ray_id}" if ray_id else ""
                 self._log(
                     "  → Cloudflare 403. Verify CLOB_HOST is https://clob.polymarket.com "
-                    "and API creds are set via create_or_derive_api_creds()."
-                    f"{ray_note} Cooldown or IP change may be required."
+                    + "and API creds are set via create_or_derive_api_creds()."
+                    + f"{ray_note} Cooldown or IP change may be required."
                 )
                 self.order_executed = True  # Stop retrying
             elif self.order_attempts < self.max_order_attempts:
@@ -971,11 +972,14 @@ class LastSecondTrader:
                 else:
                     # Log stale WS status occasionally for visibility
                     if now_ts - self._last_stale_log_ts >= 5.0:
-                        self._log(
-                            f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
-                            f"[{self.market_name}] WS stale ({now_ts - self.last_ws_update_ts:.1f}s). "
-                            f"Time: {time_remaining:.2f}s"
+                        stale_msg = "".join(
+                            [
+                                f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] ",
+                                f"[{self.market_name}] WS stale ({now_ts - self.last_ws_update_ts:.1f}s). ",
+                                f"Time: {time_remaining:.2f}s",
+                            ]
                         )
+                        self._log(stale_msg)
                         self._last_stale_log_ts = now_ts
 
             await asyncio.sleep(1.0)
