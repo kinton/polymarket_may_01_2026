@@ -142,25 +142,45 @@ async def find_market_slug_by_query(
 
 
 async def stream_chainlink_price(symbol: str, seconds: float) -> None:
-    sub = {
-        "action": "subscribe",
-        "subscriptions": [
-            {
-                "topic": "crypto_prices_chainlink",
-                "type": "*",
-                "filters": json.dumps({"symbol": symbol}),
-            }
-        ],
-    }
+    subscriptions = [
+        {
+            "topic": "crypto_prices_chainlink",
+            "type": "*",
+            "filters": json.dumps({"symbol": symbol}),
+        },
+        {
+            "topic": "crypto_prices",
+            "type": "*",
+            "filters": json.dumps({"symbol": symbol}),
+        },
+    ]
+    sub = {"action": "subscribe", "subscriptions": subscriptions}
 
-    async with websockets.connect(RTDS_WS_URL, ping_interval=20, ping_timeout=10) as ws:
+    async with websockets.connect(
+        RTDS_WS_URL,
+        ping_interval=20,
+        ping_timeout=10,
+        open_timeout=10,
+    ) as ws:
         await ws.send(json.dumps(sub))
         start = time.time()
+        deadline = start + seconds
 
         print(f"RTDS connected: {RTDS_WS_URL}")
-        print(f"Subscribed: crypto_prices_chainlink symbol={symbol}")
+        print(
+            f"Subscribed: crypto_prices_chainlink + crypto_prices, symbol={symbol}"
+        )
 
-        async for raw in ws:
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=min(2.0, remaining))
+            except asyncio.TimeoutError:
+                continue
+
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
@@ -169,19 +189,30 @@ async def stream_chainlink_price(symbol: str, seconds: float) -> None:
             if not isinstance(msg, dict):
                 continue
 
-            if msg.get("topic") != "crypto_prices_chainlink":
+            if msg.get("topic") not in {"crypto_prices_chainlink", "crypto_prices"}:
                 continue
 
             payload = msg.get("payload") or {}
             if not isinstance(payload, dict):
                 continue
 
-            if payload.get("symbol") != symbol:
+            payload_symbol = payload.get("symbol")
+            if isinstance(payload_symbol, str) and payload_symbol != symbol:
                 continue
 
-            value = payload.get("value")
-            ts_ms = payload.get("timestamp")
-            price = _to_float(value)
+            price: float | None = None
+            ts_ms: int | float | None = None
+
+            if "value" in payload:
+                price = _to_float(payload.get("value"))
+                ts_ms = payload.get("timestamp")  # type: ignore[assignment]
+            else:
+                data = payload.get("data")
+                if isinstance(data, list) and data:
+                    point = data[-1]
+                    if isinstance(point, dict):
+                        price = _to_float(point.get("value"))
+                        ts_ms = point.get("timestamp")  # type: ignore[assignment]
 
             if price is None:
                 continue
@@ -193,9 +224,6 @@ async def stream_chainlink_price(symbol: str, seconds: float) -> None:
                 else "-"
             )
             print(f"[{ts_str}] {symbol} = {price:,.2f}")
-
-            if (time.time() - start) >= seconds:
-                return
 
 
 async def main() -> None:
