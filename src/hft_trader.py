@@ -53,6 +53,8 @@ from src.market_parser import (
     determine_winning_side,
     extract_best_ask_from_book,
     extract_best_bid_from_book,
+    extract_best_ask_with_size_from_book,
+    extract_best_bid_with_size_from_book,
     get_winning_token_id,
 )
 
@@ -306,21 +308,25 @@ class LastSecondTrader:
             if event_type == "book":
                 asks = data.get("asks", [])
                 bids = data.get("bids", [])
-                best_ask = extract_best_ask_from_book(asks)
-                best_bid = extract_best_bid_from_book(bids)
+                best_ask, best_ask_size = extract_best_ask_with_size_from_book(asks)
+                best_bid, best_bid_size = extract_best_bid_with_size_from_book(bids)
 
                 # Filter invalid prices: $0.00 and $1.00+ are not valid
                 if best_ask is not None and 0.001 <= best_ask <= 0.999:
                     if is_yes_data:
                         self.orderbook.best_ask_yes = best_ask
+                        self.orderbook.best_ask_yes_size = best_ask_size
                     else:
                         self.orderbook.best_ask_no = best_ask
+                        self.orderbook.best_ask_no_size = best_ask_size
 
                 if best_bid is not None and 0.001 <= best_bid <= 0.999:
                     if is_yes_data:
                         self.orderbook.best_bid_yes = best_bid
+                        self.orderbook.best_bid_yes_size = best_bid_size
                     else:
                         self.orderbook.best_bid_no = best_bid
+                        self.orderbook.best_bid_no_size = best_bid_size
 
             elif event_type == "price_change":
                 # price_changes array contains data for BOTH tokens
@@ -347,8 +353,10 @@ class LastSecondTrader:
                             if 0.001 <= ask_val <= 0.999:
                                 if is_yes_change:
                                     self.orderbook.best_ask_yes = ask_val
+                                    self.orderbook.best_ask_yes_size = None
                                 else:
                                     self.orderbook.best_ask_no = ask_val
+                                    self.orderbook.best_ask_no_size = None
                         except (ValueError, TypeError):
                             pass
 
@@ -359,8 +367,10 @@ class LastSecondTrader:
                             if 0.001 <= bid_val <= 0.999:
                                 if is_yes_change:
                                     self.orderbook.best_bid_yes = bid_val
+                                    self.orderbook.best_bid_yes_size = None
                                 else:
                                     self.orderbook.best_bid_no = bid_val
+                                    self.orderbook.best_bid_no_size = None
                         except (ValueError, TypeError):
                             pass
 
@@ -375,8 +385,10 @@ class LastSecondTrader:
                         if 0.001 <= val <= 0.999:
                             if is_yes_data:
                                 self.orderbook.best_ask_yes = val
+                                self.orderbook.best_ask_yes_size = None
                             else:
                                 self.orderbook.best_ask_no = val
+                                self.orderbook.best_ask_no_size = None
                     except (ValueError, TypeError):
                         pass
 
@@ -387,8 +399,10 @@ class LastSecondTrader:
                         if 0.001 <= val <= 0.999:
                             if is_yes_data:
                                 self.orderbook.best_bid_yes = val
+                                self.orderbook.best_bid_yes_size = None
                             else:
                                 self.orderbook.best_bid_no = val
+                                self.orderbook.best_bid_no_size = None
                     except (ValueError, TypeError):
                         pass
 
@@ -424,15 +438,37 @@ class LastSecondTrader:
                 # Show both bid and ask for better diagnosis
                 yes_ask = self.orderbook.best_ask_yes
                 yes_bid = self.orderbook.best_bid_yes
+                yes_ask_sz = self.orderbook.best_ask_yes_size
+                yes_bid_sz = self.orderbook.best_bid_yes_size
                 no_ask = self.orderbook.best_ask_no
                 no_bid = self.orderbook.best_bid_no
+                no_ask_sz = self.orderbook.best_ask_no_size
+                no_bid_sz = self.orderbook.best_bid_no_size
 
                 # Format prices: show "-" if None
                 def fmt(p):
                     return f"${p:.2f}" if p is not None else "-"
 
+                def fmt_sz(s):
+                    if s is None:
+                        return "-"
+                    if abs(s - round(s)) < 1e-9:
+                        return str(int(round(s)))
+                    return f"{s:.4f}".rstrip("0").rstrip(".")
+
+                def fmt_notional(p, s):
+                    if p is None or s is None:
+                        return "-"
+                    return f"${p * s:.2f}"
+
                 self._log(
-                    f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [{self.market_name}] Time: {time_remaining:.2f}s | YES bid/ask: {fmt(yes_bid)}/{fmt(yes_ask)} | NO bid/ask: {fmt(no_bid)}/{fmt(no_ask)} | Winner: {self.winning_side or 'None'}"
+                    f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [{self.market_name}] "
+                    f"Time: {time_remaining:.2f}s | "
+                    f"YES bid: {fmt(yes_bid)} x {fmt_sz(yes_bid_sz)} (= {fmt_notional(yes_bid, yes_bid_sz)}) | "
+                    f"YES ask: {fmt(yes_ask)} x {fmt_sz(yes_ask_sz)} (= {fmt_notional(yes_ask, yes_ask_sz)}) | "
+                    f"NO bid: {fmt(no_bid)} x {fmt_sz(no_bid_sz)} (= {fmt_notional(no_bid, no_bid_sz)}) | "
+                    f"NO ask: {fmt(no_ask)} x {fmt_sz(no_ask_sz)} (= {fmt_notional(no_ask, no_ask_sz)}) | "
+                    f"Winner: {self.winning_side or 'None'}"
                 )
                 self.last_log_time = current_time
                 self.last_logged_state = current_state

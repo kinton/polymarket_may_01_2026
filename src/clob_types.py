@@ -24,8 +24,12 @@ class OrderBook:
 
     best_ask_yes: float | None = None
     best_bid_yes: float | None = None
+    best_ask_yes_size: float | None = None
+    best_bid_yes_size: float | None = None
     best_ask_no: float | None = None
     best_bid_no: float | None = None
+    best_ask_no_size: float | None = None
+    best_bid_no_size: float | None = None
     sum_asks: float | None = None  # YES ask + NO ask (should be ~1.0)
 
     def update(self) -> None:

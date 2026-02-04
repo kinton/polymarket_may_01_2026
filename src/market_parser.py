@@ -27,6 +27,50 @@ def extract_best_bid_from_book(bids: list) -> float | None:
         return None
 
 
+def extract_best_ask_with_size_from_book(asks: list) -> tuple[float | None, float | None]:
+    """Extract (best_ask_price, best_ask_size) from orderbook asks array."""
+    if not asks:
+        return None, None
+    best_price: float | None = None
+    best_size: float | None = None
+    for a in asks:
+        try:
+            if isinstance(a, dict):
+                price = float(a["price"])
+                size = float(a.get("size")) if a.get("size") is not None else None
+            else:
+                price = float(a[0])
+                size = float(a[1]) if len(a) > 1 else None
+        except (ValueError, TypeError, IndexError, KeyError):
+            continue
+        if best_price is None or price < best_price:
+            best_price = price
+            best_size = size
+    return best_price, best_size
+
+
+def extract_best_bid_with_size_from_book(bids: list) -> tuple[float | None, float | None]:
+    """Extract (best_bid_price, best_bid_size) from orderbook bids array."""
+    if not bids:
+        return None, None
+    best_price: float | None = None
+    best_size: float | None = None
+    for b in bids:
+        try:
+            if isinstance(b, dict):
+                price = float(b["price"])
+                size = float(b.get("size")) if b.get("size") is not None else None
+            else:
+                price = float(b[0])
+                size = float(b[1]) if len(b) > 1 else None
+        except (ValueError, TypeError, IndexError, KeyError):
+            continue
+        if best_price is None or price > best_price:
+            best_price = price
+            best_size = size
+    return best_price, best_size
+
+
 def extract_prices_from_price_change(
     changes: list, expected_token_id: str
 ) -> tuple[float | None, float | None]:

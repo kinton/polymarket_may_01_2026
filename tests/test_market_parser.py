@@ -5,7 +5,9 @@ Unit tests for market_parser utilities.
 from src.market_parser import (
     determine_winning_side,
     extract_best_ask_from_book,
+    extract_best_ask_with_size_from_book,
     extract_best_bid_from_book,
+    extract_best_bid_with_size_from_book,
     get_winning_token_id,
 )
 
@@ -20,6 +22,20 @@ def test_extract_best_ask_from_book_lists():
     assert extract_best_ask_from_book(asks) == 0.59
 
 
+def test_extract_best_ask_with_size_from_book_dicts():
+    asks = [{"price": "0.60", "size": "10"}, {"price": "0.58", "size": "25"}]
+    price, size = extract_best_ask_with_size_from_book(asks)
+    assert price == 0.58
+    assert size == 25.0
+
+
+def test_extract_best_ask_with_size_from_book_lists():
+    asks = [["0.61", "100"], ["0.59", "50"]]
+    price, size = extract_best_ask_with_size_from_book(asks)
+    assert price == 0.59
+    assert size == 50.0
+
+
 def test_extract_best_bid_from_book_dicts():
     bids = [{"price": "0.41"}, {"price": "0.43"}, {"price": "0.40"}]
     assert extract_best_bid_from_book(bids) == 0.43
@@ -28,6 +44,20 @@ def test_extract_best_bid_from_book_dicts():
 def test_extract_best_bid_from_book_lists():
     bids = [["0.44", "100"], ["0.42", "50"]]
     assert extract_best_bid_from_book(bids) == 0.44
+
+
+def test_extract_best_bid_with_size_from_book_dicts():
+    bids = [{"price": "0.41", "size": "10"}, {"price": "0.43", "size": "7"}]
+    price, size = extract_best_bid_with_size_from_book(bids)
+    assert price == 0.43
+    assert size == 7.0
+
+
+def test_extract_best_bid_with_size_from_book_lists():
+    bids = [["0.44", "100"], ["0.42", "50"]]
+    price, size = extract_best_bid_with_size_from_book(bids)
+    assert price == 0.44
+    assert size == 100.0
 
 
 def test_determine_winning_side_from_bids():
