@@ -141,7 +141,9 @@ async def find_market_slug_by_query(
     return candidates[0]
 
 
-async def stream_chainlink_price(symbol: str, seconds: float) -> None:
+async def stream_chainlink_price(
+    symbol: str, seconds: float, price_to_beat: float | None
+) -> None:
     subscriptions = [
         {
             "topic": "crypto_prices_chainlink",
@@ -223,7 +225,12 @@ async def stream_chainlink_price(symbol: str, seconds: float) -> None:
                 if ts_s is not None
                 else "-"
             )
-            print(f"[{ts_str}] {symbol} = {price:,.2f}")
+            if price_to_beat is None:
+                print(f"[{ts_str}] {symbol} = {price:,.2f} | price_to_beat: -")
+            else:
+                print(
+                    f"[{ts_str}] {symbol} = {price:,.2f} | price_to_beat: {price_to_beat:,.2f}"
+                )
 
 
 async def main() -> None:
@@ -283,7 +290,9 @@ async def main() -> None:
         )
 
     print("\nStreaming current price (RTDS):")
-    await stream_chainlink_price(symbol=symbol, seconds=args.seconds)
+    await stream_chainlink_price(
+        symbol=symbol, seconds=args.seconds, price_to_beat=price_to_beat
+    )
 
 
 if __name__ == "__main__":
