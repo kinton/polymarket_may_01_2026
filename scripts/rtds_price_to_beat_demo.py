@@ -17,8 +17,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
+from pathlib import Path
 
 import aiohttp
+
+# Ensure repo root is importable when executing as `python scripts/...`.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.updown_prices import (
     ET_TZ,
