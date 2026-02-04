@@ -279,6 +279,7 @@ async def stream_chainlink_price(
     seconds: float,
     price_to_beat: float | None,
     start_ts_ms: int | None,
+    end_ts_ms: int | None,
 ) -> None:
     subscriptions = [
         {
@@ -308,6 +309,9 @@ async def stream_chainlink_price(
         print(
             f"Subscribed: crypto_prices_chainlink + crypto_prices, symbol={symbol}"
         )
+
+        close_price: float | None = None
+        open_price: float | None = price_to_beat
 
         while True:
             remaining = deadline - time.time()
@@ -348,6 +352,29 @@ async def stream_chainlink_price(
             else:
                 data = payload.get("data")
                 if isinstance(data, list) and data:
+                    # Some subscribe responses include a buffered series. If we
+                    # already know the window start, we can derive open/close
+                    # from this series.
+                    if topic == "crypto_prices_chainlink" and start_ts_ms is not None:
+                        if open_price is None:
+                            pick = _pick_price_to_beat_from_points(data, start_ts_ms)
+                            if pick is not None:
+                                open_price = pick
+                                print(
+                                    f"Resolved price_to_beat from RTDS (open): {open_price:,.2f}"
+                                )
+                        if (
+                            close_price is None
+                            and end_ts_ms is not None
+                            and isinstance(data[-1], dict)
+                        ):
+                            last_ts = data[-1].get("timestamp")
+                            if isinstance(last_ts, (int, float)) and int(last_ts) >= end_ts_ms:
+                                close_price = _to_float(data[-1].get("value"))
+                                if close_price is not None:
+                                    print(
+                                        f"Resolved final_price from RTDS (close): {close_price:,.2f}"
+                                    )
                     point = data[-1]
                     if isinstance(point, dict):
                         price = _to_float(point.get("value"))
@@ -362,13 +389,31 @@ async def stream_chainlink_price(
                 if ts_s is not None
                 else "-"
             )
-            if price_to_beat is None:
-                print(
-                    f"[{ts_str}] ({topic}) {symbol} = {price:,.2f} | price_to_beat: -"
-                )
+            # Prefer showing Chainlink as the canonical "current price" since it
+            # matches the resolution source for these markets.
+            if topic != "crypto_prices_chainlink":
+                continue
+
+            # Derive open/close on the fly for live markets.
+            if open_price is None and start_ts_ms is not None and isinstance(ts_ms, (int, float)):
+                if int(ts_ms) >= start_ts_ms:
+                    open_price = price
+                    print(f"Captured price_to_beat from RTDS (open): {open_price:,.2f}")
+
+            if (
+                close_price is None
+                and end_ts_ms is not None
+                and isinstance(ts_ms, (int, float))
+                and int(ts_ms) >= end_ts_ms
+            ):
+                close_price = price
+                print(f"Captured final_price from RTDS (close): {close_price:,.2f}")
+
+            if open_price is None:
+                print(f"[{ts_str}] (chainlink) {symbol} = {price:,.2f} | price_to_beat: -")
             else:
                 print(
-                    f"[{ts_str}] ({topic}) {symbol} = {price:,.2f} | price_to_beat: {price_to_beat:,.2f}"
+                    f"[{ts_str}] (chainlink) {symbol} = {price:,.2f} | price_to_beat: {open_price:,.2f}"
                 )
 
 
@@ -408,6 +453,13 @@ async def main() -> None:
     # "Price to beat" usually appears as groupItemThreshold for numeric markets.
     price_to_beat = market.group_item_threshold or market.y_axis_value
     start_ts_ms = _parse_market_window_start_ms(market.question, market.end_date)
+    end_ts_ms: int | None = None
+    if market.end_date:
+        try:
+            end_dt = datetime.fromisoformat(market.end_date.replace("Z", "+00:00"))
+            end_ts_ms = int(end_dt.timestamp() * 1000)
+        except ValueError:
+            end_ts_ms = None
     start_time_iso_z: str | None = None
     if start_ts_ms is not None:
         start_dt_utc = datetime.fromtimestamp(start_ts_ms / 1000, tz=ZoneInfo("UTC"))
@@ -427,6 +479,9 @@ async def main() -> None:
     if start_ts_ms is not None:
         start_dt = datetime.fromtimestamp(start_ts_ms / 1000, tz=ZoneInfo("UTC"))
         print(f"  window_start (UTC): {start_dt.isoformat()}")
+    if end_ts_ms is not None:
+        end_dt = datetime.fromtimestamp(end_ts_ms / 1000, tz=ZoneInfo("UTC"))
+        print(f"  window_end (UTC): {end_dt.isoformat()}")
     if price_to_beat is not None:
         print(f"  price_to_beat (Gamma): {price_to_beat:,.2f}")
     else:
@@ -440,10 +495,13 @@ async def main() -> None:
             "Could not guess symbol from market question. Pass --symbol (e.g. btc/usd)."
         )
 
-    # For past markets, the Polymarket UI embeds the exact open/close prices used for
-    # "price to beat" (open) and "final price" (close). This matches what you see
-    # on the event page, but it does touch polymarket.com (Cloudflare risk).
-    if price_to_beat is None and start_time_iso_z is not None:
+    now_ms = int(time.time() * 1000)
+    is_closed = end_ts_ms is not None and now_ms >= end_ts_ms
+
+    # If the market is closed, prefer printing the exact UI values and exit.
+    # This does touch polymarket.com (Cloudflare risk), so we only do it in the
+    # closed case by default.
+    if is_closed and start_time_iso_z is not None:
         asset = symbol.split("/")[0].upper()
         cadence = "fifteen"
         async with aiohttp.ClientSession() as session:
@@ -460,12 +518,16 @@ async def main() -> None:
         if close_p is not None:
             print(f"  final_price (event page): {close_p:,.2f}")
 
-    print("\nStreaming current price (RTDS):")
+        print("\nMarket is closed; done.")
+        return
+
+    print("\nStreaming current price (RTDS, Chainlink):")
     await stream_chainlink_price(
         symbol=symbol,
         seconds=args.seconds,
         price_to_beat=price_to_beat,
         start_ts_ms=start_ts_ms,
+        end_ts_ms=end_ts_ms,
     )
 
 
