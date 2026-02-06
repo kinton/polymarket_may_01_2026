@@ -38,17 +38,24 @@ class GammaAPI15mFinder:
     BASE_URL = "https://gamma-api.polymarket.com/public-search"
     ET_TZ = ZoneInfo("America/New_York")  # Handles DST correctly
 
-    def __init__(self, max_minutes_ahead: int = 20, use_wide_search: bool = False):
+    def __init__(
+        self,
+        max_minutes_ahead: int = 20,
+        use_wide_search: bool = False,
+        logger: Any | None = None,
+    ):
         """Initialize finder.
 
         Args:
             max_minutes_ahead: Maximum minutes ahead to search for markets (default: 20)
             use_wide_search: If True, also use wide search with single letters (default: False)
+            logger: Optional logger (avoids raw print output)
         """
         self.current_time_et = None
         self.current_window = None
         self.max_minutes_ahead = max_minutes_ahead
         self.use_wide_search = use_wide_search
+        self.logger = logger
         # Always load base queries (Bitcoin/Ethereum + custom from env)
         self.base_queries = self._load_base_queries()
         # Rate limiting to avoid Cloudflare 403
@@ -60,6 +67,14 @@ class GammaAPI15mFinder:
         self.max_retries = int(os.getenv("GAMMA_MAX_RETRIES", "3"))
         self.backoff_base = float(os.getenv("GAMMA_BACKOFF_BASE", "0.5"))
         self.backoff_max = float(os.getenv("GAMMA_BACKOFF_MAX", "4.0"))
+
+    def _out(self, message: str) -> None:
+        if not message:
+            return
+        if self.logger is not None:
+            self.logger.info(message)
+            return
+        print(message)
 
     async def _rate_limit(self) -> None:
         """Throttle Gamma API requests to avoid rate limits."""
@@ -149,15 +164,15 @@ class GammaAPI15mFinder:
                             try:
                                 return await response.json()
                             except Exception as e:
-                                print(f"Failed to parse JSON response: {e}")
+                                self._out(f"Failed to parse JSON response: {e}")
                                 return {"markets": []}
                         elif response.status == 422:
                             # API returns 422 for validation issues - try to get error details
                             try:
                                 error_data = await response.json()
-                                print(f"API validation error: {error_data}")
+                                self._out(f"API validation error: {error_data}")
                             except Exception as e:
-                                print(
+                                self._out(
                                     f"API Error {response.status}: Could not parse error details - {e}"
                                 )
                             return {"markets": []}
@@ -165,26 +180,26 @@ class GammaAPI15mFinder:
                             if attempt < (self.max_retries - 1):
                                 await self._backoff_sleep(attempt)
                                 continue
-                            print(f"API Error: {response.status}")
+                            self._out(f"API Error: {response.status}")
                             return {"markets": []}
                         else:
-                            print(f"API Error: {response.status}")
+                            self._out(f"API Error: {response.status}")
                             return {"markets": []}
                 except asyncio.TimeoutError:
                     if attempt < (self.max_retries - 1):
                         await self._backoff_sleep(attempt)
                         continue
-                    print("API request timed out")
+                    self._out("API request timed out")
                     return {"markets": []}
 
             # If we exhausted retries, return an empty result
             return {"markets": []}
 
         except asyncio.TimeoutError:
-            print("API request timed out")
+            self._out("API request timed out")
             return {"markets": []}
         except Exception as e:
-            print(f"Error querying API: {e}")
+            self._out(f"Error querying API: {e}")
             return {"markets": []}
         finally:
             if session_to_close is not None:
@@ -201,10 +216,9 @@ class GammaAPI15mFinder:
         now = self.get_current_time_et()
         filtered_markets = []
 
-        print(f"\nFiltering {len(events)} events...")
-        print(f"Searching for markets ending within {max_minutes_ahead} minutes")
-        print(f"Current time: {now.strftime('%H:%M:%S %Z')}")
-        print()
+        self._out(f"Filtering {len(events)} events...")
+        self._out(f"Searching for markets ending within {max_minutes_ahead} minutes")
+        self._out(f"Current time: {now.strftime('%H:%M:%S %Z')}")
 
         markets_checked = 0
         markets_skipped_inactive = 0
@@ -310,7 +324,7 @@ class GammaAPI15mFinder:
                                 markets_skipped_non_binary += 1
                                 continue
                         except Exception as e:
-                            print(f"Error parsing token IDs: {e}")
+                            self._out(f"Error parsing token IDs: {e}")
                             markets_skipped_non_binary += 1
                             continue
                     else:
@@ -337,19 +351,18 @@ class GammaAPI15mFinder:
                         }
                     )
             except Exception as e:
-                print(f"Error processing market: {e}")
+                self._out(f"Error processing market: {e}")
                 continue
 
-        print("\nFilter statistics:")
-        print(f"  Events checked: {len(events)}")
-        print(f"  Events skipped (inactive/closed): {events_skipped_inactive}")
-        print(f"  Markets checked: {markets_checked}")
-        print(f"  Skipped (inactive/closed): {markets_skipped_inactive}")
-        print(f"  Skipped (no end time): {markets_skipped_no_endtime}")
-        print(f"  Skipped (outside time window): {markets_skipped_time_window}")
-        print(f"  Skipped (non-binary): {markets_skipped_non_binary}")
-        print(f"  Found: {len(filtered_markets)}")
-        print()
+        self._out("Filter statistics:")
+        self._out(f"  Events checked: {len(events)}")
+        self._out(f"  Events skipped (inactive/closed): {events_skipped_inactive}")
+        self._out(f"  Markets checked: {markets_checked}")
+        self._out(f"  Skipped (inactive/closed): {markets_skipped_inactive}")
+        self._out(f"  Skipped (no end time): {markets_skipped_no_endtime}")
+        self._out(f"  Skipped (outside time window): {markets_skipped_time_window}")
+        self._out(f"  Skipped (non-binary): {markets_skipped_non_binary}")
+        self._out(f"  Found: {len(filtered_markets)}")
 
         return filtered_markets
 
@@ -362,20 +375,19 @@ class GammaAPI15mFinder:
         and relies on filter_markets() to select binary markets with correct timing.
         """
         now = self.get_current_time_et()
-        print(f"Current time (ET): {now.strftime('%H:%M:%S')}")
-        print(
+        self._out(f"Current time (ET): {now.strftime('%H:%M:%S')}")
+        self._out(
             f"Searching for markets ending in the next {self.max_minutes_ahead} minutes..."
         )
-        print()
 
         # Step 2: Query API for markets
-        print("Querying Polymarket Gamma API...")
+        self._out("Querying Polymarket Gamma API...")
 
         all_events = []
         seen_ids = set()
 
         # Step 1: Run targeted searches with specific queries
-        print(f"Using targeted search with {len(self.base_queries)} base queries...")
+        self._out(f"Using targeted search with {len(self.base_queries)} base queries...")
 
         # Generate date strings for today
         # Polymarket inconsistently uses "February 2" vs "February 02"
@@ -402,7 +414,7 @@ class GammaAPI15mFinder:
                 events = markets_data.get("events", [])
 
                 if events:
-                    print(f"Query '{query[:50]}...' returned {len(events)} events")
+                    self._out(f"Query '{query[:50]}...' returned {len(events)} events")
 
                     for event in events:
                         event_id = event.get("id")
@@ -412,7 +424,7 @@ class GammaAPI15mFinder:
 
         # Step 2: Optionally run wide search if enabled
         if self.use_wide_search:
-            print("\nAdditionally running wide search (a-e)...")
+            self._out("Additionally running wide search (a-e)...")
             wide_queries = ["a", "b", "c", "d", "e"]
 
             async with aiohttp.ClientSession() as session:
@@ -421,7 +433,7 @@ class GammaAPI15mFinder:
                     events = markets_data.get("events", [])
 
                     if events:
-                        print(f"Query '{query}' returned {len(events)} events")
+                        self._out(f"Query '{query}' returned {len(events)} events")
 
                         for event in events:
                             event_id = event.get("id")
@@ -430,10 +442,10 @@ class GammaAPI15mFinder:
                                 all_events.append(event)
 
         if not all_events:
-            print("No markets found")
+            self._out("No markets found")
             return None
 
-        print(f"\nFound {len(all_events)} unique events total")
+        self._out(f"Found {len(all_events)} unique events total")
 
         # Step 3: Filter for active markets ending in less than max_minutes_ahead
         active_markets = self.filter_markets(
@@ -441,22 +453,22 @@ class GammaAPI15mFinder:
         )
 
         if not active_markets:
-            print(
-                f"\nNo matching markets found ending in the next {self.max_minutes_ahead} minutes"
+            self._out(
+                f"No matching markets found ending in the next {self.max_minutes_ahead} minutes"
             )
             return None
 
-        print(f"\nFound {len(active_markets)} matching market(s):")
-        print("-" * 80)
+        self._out(f"Found {len(active_markets)} matching market(s):")
+        self._out("-" * 80)
         for market in active_markets:
-            print(f"Title: {market['title']}")
-            print(f"Condition ID: {market['condition_id']}")
-            print(f"Token ID (YES): {market['token_id_yes']}")
-            print(f"Token ID (NO): {market['token_id_no']}")
-            print(f"End Time (ET): {market['end_time']}")
-            print(f"End Time (UTC): {market['end_time_utc']}")
-            print(f"Minutes until end: {market['minutes_until_end']}")
-            print("-" * 80)
+            self._out(f"Title: {market['title']}")
+            self._out(f"Condition ID: {market['condition_id']}")
+            self._out(f"Token ID (YES): {market['token_id_yes']}")
+            self._out(f"Token ID (NO): {market['token_id_no']}")
+            self._out(f"End Time (ET): {market['end_time']}")
+            self._out(f"End Time (UTC): {market['end_time_utc']}")
+            self._out(f"Minutes until end: {market['minutes_until_end']}")
+            self._out("-" * 80)
 
         return active_markets
 

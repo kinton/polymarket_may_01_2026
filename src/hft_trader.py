@@ -36,8 +36,10 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from math import gcd
 from typing import Any
 
+import aiohttp
 import websockets
 from dotenv import load_dotenv
 
@@ -54,6 +56,13 @@ from src.market_parser import (
     extract_best_ask_with_size_from_book,
     extract_best_bid_with_size_from_book,
     get_winning_token_id,
+)
+from src.oracle_tracker import OracleSnapshot, OracleTracker
+from src.updown_prices import (
+    EventPageClient,
+    RtdsClient,
+    guess_chainlink_symbol,
+    parse_market_window,
 )
 
 try:
@@ -104,6 +113,12 @@ class LastSecondTrader:
         title: str | None = None,
         slug: str | None = None,
         trader_logger: Any | None = None,
+        oracle_enabled: bool = False,
+        oracle_guard_enabled: bool = True,
+        oracle_min_points: int = 4,
+        oracle_window_s: float = 60.0,
+        book_log_every_s: float = 1.0,
+        book_log_every_s_final: float = 0.5,
     ):
         """
         Initialize the trader.
@@ -132,17 +147,70 @@ class LastSecondTrader:
 
         # Market state
         self.orderbook = OrderBook()
+
+        # Optional: track oracle (Chainlink) price for "Up or Down" markets via RTDS.
+        # This does not touch polymarket.com and is safe from Cloudflare blocks.
+        self.oracle_enabled = bool(oracle_enabled)
+        self.oracle_guard_enabled = bool(oracle_guard_enabled)
+
+        # We keep "oracle decides trade side" OFF for now. It's easy to re-enable later,
+        # but for live trading we want the oracle primarily as a quality gate.
+        self.oracle_decide_side = False
+        self.oracle_require_side = False
+        self.oracle_symbol = guess_chainlink_symbol(self.title or self.market_name)
+        self.oracle_stats_window_s = float(oracle_window_s)
+        self.oracle_tracker: OracleTracker | None = (
+            OracleTracker(window_seconds=self.oracle_stats_window_s)
+            if self.oracle_enabled
+            else None
+        )
+        self.oracle_snapshot: OracleSnapshot | None = None
+        self.last_oracle_update_ts = 0.0
+        self._last_oracle_log_ts = 0.0
+
+        # Oracle guard (strict): enabled whenever oracle is enabled.
+        # Defaults are tuned for Chainlink tick frequency (~10-15s).
+        self.oracle_min_points = int(oracle_min_points)
+
+        self.oracle_guard_max_stale_s = 20.0
+        self.oracle_guard_log_every_s = 5.0
+        self.oracle_guard_max_vol_pct = 0.002
+        self.oracle_guard_min_abs_z = 0.75
+        self.oracle_guard_require_agreement = True
+        self.oracle_guard_require_beat = False
+        self.oracle_guard_max_reversal_slope = 0.0
+        self.oracle_beat_max_lag_ms = 10_000
+        # Mapping of oracle direction ("Up"/"Down") to our internal sides ("YES"/"NO").
+        # Populated best-effort from Gamma when slug is available.
+        self.oracle_up_side: str | None = None
+        self.oracle_down_side: str | None = None
+        try:
+            end_iso = self.end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            self.oracle_window = parse_market_window(self.title or "", end_iso)
+        except Exception:
+            self.oracle_window = None
         self.winning_side: str | None = None  # "YES" or "NO"
         self.order_executed = False
         self.order_in_progress = False  # Prevent duplicate orders
         self.order_attempts = 0  # Track retry attempts
         self.max_order_attempts = 3  # Max retries
         self.last_order_attempt_time = 0.0  # Track last attempt timestamp
+        # Stable order identity across retries (keeps same order hash)
+        self._order_nonce: int | None = None
+        self._order_side: str | None = None
+        self._order_token_id: str | None = None
+        self._order_amount: float | None = None
+        self._order_price: float | None = None
         self.ws = None
 
         # Track last log time to avoid spam
         self.last_log_time = 0.0
         self.last_logged_state = None
+        # Orderbook log throttling (wall-clock). Winner flips are always logged immediately.
+        self.book_log_every_s = max(0.0, float(book_log_every_s))
+        self.book_log_every_s_final = max(0.0, float(book_log_every_s_final))
+        self._last_book_log_ts = 0.0
+        self._last_logged_winner: str | None = None
 
         # Track which warnings we've already logged (to avoid spam)
         self._logged_warnings = set()
@@ -150,6 +218,14 @@ class LastSecondTrader:
         self.last_ws_update_ts = 0.0
         self._last_stale_log_ts = 0.0
         self._planned_trade_amount: float | None = None
+        self._pending_trade_side: str | None = None
+
+        # Oracle guard metrics/log throttling.
+        self._oracle_guard_block_count = 0
+        self._oracle_guard_reason_counts: dict[str, int] = {}
+        self._oracle_guard_last_reason: str | None = None
+        self._oracle_guard_last_log_ts = 0.0
+        self._oracle_html_beat_attempted = False
 
         # Initialize CLOB client
         load_dotenv()
@@ -160,6 +236,22 @@ class LastSecondTrader:
         self._log(
             f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE} | Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
         )
+        if self.oracle_enabled:
+            sym = self.oracle_symbol or "unknown"
+            parts = [f"oracle_tracking=on ({sym})"]
+            if self.oracle_decide_side:
+                parts.append("decide_side=on")
+            if self.oracle_require_side:
+                parts.append("require_side=on")
+            if self.oracle_guard_enabled:
+                parts.append(
+                    f"guard=on (stale<={self.oracle_guard_max_stale_s}s, min_pts>={self.oracle_min_points}, max_vol<={self.oracle_guard_max_vol_pct}, |z|>={self.oracle_guard_min_abs_z})"
+                )
+            else:
+                parts.append("guard=off")
+            self._log(f"[{self.market_name}] " + " | ".join(parts))
+        else:
+            self._log(f"[{self.market_name}] oracle_tracking=off")
 
     def _extract_market_name(self, title: str | None) -> str:
         """Extract short market name from title for logging."""
@@ -180,16 +272,126 @@ class LastSecondTrader:
             # Fallback: use first word of title
             return title.split()[0][:8].upper()
 
+    def _get_ask_for_side(self, side: str) -> float | None:
+        if side == "YES":
+            return self.orderbook.best_ask_yes
+        if side == "NO":
+            return self.orderbook.best_ask_no
+        return None
+
+    def _oracle_recommended_side(self) -> str | None:
+        """
+        Decide which outcome is currently winning based on oracle price relative
+        to price_to_beat (window open).
+        """
+        snap = self.oracle_snapshot
+        if snap is None or snap.price_to_beat is None or snap.delta is None:
+            return None
+        if self.oracle_up_side is None or self.oracle_down_side is None:
+            return None
+        return self.oracle_up_side if snap.delta >= 0 else self.oracle_down_side
+
+    def _oracle_quality_ok(
+        self, *, trade_side: str, time_remaining: float
+    ) -> tuple[bool, str, str]:
+        """
+        Optional gate: if oracle metrics look unreliable, skip the buy.
+
+        Returns:
+            (ok, reason_code, detail). When ok=False, reason_code is stable for counters/log throttling.
+        """
+        if not self.oracle_enabled or not self.oracle_guard_enabled:
+            return True, "", ""
+
+        snap = self.oracle_snapshot
+        if snap is None:
+            return False, "oracle_snapshot_missing", ""
+
+        staleness_s = time.time() - float(self.last_oracle_update_ts)
+        if staleness_s > self.oracle_guard_max_stale_s:
+            return False, "oracle_stale", f"{staleness_s:.2f}s"
+
+        if self.oracle_guard_require_beat and snap.price_to_beat is None:
+            return False, "price_to_beat_missing", ""
+
+        if snap.n_points < self.oracle_min_points:
+            return (
+                False,
+                "oracle_points_insufficient",
+                f"{snap.n_points}<{self.oracle_min_points}",
+            )
+
+        if snap.vol_pct is None:
+            return False, "oracle_vol_missing", ""
+
+        if snap.vol_pct > self.oracle_guard_max_vol_pct:
+            return (
+                False,
+                "oracle_vol_high",
+                f"{snap.vol_pct:.6f}>{self.oracle_guard_max_vol_pct:.6f}",
+            )
+
+        # If we missed window start (common for the trader which starts in the last 2 minutes),
+        # we won't have price_to_beat, and z-score relative to beat is undefined. In that mode,
+        # we still guard on freshness/points/volatility but skip z-score gating.
+        if snap.zscore is None:
+            if snap.price_to_beat is None and not self.oracle_guard_require_beat:
+                _ = time_remaining
+                return True, "", ""
+            return False, "oracle_z_missing", ""
+
+        if abs(snap.zscore) < self.oracle_guard_min_abs_z:
+            return (
+                False,
+                "oracle_z_low",
+                f"{abs(snap.zscore):.2f}<{self.oracle_guard_min_abs_z:.2f}",
+            )
+
+        oracle_side = self._oracle_recommended_side()
+        if self.oracle_guard_require_agreement and oracle_side is not None and oracle_side != trade_side:
+            return (
+                False,
+                "oracle_disagrees",
+                f"oracle={oracle_side}, trade={trade_side}",
+            )
+
+        # Optional reversal guard based on slope.
+        max_rev = self.oracle_guard_max_reversal_slope
+        if max_rev > 0 and snap.slope_usd_per_s is not None:
+            # Determine which direction the chosen side implies.
+            expected_sign = None
+            if self.oracle_up_side is not None and trade_side == self.oracle_up_side:
+                expected_sign = 1
+            elif self.oracle_down_side is not None and trade_side == self.oracle_down_side:
+                expected_sign = -1
+
+            if expected_sign == 1 and snap.slope_usd_per_s < -max_rev:
+                return (
+                    False,
+                    "oracle_reversal_slope",
+                    f"{snap.slope_usd_per_s:.2f}<-{max_rev:.2f}",
+                )
+            if expected_sign == -1 and snap.slope_usd_per_s > max_rev:
+                return (
+                    False,
+                    "oracle_reversal_slope",
+                    f"{snap.slope_usd_per_s:.2f}>{max_rev:.2f}",
+                )
+
+        _ = time_remaining  # reserved for future guards (e.g. scale thresholds near close)
+        return True, "", ""
+
     def _log(self, message: str) -> None:
         """Log message to both console and file logger."""
-        print(message)
         if self.logger:
             self.logger.info(message)
+            return
+        print(message)
 
     def _init_clob_client(self) -> ClobClient | None:
         """Initialize the CLOB client for order execution."""
         if self.dry_run:
-            print("Dry run mode: Skipping CLOB client initialization\n")
+            self._log("Dry run mode: Skipping CLOB client initialization")
             return None
 
         try:
@@ -412,25 +614,15 @@ class LastSecondTrader:
             # Get time remaining
             time_remaining = self.get_time_remaining()
 
-            # Log current state (with deduplication to avoid spam from dual WebSocket streams)
-            current_time = time_remaining
-            current_state = (
-                self.orderbook.best_ask_yes,
-                self.orderbook.best_ask_no,
-                self.winning_side,
-            )
-
-            # Only log if:
-            # 1. Time changed by at least 0.5s OR
-            # 2. State actually changed (winning side or prices) OR
-            # 3. We're in final 5 seconds and time changed
-            time_changed = abs(current_time - self.last_log_time) >= 0.5
-            state_changed = current_state != self.last_logged_state
+            # Log current state (throttled). Winner flips are always logged.
+            now_ts = time.time()
             in_final_seconds = time_remaining <= 5.0
-
-            should_log = (
-                time_changed and (in_final_seconds or state_changed)
-            ) or state_changed
+            interval_s = (
+                self.book_log_every_s_final if in_final_seconds else self.book_log_every_s
+            )
+            winner_changed = (self.winning_side or None) != (self._last_logged_winner or None)
+            time_due = (now_ts - self._last_book_log_ts) >= max(0.0, interval_s)
+            should_log = winner_changed or time_due
 
             if should_log:
                 # Show both bid and ask for better diagnosis
@@ -471,8 +663,8 @@ class LastSecondTrader:
                     ]
                 )
                 self._log(msg)
-                self.last_log_time = current_time
-                self.last_logged_state = current_state
+                self._last_book_log_ts = now_ts
+                self._last_logged_winner = self.winning_side
 
             # Check trigger conditions
             await self.check_trigger(time_remaining)
@@ -638,19 +830,32 @@ class LastSecondTrader:
             if time_remaining > self.TRIGGER_THRESHOLD:
                 return
 
-            if self.winning_side is None:
+            trade_side = self.winning_side
+            oracle_side = self._oracle_recommended_side()
+            if self.oracle_enabled and self.oracle_decide_side:
+                if oracle_side:
+                    trade_side = oracle_side
+                elif self.oracle_require_side:
+                    if "oracle_side_missing" not in self._logged_warnings:
+                        self._log(
+                            f"⚠️  [{self.market_name}] Oracle side required but unavailable (missing price_to_beat or mapping)"
+                        )
+                        self._logged_warnings.add("oracle_side_missing")
+                    return
+
+            if trade_side is None:
                 if "no_winner" not in self._logged_warnings:
                     self._log(
-                        f"⚠️  [{self.market_name}] No winning side at {time_remaining:.3f}s"
+                        f"⚠️  [{self.market_name}] No trade side at {time_remaining:.3f}s"
                     )
                     self._logged_warnings.add("no_winner")
                 return
 
-            winning_ask = self._get_winning_ask()
+            winning_ask = self._get_ask_for_side(trade_side)
             if winning_ask is None:
                 if "no_ask" not in self._logged_warnings:
                     self._log(
-                        f"⚠️  [{self.market_name}] No ask price at {time_remaining:.3f}s"
+                        f"⚠️  [{self.market_name}] No ask price for {trade_side} at {time_remaining:.3f}s"
                     )
                     self._logged_warnings.add("no_ask")
                 return
@@ -673,6 +878,60 @@ class LastSecondTrader:
                     self._logged_warnings.add("price_high")
                 return
 
+            # Optional oracle quality gate: skip buying if metrics look unreliable.
+            oracle_ok, oracle_reason, oracle_detail = self._oracle_quality_ok(
+                trade_side=trade_side, time_remaining=time_remaining
+            )
+            if not oracle_ok:
+                # Track stats for end-of-run summary.
+                self._oracle_guard_block_count += 1
+                self._oracle_guard_reason_counts[oracle_reason] = (
+                    self._oracle_guard_reason_counts.get(oracle_reason, 0) + 1
+                )
+
+                # Log at most once every N seconds, or when the reason changes.
+                now = time.time()
+                should_log = (
+                    oracle_reason != self._oracle_guard_last_reason
+                    or (now - self._oracle_guard_last_log_ts) >= self.oracle_guard_log_every_s
+                )
+                if should_log:
+                    snap = self.oracle_snapshot
+                    extra = ""
+                    if snap is not None:
+
+                        def _fmt_money(v: float | None) -> str:
+                            return f"{v:,.2f}" if v is not None else "-"
+
+                        z = f"{snap.zscore:.2f}" if snap.zscore is not None else "-"
+                        vol = (
+                            f"{snap.vol_pct*100:.4f}%"
+                            if snap.vol_pct is not None
+                            else "-"
+                        )
+                        slope = (
+                            f"{snap.slope_usd_per_s:.2f}"
+                            if snap.slope_usd_per_s is not None
+                            else "-"
+                        )
+                        extra = (
+                            f" | oracle={_fmt_money(snap.price)}"
+                            f" beat={_fmt_money(snap.price_to_beat)}"
+                            f" Δ={_fmt_money(snap.delta)}"
+                            f" vol={vol}"
+                            f" slope={slope}$/s"
+                            f" z={z}"
+                            f" n={snap.n_points}"
+                        )
+
+                    detail = f" ({oracle_detail})" if oracle_detail else ""
+                    self._log(
+                        f"🛑 [{self.market_name}] SKIP (oracle_guard): {oracle_reason}{detail} | t={time_remaining:.3f}s | side={trade_side} | ask=${winning_ask:.4f}{extra}"
+                    )
+                    self._oracle_guard_last_reason = oracle_reason
+                    self._oracle_guard_last_log_ts = now
+                return
+
             # Check balance before executing order (only check once per market)
             if "balance_checked" not in self._logged_warnings:
                 balance_ok = await self._check_balance()
@@ -686,8 +945,17 @@ class LastSecondTrader:
                     return
 
             # All conditions met - execute trade!
+            oracle_note = ""
+            if self.oracle_enabled and self.oracle_decide_side and oracle_side:
+                snap = self.oracle_snapshot
+                if snap is not None and snap.price_to_beat is not None:
+                    oracle_note = (
+                        f" | oracle={snap.price:,.2f} beat={snap.price_to_beat:,.2f} "
+                        f"Δ={snap.delta:,.2f}"
+                    )
+
             self._log(
-                f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {self.winning_side} @ ${winning_ask:.4f}"
+                f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {trade_side} @ ${winning_ask:.4f}{oracle_note}"
             )
 
             # Final sanity check in case we crossed close during async work
@@ -699,6 +967,9 @@ class LastSecondTrader:
                 self.order_executed = True
                 return
 
+            # Snapshot the chosen side so execute_order doesn't depend on concurrently
+            # changing self.winning_side.
+            self._pending_trade_side = trade_side
             await self.execute_order()
 
     async def verify_order(self, order_id: str) -> None:
@@ -741,8 +1012,6 @@ class LastSecondTrader:
         NOTE: This function is kept for reference but we now use market orders instead,
         which take amount (dollars) instead of size (tokens), avoiding the precision issue.
         """
-        from math import gcd
-
         price_cents = int(round(price * 100))
         raw_size = target_dollars / price
         size_cents = int(raw_size * 100)
@@ -760,19 +1029,19 @@ class LastSecondTrader:
         return size_cents / 100.0
 
     async def execute_order(self) -> None:
+        side = self._pending_trade_side or self.winning_side or "YES"
+        self._pending_trade_side = None
+        await self.execute_order_for(side)
+
+    async def execute_order_for(self, side: str) -> None:
         """
-        Execute Fill-or-Kill (FOK) market order on the winning side.
+        Execute Fill-or-Kill (FOK) market order for a specific side.
 
         Uses MarketOrderArgs which takes 'amount' (dollars to spend) instead of 'size' (tokens).
         This avoids the precision issue where price × size must have ≤2 decimal places.
-
-        For market orders:
-        - amount = dollars to spend (must have ≤2 decimal places)
-        - price = worst acceptable price (limit)
-        - The API calculates the appropriate token quantity
         """
-        winning_ask = self._get_winning_ask()
-        winning_token_id = self._get_winning_token_id()
+        winning_ask = self._get_ask_for_side(side)
+        winning_token_id = get_winning_token_id(side, self.token_id_yes, self.token_id_no)
 
         if not winning_token_id:
             self._log(f"❌ [{self.market_name}] Error: No winning token ID available")
@@ -787,12 +1056,28 @@ class LastSecondTrader:
         )
         price = round(self.BUY_PRICE, 2)  # Worst price we'll accept
 
+        # Keep order identity stable across retries (same nonce => same order hash)
+        if self._order_nonce is None:
+            # Default CLOB nonce is 0 (used for on-chain cancellations). Using ms epoch
+            # can exceed accepted ranges and trigger "invalid nonce".
+            self._order_nonce = 0
+            self._order_side = side
+            self._order_token_id = winning_token_id
+            self._order_amount = amount
+            self._order_price = price
+        else:
+            side = self._order_side or side
+            winning_token_id = self._order_token_id or winning_token_id
+            amount = self._order_amount if self._order_amount is not None else amount
+            price = self._order_price if self._order_price is not None else price
+
         if self.dry_run:
             self._log(f"🔷 [{self.market_name}] DRY RUN - WOULD BUY:")
             self._log(
-                f"  Side: {self.winning_side}, Amount: ${amount}, Max Price: ${price}"
+                f"  Side: {side}, Amount: ${amount}, Max Price: ${price}"
             )
-            self._log(f"  Best Ask: ${winning_ask:.4f}, Type: FOK MARKET")
+            ask_str = f"{winning_ask:.4f}" if winning_ask is not None else "-"
+            self._log(f"  Best Ask: ${ask_str}, Type: FOK MARKET")
             self.order_executed = True
             return
 
@@ -801,8 +1086,6 @@ class LastSecondTrader:
             return
 
         # Set in-progress flag and update attempt tracking
-        import time
-
         self.order_in_progress = True
         self.order_attempts += 1
         self.last_order_attempt_time = time.time()
@@ -815,7 +1098,7 @@ class LastSecondTrader:
 
         try:
             self._log(
-                f"🔴 [{self.market_name}] MARKET ORDER{attempt_msg}: {self.winning_side} ${amount} @ max ${price}"
+                f"🔴 [{self.market_name}] MARKET ORDER{attempt_msg}: {side} ${amount} @ max ${price}"
             )
 
             # Use MarketOrderArgs - specifies amount (dollars) not size (tokens)
@@ -824,6 +1107,7 @@ class LastSecondTrader:
                 amount=amount,  # Dollars to spend
                 price=price,  # Maximum price we'll accept
                 side="BUY",
+                nonce=self._order_nonce,
             )
 
             # Create market order
@@ -948,17 +1232,236 @@ class LastSecondTrader:
                 return
 
             # Rely on WebSocket events, with a time-based fallback for logging
-            await asyncio.gather(
-                self.listen_to_market(),
-                self._trigger_check_loop(),
-            )
+            tasks = [self.listen_to_market(), self._trigger_check_loop()]
+            if self.oracle_enabled:
+                tasks.append(self._oracle_price_loop())
+            await asyncio.gather(*tasks)
 
         except KeyboardInterrupt:
             self._log("⚠️  Interrupted by user. Shutting down...")
         finally:
             if self.ws:
                 await self.ws.close()
+
+            if self.oracle_enabled:
+                top = sorted(
+                    self._oracle_guard_reason_counts.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )[:3]
+                top_s = ", ".join(f"{k}={v}" for k, v in top) if top else "-"
+                self._log(
+                    f"📊 [{self.market_name}] Oracle guard summary: blocked={self._oracle_guard_block_count} (top: {top_s})"
+                )
             self._log("✓ Trader shut down cleanly")
+
+    async def _oracle_price_loop(self) -> None:
+        """
+        Stream Chainlink oracle prices from RTDS and compute lightweight metrics.
+
+        This is intentionally independent from the CLOB websocket and does not
+        hit polymarket.com except a best-effort single HTML fetch for price_to_beat
+        when the trader starts late (Cloudflare risk).
+        """
+        if self.oracle_symbol is None:
+            self._log(f"⚠️  [{self.market_name}] Oracle tracking enabled but symbol is unknown")
+            return
+        if self.oracle_tracker is None:
+            return
+
+        start_ms = getattr(self.oracle_window, "start_ms", None) if self.oracle_window else None
+        end_ms = getattr(self.oracle_window, "end_ms", None) if self.oracle_window else None
+        now_ms = int(time.time() * 1000)
+        missed_start = False
+        if start_ms is None:
+            self._log(
+                f"⚠️  [{self.market_name}] Oracle window start not parsed; price_to_beat capture may be unavailable"
+            )
+            missed_start = True
+        else:
+            lag_ms = now_ms - start_ms
+            if lag_ms > self.oracle_beat_max_lag_ms:
+                self._log(
+                    f"⚠️  [{self.market_name}] Oracle start missed by {lag_ms/1000:.1f}s (max_lag={self.oracle_beat_max_lag_ms/1000:.1f}s); price_to_beat will be unavailable"
+                )
+                missed_start = True
+
+        # Best-effort: backfill price_to_beat from the Polymarket event page HTML when
+        # the trader starts late (common: last 2 minutes). This has Cloudflare risk,
+        # so we do it at most once per market.
+        if (
+            missed_start
+            and not self._oracle_html_beat_attempted
+            and self.slug
+            and self.oracle_window is not None
+            and self.oracle_window.start_iso_z is not None
+            and self.oracle_tracker.price_to_beat is None
+        ):
+            self._oracle_html_beat_attempted = True
+            try:
+                asset = self.market_name
+                cadence = "fifteen"
+                if start_ms is not None and end_ms is not None:
+                    dur_ms = end_ms - start_ms
+                    if abs(dur_ms - 300_000) <= 15_000:
+                        cadence = "five"
+                    elif abs(dur_ms - 900_000) <= 30_000:
+                        cadence = "fifteen"
+
+                async with aiohttp.ClientSession() as session:
+                    event_page = EventPageClient(session)
+                    open_price, _close_price = await event_page.fetch_past_results(
+                        eslug=self.slug,
+                        asset=asset,
+                        cadence=cadence,
+                        start_time_iso_z=self.oracle_window.start_iso_z,
+                    )
+
+                if open_price is not None:
+                    self.oracle_tracker.price_to_beat = float(open_price)
+                    self._log(
+                        f"✓ [{self.market_name}] price_to_beat from event HTML: {open_price:,.2f}"
+                    )
+                else:
+                    self._log(
+                        f"⚠️  [{self.market_name}] Could not fetch price_to_beat from event HTML (Cloudflare or format change)"
+                    )
+            except Exception as e:
+                self._log(
+                    f"⚠️  [{self.market_name}] Event HTML price_to_beat fetch failed: {e}"
+                )
+
+        # Best-effort: map oracle direction (Up/Down) to our internal sides (YES/NO)
+        # using Gamma market metadata. This is one HTTP call to gamma-api (not polymarket.com).
+        if self.slug and (self.oracle_up_side is None or self.oracle_down_side is None):
+            try:
+                url = f"https://gamma-api.polymarket.com/markets/slug/{self.slug}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url, timeout=aiohttp.ClientTimeout(total=15)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                        else:
+                            data = None
+
+                if isinstance(data, dict):
+                    outcomes_raw = data.get("outcomes")
+                    token_ids_raw = data.get("clobTokenIds")
+                    outcomes = (
+                        json.loads(outcomes_raw)
+                        if isinstance(outcomes_raw, str)
+                        else outcomes_raw
+                    )
+                    token_ids = (
+                        json.loads(token_ids_raw)
+                        if isinstance(token_ids_raw, str)
+                        else token_ids_raw
+                    )
+
+                    if (
+                        isinstance(outcomes, list)
+                        and isinstance(token_ids, list)
+                        and len(outcomes) == 2
+                        and len(token_ids) == 2
+                    ):
+                        up_idx = next(
+                            (
+                                i
+                                for i, o in enumerate(outcomes)
+                                if isinstance(o, str) and o.strip().lower() == "up"
+                            ),
+                            None,
+                        )
+                        down_idx = next(
+                            (
+                                i
+                                for i, o in enumerate(outcomes)
+                                if isinstance(o, str) and o.strip().lower() == "down"
+                            ),
+                            None,
+                        )
+                        if up_idx is not None and down_idx is not None:
+                            up_token = str(token_ids[up_idx])
+                            down_token = str(token_ids[down_idx])
+
+                            if up_token == self.token_id_yes:
+                                self.oracle_up_side = "YES"
+                            elif up_token == self.token_id_no:
+                                self.oracle_up_side = "NO"
+
+                            if down_token == self.token_id_yes:
+                                self.oracle_down_side = "YES"
+                            elif down_token == self.token_id_no:
+                                self.oracle_down_side = "NO"
+
+                            if self.oracle_up_side and self.oracle_down_side:
+                                self._log(
+                                    f"✓ [{self.market_name}] Oracle outcome mapping: Up→{self.oracle_up_side}, Down→{self.oracle_down_side}"
+                                )
+                            else:
+                                self._log(
+                                    f"⚠️  [{self.market_name}] Oracle mapping unresolved (token ids mismatch)"
+                                )
+            except Exception as e:
+                self._log(f"⚠️  [{self.market_name}] Oracle mapping fetch failed: {e}")
+
+        self._log(
+            f"✓ [{self.market_name}] Oracle tracking enabled (RTDS Chainlink) symbol={self.oracle_symbol}"
+        )
+
+        rtds = RtdsClient()
+        topics = {"crypto_prices_chainlink"}
+
+        # Loop with reconnects until market close.
+        while self.get_time_remaining() > 0:
+            try:
+                async for tick in rtds.iter_prices(
+                    symbol=self.oracle_symbol, topics=topics, seconds=15.0
+                ):
+                    self.last_oracle_update_ts = time.time()
+
+                    if start_ms is not None:
+                        self.oracle_tracker.maybe_set_price_to_beat(
+                            ts_ms=tick.ts_ms,
+                            price=tick.price,
+                            start_ms=start_ms,
+                            max_lag_ms=self.oracle_beat_max_lag_ms,
+                        )
+                    self.oracle_snapshot = self.oracle_tracker.update(
+                        ts_ms=tick.ts_ms, price=tick.price
+                    )
+
+                    # Log at most once per second to avoid spam.
+                    now_ts = time.time()
+                    if (now_ts - self._last_oracle_log_ts) >= 1.0:
+                        snap = self.oracle_snapshot
+                        beat = (
+                            f"{snap.price_to_beat:,.2f}"
+                            if snap.price_to_beat is not None
+                            else "-"
+                        )
+                        delta = f"{snap.delta:,.2f}" if snap.delta is not None else "-"
+                        delta_pct = (
+                            f"{snap.delta_pct*100:.4f}%"
+                            if snap.delta_pct is not None
+                            else "-"
+                        )
+                        z = f"{snap.zscore:.2f}" if snap.zscore is not None else "-"
+                        msg = (
+                            f"[{self.market_name}] ORACLE {self.oracle_symbol}={snap.price:,.2f} | "
+                            f"beat={beat} | Δ={delta} | Δ%={delta_pct} | z={z}"
+                        )
+                        self._log(msg)
+                        self._last_oracle_log_ts = now_ts
+
+                    if end_ms is not None and tick.ts_ms >= end_ms:
+                        return
+
+            except Exception as e:
+                # Reconnect with backoff.
+                self._log(f"⚠️  [{self.market_name}] Oracle RTDS error: {e}")
+                await asyncio.sleep(2.0)
 
     async def _trigger_check_loop(self):
         """Fallback loop for time-based checks without trading on stale data."""

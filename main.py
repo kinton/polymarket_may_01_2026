@@ -24,6 +24,7 @@ Usage:
 """
 
 import asyncio
+import argparse
 import logging
 import random
 import sys
@@ -54,6 +55,12 @@ class TradingBotRunner:
         poll_interval: int = 90,
         run_once: bool = False,
         max_traders: int = 1,
+        oracle_enabled: bool = False,
+        oracle_guard_enabled: bool = True,
+        oracle_min_points: int = 4,
+        oracle_window_s: float = 60.0,
+        book_log_every_s: float = 1.0,
+        book_log_every_s_final: float = 0.5,
     ):
         """
         Initialize the trading bot runner.
@@ -69,6 +76,12 @@ class TradingBotRunner:
         self.poll_interval = poll_interval
         self.run_once = run_once
         self.max_traders = max_traders
+        self.book_log_every_s = book_log_every_s
+        self.book_log_every_s_final = book_log_every_s_final
+        self.oracle_enabled = bool(oracle_enabled)
+        self.oracle_guard_enabled = bool(oracle_guard_enabled)
+        self.oracle_min_points = int(oracle_min_points)
+        self.oracle_window_s = float(oracle_window_s)
 
         # Active traders (track running tasks)
         self.active_traders = {}  # condition_id -> asyncio.Task
@@ -148,7 +161,9 @@ class TradingBotRunner:
         Returns list of markets or None if none found.
         """
         try:
-            finder = GammaAPI15mFinder()  # Default: 20 minutes search window
+            finder = GammaAPI15mFinder(
+                logger=self.finder_logger
+            )  # Default: 20 minutes search window
             markets = await finder.find_active_market()
             return markets
         except Exception as e:
@@ -256,6 +271,12 @@ class TradingBotRunner:
                 title=market.get("title"),
                 slug=market.get("slug"),
                 trader_logger=self.trader_logger,
+                oracle_enabled=self.oracle_enabled,
+                oracle_guard_enabled=self.oracle_guard_enabled,
+                oracle_min_points=self.oracle_min_points,
+                oracle_window_s=self.oracle_window_s,
+                book_log_every_s=self.book_log_every_s,
+                book_log_every_s_final=self.book_log_every_s_final,
             )
 
             # Run trader (this will block until market closes or trader finishes)
@@ -358,8 +379,6 @@ class TradingBotRunner:
 
 async def main():
     """Main entry point with command line argument parsing."""
-    import argparse
-
     parser = argparse.ArgumentParser(
         description="Polymarket 15-minute market trading bot runner"
     )
@@ -391,6 +410,40 @@ async def main():
         default=1,
         help="Maximum concurrent traders (default: 1)",
     )
+    parser.add_argument(
+        "--oracle",
+        action="store_true",
+        help="Enable oracle tracking (Chainlink RTDS)",
+    )
+    parser.add_argument(
+        "--no-oracle-guard",
+        action="store_true",
+        help="Disable oracle guard (tracking stays on if --oracle is set)",
+    )
+    parser.add_argument(
+        "--oracle-min-points",
+        type=int,
+        default=4,
+        help="Minimum oracle points required in rolling window (default: 4)",
+    )
+    parser.add_argument(
+        "--oracle-window-s",
+        type=float,
+        default=60.0,
+        help="Oracle rolling window size in seconds (default: 60.0)",
+    )
+    parser.add_argument(
+        "--book-log-every",
+        type=float,
+        default=1.0,
+        help="Orderbook log interval in seconds (default: 1.0)",
+    )
+    parser.add_argument(
+        "--book-log-every-final",
+        type=float,
+        default=0.5,
+        help="Orderbook log interval in final 5 seconds (default: 0.5)",
+    )
 
     args = parser.parse_args()
 
@@ -398,6 +451,14 @@ async def main():
         parser.error("--size must be a positive number")
     if args.max_traders < 1:
         parser.error("--max-traders must be at least 1")
+    if args.oracle_min_points < 0:
+        parser.error("--oracle-min-points must be >= 0")
+    if args.oracle_window_s <= 0:
+        parser.error("--oracle-window-s must be > 0")
+    if args.book_log_every < 0:
+        parser.error("--book-log-every must be >= 0")
+    if args.book_log_every_final < 0:
+        parser.error("--book-log-every-final must be >= 0")
 
     # Safety warning for live mode
     if args.live:
@@ -416,6 +477,12 @@ async def main():
         poll_interval=args.poll_interval,
         run_once=args.once,
         max_traders=args.max_traders,
+        oracle_enabled=args.oracle,
+        oracle_guard_enabled=(args.oracle and (not args.no_oracle_guard)),
+        oracle_min_points=args.oracle_min_points,
+        oracle_window_s=args.oracle_window_s,
+        book_log_every_s=args.book_log_every,
+        book_log_every_s_final=args.book_log_every_final,
     )
 
     await runner.run()

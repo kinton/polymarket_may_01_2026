@@ -18,7 +18,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiohttp
 
@@ -94,10 +96,6 @@ async def run() -> None:
         if window.end_ms is not None:
             # Human-readable ET is easier to eyeball.
             end_dt = (window.end_ms / 1000.0)
-            # Convert to ET via timestamp.
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
-
             dt_utc = datetime.fromtimestamp(end_dt, tz=ZoneInfo("UTC"))
             dt_et = dt_utc.astimezone(ET_TZ)
             print(f"  window_end (ET): {dt_et.isoformat()}")
