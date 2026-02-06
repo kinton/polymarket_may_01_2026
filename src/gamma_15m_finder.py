@@ -417,7 +417,9 @@ class GammaAPI15mFinder:
 
             async with aiohttp.ClientSession() as session:
                 for query in wide_queries:
-                    markets_data = await self.search_markets(query=query, session=session)
+                    markets_data = await self.search_markets(
+                        query=query, session=session
+                    )
                     events = markets_data.get("events", [])
 
                     if events:

@@ -25,4 +25,3 @@ def test_parse_market_window_returns_end_ms_from_end_date() -> None:
     )
     assert window.start_ms is not None
     assert window.end_ms is not None
-

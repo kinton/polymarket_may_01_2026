@@ -45,6 +45,7 @@ from src.clob_types import (
     BUY_PRICE,
     CLOB_WS_URL,
     MIN_CONFIDENCE,
+    MIN_TRADE_USDC,
     PRICE_TIE_EPS,
     TRIGGER_THRESHOLD,
     OrderBook,
@@ -89,7 +90,7 @@ class LastSecondTrader:
 
     WS_URL = CLOB_WS_URL
     WS_STALE_SECONDS = 2.0  # Require fresh WS data for trigger checks
-    MIN_TRADE_USDC = 1.5
+    MIN_TRADE_USDC = MIN_TRADE_USDC
     BALANCE_RISK_PCT = 0.05
     BALANCE_RISK_SWITCH_USDC = 30.0
 

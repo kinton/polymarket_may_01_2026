@@ -70,8 +70,12 @@ def test_determine_winning_side_tie():
 
 
 def test_determine_winning_side_from_asks_fallback():
-    assert determine_winning_side(None, None, best_ask_yes=0.60, best_ask_no=0.40) == "YES"
-    assert determine_winning_side(None, None, best_ask_yes=0.40, best_ask_no=0.60) == "NO"
+    assert (
+        determine_winning_side(None, None, best_ask_yes=0.60, best_ask_no=0.40) == "YES"
+    )
+    assert (
+        determine_winning_side(None, None, best_ask_yes=0.40, best_ask_no=0.60) == "NO"
+    )
 
 
 def test_determine_winning_side_single_side():

@@ -344,7 +344,9 @@ class RtdsClient:
                 yield tick
 
 
-def _tick_from_payload(topic: str, symbol: str, payload: dict[str, Any]) -> PriceTick | None:
+def _tick_from_payload(
+    topic: str, symbol: str, payload: dict[str, Any]
+) -> PriceTick | None:
     if "value" in payload:
         price = to_float(payload.get("value"))
         ts_ms = payload.get("timestamp")

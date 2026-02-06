@@ -22,7 +22,7 @@ private_key = os.getenv("PRIVATE_KEY")
 chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
 host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
 
-client = ClobClient(host=host, key=private_key or '', chain_id=chain_id)
+client = ClobClient(host=host, key=private_key or "", chain_id=chain_id)
 api_creds = client.create_or_derive_api_creds()
 client.set_api_creds(api_creds)
 print("   ✓ Client initialized")
