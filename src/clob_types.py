@@ -40,7 +40,7 @@ class OrderBook:
 
 # Trading constants
 BUY_PRICE = 0.99
-TRIGGER_THRESHOLD = 120.0  # Start attempting trades when ≤ 120s remain (was 90s)
+TRIGGER_THRESHOLD = 60.0  # Start attempting trades when ≤ s remain (was 90s)
 PRICE_THRESHOLD = 0.50
 PRICE_TIE_EPS = 1e-6
 MIN_CONFIDENCE = 0.50  # Only buy if winning side has ≥50% confidence (bid/ask ≥ 0.50)
