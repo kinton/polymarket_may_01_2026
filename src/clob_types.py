@@ -40,11 +40,17 @@ class OrderBook:
 
 # Trading constants
 BUY_PRICE = 0.99
-TRIGGER_THRESHOLD = 60.0  # Start attempting trades when ≤ s remain (was 90s)
+TRIGGER_THRESHOLD = 30.0  # Start attempting trades when ≤ s remain (was 60s)
 PRICE_THRESHOLD = 0.85
 PRICE_TIE_EPS = 1e-6
-MIN_CONFIDENCE = 0.50  # Only buy if winning side has ≥50% confidence (bid/ask ≥ 0.50)
+MIN_CONFIDENCE = 0.75  # Only buy if winning side has ≥75% confidence (bid/ask ≥ 0.75)
 MIN_TRADE_USDC = 1.00  # Minimum trade size in USDC
+
+# Stop-loss constants (CRITICAL!)
+STOP_LOSS_PCT = 0.30  # Exit if price drops 30% from entry
+STOP_LOSS_ABSOLUTE = 0.95  # Exit if price drops below this absolute value
+TRAILING_STOP_PCT = 0.05  # Trailing stop: move stop up 5% when price moves in favor
+STOP_LOSS_CHECK_INTERVAL_S = 1.0  # Check stop-loss every 1 second
 
 # API constants
 GAMMA_API_URL = "https://gamma-api.polymarket.com/public-search"
