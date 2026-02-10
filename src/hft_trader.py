@@ -46,6 +46,9 @@ from dotenv import load_dotenv
 from src.clob_types import (
     BUY_PRICE,
     CLOB_WS_URL,
+    MAX_CAPITAL_PCT_PER_TRADE,
+    MAX_DAILY_LOSS_PCT,
+    MAX_TOTAL_TRADES_PER_DAY,
     MIN_CONFIDENCE,
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
@@ -57,6 +60,11 @@ from src.clob_types import (
     TRAILING_STOP_PCT,
     TRIGGER_THRESHOLD,
     OrderBook,
+)
+from src.alerts import (
+    AlertManager,
+    SlackAlertSender,
+    TelegramAlertSender,
 )
 from src.market_parser import (
     determine_winning_side,
@@ -246,6 +254,18 @@ class LastSecondTrader:
         # Initialize CLOB client
         load_dotenv()
         self.client = self._init_clob_client()
+
+        # Initialize alert manager (optional)
+        self.alert_manager: AlertManager | None = None
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+
+        if telegram_bot_token and telegram_chat_id:
+            telegram_sender = TelegramAlertSender(telegram_bot_token, telegram_chat_id)
+            slack_sender = SlackAlertSender(slack_webhook_url) if slack_webhook_url else None
+            self.alert_manager = AlertManager(telegram=telegram_sender, slack=slack_sender)
+            self._log(f"[{self.market_name}] Alerts enabled: Telegram{' + Slack' if slack_sender else ''}")
 
         # Log init
         mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
@@ -808,6 +828,174 @@ class LastSecondTrader:
             self._log(f"⚠️  [{self.market_name}] Balance check failed: {e}")
             return False
 
+    async def _check_risk_limits(self) -> bool:
+        """
+        Check if current trade size respects the maximum capital percentage limit.
+
+        Returns:
+            True if trade size is within limits, False otherwise
+        """
+        if not self.client:
+            self._log(f"❌ [{self.market_name}] CLOB client not initialized for risk check")
+            return False
+
+        try:
+            # Get USDC balance
+            balance_data_raw = await asyncio.to_thread(
+                self.client.get_balance_allowance,
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL),
+            )
+            balance_data: dict[str, Any] = balance_data_raw  # type: ignore
+            usdc_balance = float(balance_data.get("balance", 0)) / 1e6
+
+            # Calculate maximum allowed trade size
+            max_trade_size = usdc_balance * MAX_CAPITAL_PCT_PER_TRADE
+
+            # Check if planned trade exceeds limit
+            trade_amount = (
+                self._planned_trade_amount
+                if self._planned_trade_amount is not None
+                else max(round(self.trade_size, 2), 1.00)
+            )
+
+            if trade_amount > max_trade_size:
+                self._log(
+                    f"🛑 [{self.market_name}] RISK LIMIT EXCEEDED: "
+                    f"Trade ${trade_amount:.2f} > Max ${max_trade_size:.2f} ({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of ${usdc_balance:.2f})",
+                )
+                self.order_executed = True  # Stop trying to trade
+                return False
+
+            self._log(
+                f"✓ [{self.market_name}] Risk check passed: "
+                f"Trade ${trade_amount:.2f} ≤ Max ${max_trade_size:.2f} ({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of capital)",
+            )
+            return True
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Risk limit check failed: {e}")
+            return False
+
+    def _get_daily_limits_path(self) -> str:
+        """Get the path to the daily limits JSON file."""
+        return os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "log", "daily_limits.json"
+        )
+
+    def _track_daily_pnl(self, trade_amount: float, pnl: float = 0.0) -> None:
+        """
+        Track daily PnL and trade count in daily_limits.json.
+
+        Args:
+            trade_amount: Amount of the trade in USDC
+            pnl: Profit or loss from the trade (positive = profit, negative = loss)
+        """
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = self._get_daily_limits_path()
+
+        try:
+            # Ensure log directory exists
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+
+            # Read existing data or create new
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    data = json.load(f)
+            else:
+                data = {}
+
+            # Check if we need to reset for new day
+            if data.get("date") != today:
+                # New day - reset tracking
+                data = {
+                    "date": today,
+                    "initial_balance": None,  # Will be set on first trade
+                    "current_pnl": 0.0,
+                    "total_trades": 0,
+                }
+
+            # Update trade count and PnL
+            data["total_trades"] = data.get("total_trades", 0) + 1
+            data["current_pnl"] = data.get("current_pnl", 0.0) + pnl
+
+            # Set initial balance on first trade of the day
+            if data["total_trades"] == 1 and data["initial_balance"] is None:
+                if self.client:
+                    try:
+                        balance_data_raw = self.client.get_balance_allowance(
+                            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                        )
+                        balance_data: dict[str, Any] = balance_data_raw  # type: ignore
+                        data["initial_balance"] = float(balance_data.get("balance", 0)) / 1e6
+                    except Exception:
+                        data["initial_balance"] = trade_amount
+
+            # Write updated data
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+
+            self._log(
+                f"📊 [{self.market_name}] Daily stats updated: "
+                f"PnL=${data['current_pnl']:+.2f}, Trades={data['total_trades']}",
+            )
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Failed to track daily PnL: {e}")
+
+    def _check_daily_limits(self) -> bool:
+        """
+        Check if daily limits are within acceptable bounds.
+
+        Returns:
+            True if daily limits are OK, False if limits exceeded
+        """
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = self._get_daily_limits_path()
+
+        try:
+            # If no tracking file exists, limits are OK
+            if not os.path.exists(path):
+                return True
+
+            with open(path, "r") as f:
+                data = json.load(f)
+
+            # If data is from a different day, reset and OK
+            if data.get("date") != today:
+                return True
+
+            # Check daily loss limit
+            initial_balance = data.get("initial_balance")
+            current_pnl = data.get("current_pnl", 0.0)
+
+            if initial_balance is not None:
+                max_daily_loss = initial_balance * -MAX_DAILY_LOSS_PCT
+                if current_pnl < max_daily_loss:
+                    self._log(
+                        f"🛑 FATAL [{self.market_name}] DAILY LOSS LIMIT EXCEEDED: "
+                        f"PnL=${current_pnl:+.2f} < Max Loss=${max_daily_loss:+.2f} "
+                        f"({MAX_DAILY_LOSS_PCT * 100:.0f}% of ${initial_balance:.2f})",
+                    )
+                    self.order_executed = True  # Stop trading
+                    return False
+
+            # Check daily trade count limit
+            total_trades = data.get("total_trades", 0)
+            if total_trades >= MAX_TOTAL_TRADES_PER_DAY:
+                self._log(
+                    f"🛑 [{self.market_name}] DAILY TRADE LIMIT EXCEEDED: "
+                    f"{total_trades} trades >= {MAX_TOTAL_TRADES_PER_DAY} max",
+                )
+                self.order_executed = True  # Stop trading
+                return False
+
+            return True
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Daily limits check failed: {e}")
+            # Fail open on error - allow trading if we can't check
+            return True
+
     async def check_trigger(self, time_remaining: float):
         """
         Check if trigger conditions are met and execute trade if appropriate.
@@ -829,6 +1017,10 @@ class LastSecondTrader:
             trigger_start_mono = time.monotonic()
 
             if self.order_executed or self.order_in_progress or time_remaining <= 0:
+                return
+
+            # Check daily limits before proceeding
+            if not self._check_daily_limits():
                 return
 
             # Check retry limit
@@ -951,6 +1143,12 @@ class LastSecondTrader:
                     )
                     self._oracle_guard_last_reason = oracle_reason
                     self._oracle_guard_last_log_ts = now
+
+                    # Send oracle guard block alert (only when logging)
+                    if self.alert_manager and should_log:
+                        await self.alert_manager.send_oracle_guard_block(
+                            self.market_name, oracle_reason, oracle_detail
+                        )
                 return
 
             # Check balance before executing order (only check once per market)
@@ -978,6 +1176,11 @@ class LastSecondTrader:
             self._log(
                 f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {trade_side} @ ${winning_ask:.4f}{oracle_note}"
             )
+
+            # Check risk limits before executing trade
+            risk_ok = await self._check_risk_limits()
+            if not risk_ok:
+                return
 
             # Final sanity check in case we crossed close during async work
             elapsed = time.monotonic() - trigger_start_mono
@@ -1115,6 +1318,17 @@ class LastSecondTrader:
                         f"Take-profit: ${self.entry_price * (1 + TAKE_PROFIT_PCT):.4f}"
                     )
                 )
+
+                # Send trade alert (even in dry run)
+                if self.alert_manager:
+                    await self.alert_manager.send_trade_alert({
+                        "market": self.market_name,
+                        "side": side,
+                        "entry_price": winning_ask,
+                        "amount": amount,
+                    })
+            # Track daily PnL (initial trade - no PnL yet)
+            self._track_daily_pnl(amount)
             self.order_executed = True
             return
 
@@ -1206,9 +1420,21 @@ class LastSecondTrader:
                     )
                 )
 
+                # Send trade alert
+                if self.alert_manager:
+                    await self.alert_manager.send_trade_alert({
+                        "market": self.market_name,
+                        "side": side,
+                        "entry_price": executed_price,
+                        "amount": amount,
+                    })
+
             # Set flags only after successful post
             self.order_executed = True
             self.order_in_progress = False
+
+            # Track daily PnL (initial trade - no PnL yet)
+            self._track_daily_pnl(amount)
 
         except Exception as e:
             error_str = str(e)
@@ -1275,6 +1501,22 @@ class LastSecondTrader:
                         f"PnL: {pnl_sign}{pnl_pct:.2f}%"
                     )
                 )
+
+                # Send sell alert
+                if self.alert_manager:
+                    if reason == "STOP-LOSS":
+                        await self.alert_manager.send_stop_loss_alert(
+                            self.market_name, pnl_pct, self.entry_price, current_price
+                        )
+                    elif reason == "TAKE-PROFIT":
+                        await self.alert_manager.send_take_profit_alert(
+                            self.market_name, pnl_pct, self.entry_price, current_price
+                        )
+
+                # Track daily PnL in dry run
+                trade_amount = max(round(self.trade_size, 2), 1.00)
+                pnl_amount = trade_amount * (pnl_pct / 100)
+                self._track_daily_pnl(trade_amount, pnl_amount)
             else:
                 self._log(
                     (
@@ -1339,12 +1581,29 @@ class LastSecondTrader:
                     )
                 )
 
+                # Send sell alert
+                if self.alert_manager:
+                    if reason == "STOP-LOSS":
+                        await self.alert_manager.send_stop_loss_alert(
+                            self.market_name, pnl_pct, self.entry_price, current_price
+                        )
+                    elif reason == "TAKE-PROFIT":
+                        await self.alert_manager.send_take_profit_alert(
+                            self.market_name, pnl_pct, self.entry_price, current_price
+                        )
+
             # Clear position state
             self.position_open = False
             self.entry_price = None
             self.position_side = None
             self.trailing_stop_price = None
             self._log(f"✓ [{self.market_name}] Position closed ({reason})")
+
+            # Track daily PnL
+            if current_price is not None and self.entry_price is not None:
+                pnl_pct = ((current_price - self.entry_price) / self.entry_price)
+                pnl_amount = amount * pnl_pct  # PnL in dollars
+                self._track_daily_pnl(amount, pnl_amount)
 
         except Exception as e:
             self._log(f"❌ [{self.market_name}] Sell order failed: {e}")

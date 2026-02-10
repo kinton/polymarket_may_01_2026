@@ -56,6 +56,14 @@ STOP_LOSS_CHECK_INTERVAL_S = 1.0  # Check stop-loss every 1 second
 TAKE_PROFIT_PCT = 0.10  # Exit if price rises 10% from entry
 TAKE_PROFIT_CHECK_INTERVAL_S = 1.0  # Check take-profit every 1 second
 
+# Risk management limits (CRITICAL!)
+MAX_CAPITAL_PCT_PER_TRADE = 0.05  # Maximum 5% of capital per trade
+MAX_DAILY_LOSS_PCT = 0.10  # Stop if lost 10% in a day
+MAX_TOTAL_TRADES_PER_DAY = 20  # Limit total trades per day
+
 # API constants
 GAMMA_API_URL = "https://gamma-api.polymarket.com/public-search"
 CLOB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+
+# Alert rate limiting
+ALERT_RATE_LIMIT_PER_MINUTE = 10  # Max alerts per minute per channel
