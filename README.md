@@ -1,98 +1,125 @@
 # Polymarket Trading Bot
 
-High-frequency trading bot for Polymarket 5/15-minute Bitcoin/Ethereum markets.
+High-frequency trading bot for Polymarket's 5/15-minute binary markets.
 
-## 🎯 Features
+## Features
 
-- **Automated Market Discovery** - Finds active 5m/15m markets via Gamma API
-- **Real-time Price Monitoring** - WebSocket connection for orderbook updates
-- **Final-Window Execution** - Buys winning side at $0.99 within the final 120s window
-- **Position Settlement** - Auto-sells @ $0.999 and claims resolved markets
-- **Dry-run Mode** - Test safely before live trading
+- **High-Frequency Trading**: Automated trading in the final 2-minute window before market close
+- **Multi-Market Support**: BTC, ETH, SOL 5-minute and 15-minute markets
+- **Risk Management**: Stop-loss and take-profit triggers
+- **Oracle Guard**: Chainlink oracle integration to prevent low-probability trades
+- **Dry Run Mode**: Safe testing mode (default)
+- **Daily Reports**: Automated daily trading summaries
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
-# Install dependencies
+# Clone and setup
+git clone https://github.com/kinton/polymarket_may_01_2026.git
+cd polymarket_may_01_2026
 uv sync
 
-# Check balance
-uv run python scripts/check_balance.py
+# Run in dry run mode (safe, no real trades)
+uv run python main.py
 
-# Test in dry-run mode
-uv run python main.py --once
-
-# Run live (DANGER!)
-uv run python main.py --live --size 2
+# Run live trading (DANGER!)
+uv run python main.py --live
 ```
 
-## 📚 Documentation
+## Configuration
 
-- **[docs/README.md](docs/README.md)** - Full documentation index
-- **[TRADING_GUIDE.md](TRADING_GUIDE.md)** - Strategy configuration
-- **[DEPLOY.md](DEPLOY.md)** - Production deployment
-- **[.github/copilot-instructions.md](.github/copilot-instructions.md)** - AI quick reference
+Copy `.env.example` to `.env` and configure:
 
-## ⚙️ Configuration
-
-### Environment Variables
-Required `.env` variables:
 ```bash
-PRIVATE_KEY=0x...                           # Ethereum private key
-POLYMARKET_PROXY_ADDRESS=0x...             # Polymarket proxy wallet
-POLYGON_CHAIN_ID=137
+PRIVATE_KEY=your_private_key_here
 CLOB_HOST=https://clob.polymarket.com
+CLOB_API_KEY=your_api_key
+CLOB_SECRET=your_secret
+CLOB_PASSPHRASE=your_passphrase
 ```
 
-### Trading Parameters
-Edit `src/clob_types.py` to adjust strategy:
-```python
-BUY_PRICE = 0.99           # Maximum price to pay (99¢)
-MIN_CONFIDENCE = 0.75      # Only buy if ≥75% confidence
-TRIGGER_THRESHOLD = 120.0  # Start trading 120s before close
-```
+## Daily Reports
 
-**Example:** With `MIN_CONFIDENCE = 0.75`, bot will:
-- ✅ Buy YES if price is $0.75-$0.99 (75-99% chance)
-- ❌ Skip YES if price is $0.51 (51% chance - too risky!)
-
-This prevents buying positions that can easily flip in final seconds.
-
-## 📊 Position Management
+Generate daily trading summaries:
 
 ```bash
-# Check positions (dry-run)
-uv run python src/position_settler.py --once
+# Generate report for a specific date
+uv run python scripts/daily_report.py --date 2026-02-10
 
-# Auto-settle positions (live)
-uv run python src/position_settler.py --daemon --live
+# Generate in different formats
+uv run python scripts/daily_report.py --date 2026-02-10 --format json
+uv run python scripts/daily_report.py --date 2026-02-10 --format csv
+
+# Custom output path
+uv run python scripts/daily_report.py --date 2026-02-10 --output reports/my-report.md
 ```
 
-## ⚠️ Critical Notes
+Reports are saved to `daily-summary/YYYY-MM-DD.md` by default.
 
-- **Always use `uv`** - Never run scripts with plain `python`
-- **Test first** - Use `--once` flag for single-poll testing
-- **Check balance** - Minimum $2 USDC required
-- **Approve USDC** - Run `uv run python scripts/approve.py` before trading
+### Cron Integration
 
-## 🔒 Security
+Add to crontab for automatic daily reports:
 
-- Never commit `.env` file
-- Private keys stored locally only
-- Use `.env.example` as template
+```bash
+# Daily report at 23:00 UTC
+0 23 * * * cd /path/to/polymarket && uv run python scripts/daily_report.py
+```
 
-## 📈 Status
+## Trading Strategy
 
-- ✅ Market discovery (Bitcoin/Ethereum)
-- ✅ Real-time price monitoring
-- ✅ Dynamic winning side detection
-- ✅ Live trading capability
-- ✅ Position settlement & claiming
+The bot implements a "last-second" strategy:
 
-## 📝 License
+1. **Market Discovery**: Find 5/15-minute markets ending in the next 4 minutes
+2. **Monitoring**: Stream real-time order book data via WebSocket
+3. **Trigger**: Execute when time remaining ≤ 120 seconds AND winning side ≤ $0.99
+4. **Exit**: Sell on stop-loss (-5%) or take-profit (+2%)
+
+## Safety Features
+
+- **Dry Run Mode**: Simulate trades without real execution (default)
+- **Oracle Guard**: Block trades when oracle signals are unreliable
+- **Stop-Loss**: Automatic exit at -5% (or $0.50 absolute)
+- **Take-Profit**: Automatic exit at +2%
+- **Minimum Confidence**: Only trade when winning side ≥ 75%
+- **Balance Checks**: Verify sufficient funds before trading
+
+## Risk Warning
+
+⚠️ **This bot trades with real money in live mode.**
+
+- Start with small amounts (e.g., $1-$10)
+- Always test in dry run mode first
+- Monitor position closely
+- Understand the markets you're trading
+- Never trade more than you can afford to lose
+
+## Project Structure
+
+```
+polymarket_may_01_2026/
+├── main.py                 # Bot entry point
+├── src/                    # Core modules
+│   ├── hft_trader.py      # High-frequency trader
+│   ├── gamma_15m_finder.py # Market discovery
+│   ├── oracle_tracker.py   # Chainlink oracle integration
+│   └── ...
+├── scripts/
+│   └── daily_report.py     # Daily report generator
+├── log/                    # Log files
+├── daily-summary/          # Daily reports
+└── docs/                   # Documentation
+```
+
+## Logs
+
+- `log/finder.log` - Market discovery and general activity
+- `log/trades-YYYYMMDD-*.log` - Trading logs per day
+
+## Support
+
+- **Issues**: https://github.com/kinton/polymarket_may_01_2026/issues
+- **Documentation**: See `docs/` directory
+
+## License
 
 MIT
-
-## 🤝 Support
-
-For issues or questions, see documentation in `docs/` folder.
