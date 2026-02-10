@@ -80,5 +80,6 @@ async def integration_trader(sample_market_data, mock_clob_client):
             oracle_enabled=False,
             oracle_guard_enabled=False,
         )
-        trader.client = mock_clob_client.return_value
+        # Use the configured mock client directly, not its return_value
+        trader.client = mock_clob_client
     return trader

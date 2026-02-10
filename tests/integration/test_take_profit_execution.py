@@ -10,6 +10,7 @@ This test mocks:
 """
 
 import pytest
+from unittest.mock import AsyncMock
 
 from src.clob_types import TAKE_PROFIT_PCT
 
@@ -35,8 +36,14 @@ async def test_take_profit_triggers_on_10_percent_rise(integration_trader):
     # Current price: $1.09 (81.7% rise, above threshold)
     integration_trader.orderbook.best_ask_yes = 1.09
 
-    # Mock execute_sell to verify take-profit execution
-    integration_trader.execute_sell = AsyncMock()
+    # Mock execute_sell to verify take-profit execution and close position
+    async def mock_execute_sell(reason):
+        integration_trader.position_open = False
+        integration_trader.entry_price = None
+        integration_trader.position_side = None
+        integration_trader.trailing_stop_price = None
+
+    integration_trader.execute_sell = AsyncMock(side_effect=mock_execute_sell)
 
     # Run take-profit check
     await integration_trader._check_stop_loss_take_profit()
@@ -67,6 +74,7 @@ async def test_take_profit_does_not_trigger_on_9_percent_rise(integration_trader
     # Price rises to $0.654 (9% rise, below take-profit threshold)
     integration_trader.orderbook.best_ask_yes = 0.654
 
+    # Mock execute_sell (should not be called)
     integration_trader.execute_sell = AsyncMock()
 
     # Run take-profit check
@@ -97,7 +105,14 @@ async def test_take_profit_with_absolute_floor(integration_trader):
     # Price rises to $0.96, above absolute floor
     integration_trader.orderbook.best_ask_yes = 0.96
 
-    integration_trader.execute_sell = AsyncMock()
+    # Mock execute_sell to verify take-profit execution and close position
+    async def mock_execute_sell(reason):
+        integration_trader.position_open = False
+        integration_trader.entry_price = None
+        integration_trader.position_side = None
+        integration_trader.trailing_stop_price = None
+
+    integration_trader.execute_sell = AsyncMock(side_effect=mock_execute_sell)
 
     # Run take-profit check
     await integration_trader._check_stop_loss_take_profit()

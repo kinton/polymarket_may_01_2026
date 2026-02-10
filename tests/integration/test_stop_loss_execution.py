@@ -10,6 +10,7 @@ This test mocks:
 """
 
 import pytest
+from unittest.mock import AsyncMock
 
 from src.clob_types import (
     STOP_LOSS_ABSOLUTE,
@@ -38,8 +39,14 @@ async def test_stop_loss_triggers_on_30_percent_drop(integration_trader):
     # Current price: $0.69 (31% drop)
     integration_trader.orderbook.best_ask_yes = 0.69
 
-    # Mock execute_sell to verify stop-loss execution
-    integration_trader.execute_sell = AsyncMock()
+    # Mock execute_sell to verify stop-loss execution and close position
+    async def mock_execute_sell(reason):
+        integration_trader.position_open = False
+        integration_trader.entry_price = None
+        integration_trader.position_side = None
+        integration_trader.trailing_stop_price = None
+
+    integration_trader.execute_sell = AsyncMock(side_effect=mock_execute_sell)
 
     # Run stop-loss check
     await integration_trader._check_stop_loss_take_profit()
@@ -70,6 +77,7 @@ async def test_stop_loss_does_not_trigger_on_29_percent_drop(integration_trader)
     # Price drops to $0.70 (29% drop, above stop-loss)
     integration_trader.orderbook.best_ask_yes = 0.70
 
+    # Mock execute_sell (should not be called)
     integration_trader.execute_sell = AsyncMock()
 
     # Run stop-loss check
@@ -100,7 +108,14 @@ async def test_stop_loss_uses_absolute_floor(integration_trader):
     # Price drops to $0.94, below absolute floor of $0.95
     integration_trader.orderbook.best_ask_yes = 0.94
 
-    integration_trader.execute_sell = AsyncMock()
+    # Mock execute_sell to verify stop-loss execution and close position
+    async def mock_execute_sell(reason):
+        integration_trader.position_open = False
+        integration_trader.entry_price = None
+        integration_trader.position_side = None
+        integration_trader.trailing_stop_price = None
+
+    integration_trader.execute_sell = AsyncMock(side_effect=mock_execute_sell)
 
     # Run stop-loss check
     await integration_trader._check_stop_loss_take_profit()
