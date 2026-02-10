@@ -18,7 +18,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiohttp
 
@@ -80,9 +82,7 @@ async def run() -> None:
 
         symbol = args.symbol or guess_chainlink_symbol(market.question)
         if symbol is None:
-            raise SystemExit(
-                "Could not guess symbol from market question. Pass --symbol."
-            )
+            raise SystemExit("Could not guess symbol from market question. Pass --symbol.")
 
         print("\nMarket:")
         print(f"  slug: {market.slug}")
@@ -95,11 +95,7 @@ async def run() -> None:
             print(f"  window_start (UTC): {window.start_iso_z}")
         if window.end_ms is not None:
             # Human-readable ET is easier to eyeball.
-            end_dt = window.end_ms / 1000.0
-            # Convert to ET via timestamp.
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
-
+            end_dt = (window.end_ms / 1000.0)
             dt_utc = datetime.fromtimestamp(end_dt, tz=ZoneInfo("UTC"))
             dt_et = dt_utc.astimezone(ET_TZ)
             print(f"  window_end (ET): {dt_et.isoformat()}")
@@ -134,16 +130,10 @@ async def run() -> None:
     open_price: float | None = None
     close_price: float | None = None
 
-    async for tick in rtds.iter_prices(
-        symbol=symbol, topics=topics, seconds=args.seconds
-    ):
+    async for tick in rtds.iter_prices(symbol=symbol, topics=topics, seconds=args.seconds):
         # Capture open/close using Chainlink ticks only.
         if tick.topic == "crypto_prices_chainlink":
-            if (
-                open_price is None
-                and window.start_ms is not None
-                and tick.ts_ms >= window.start_ms
-            ):
+            if open_price is None and window.start_ms is not None and tick.ts_ms >= window.start_ms:
                 open_price = tick.price
                 print(f"Captured price_to_beat (open): {open_price:,.2f}")
             if (

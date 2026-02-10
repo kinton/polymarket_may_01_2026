@@ -161,14 +161,21 @@ def extract_past_results_from_event_html(
         return None, None
 
     window = html[idx : idx + 2500]
-    m = re.search(
-        r'"state":\{"data":\{"openPrice":([0-9.]+),"closePrice":([0-9.]+)\}',
-        window,
-    )
-    if not m:
+    # For live windows, closePrice can be null/missing. We extract openPrice
+    # and closePrice if present.
+    m_open = re.search(r'"openPrice":([0-9.]+)', window)
+    if not m_open:
         return None, None
+    open_price = to_float(m_open.group(1))
 
-    return to_float(m.group(1)), to_float(m.group(2))
+    m_close = re.search(r'"closePrice":(null|[0-9.]+)', window)
+    close_price = None
+    if m_close:
+        close_raw = m_close.group(1)
+        if close_raw != "null":
+            close_price = to_float(close_raw)
+
+    return open_price, close_price
 
 
 class GammaClient:
@@ -326,8 +333,10 @@ class RtdsClient:
                 if not isinstance(msg, dict):
                     continue
 
-                topic = msg.get("topic")
-                if not isinstance(topic, str) or topic not in topics:
+                msg_topic = msg.get("topic")
+                if not isinstance(msg_topic, str):
+                    continue
+                if msg_topic not in {"crypto_prices", "crypto_prices_chainlink"}:
                     continue
 
                 payload = msg.get("payload")
@@ -338,7 +347,18 @@ class RtdsClient:
                 if isinstance(payload_symbol, str) and payload_symbol != symbol:
                     continue
 
-                tick = _tick_from_payload(topic=topic, symbol=symbol, payload=payload)
+                # RTDS currently sends msg.topic="crypto_prices" even when subscribing
+                # to "crypto_prices_chainlink". We derive a canonical topic based on
+                # the symbol format.
+                canonical_topic = (
+                    "crypto_prices_chainlink" if "/" in symbol else "crypto_prices"
+                )
+                if canonical_topic not in topics:
+                    continue
+
+                tick = _tick_from_payload(
+                    topic=canonical_topic, symbol=symbol, payload=payload
+                )
                 if tick is None:
                     continue
                 yield tick

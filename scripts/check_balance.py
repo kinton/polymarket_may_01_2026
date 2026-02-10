@@ -6,6 +6,7 @@ Check USDC balance and allowance for Polymarket trading.
 import os
 
 from dotenv import load_dotenv
+from eth_account import Account
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
 from py_clob_client.constants import POLYGON
@@ -21,9 +22,6 @@ def main():
         return
 
     try:
-        # Show wallet addresses
-        from eth_account import Account
-
         account = Account.from_key(private_key)
         print(f"🔑 EOA Wallet: {account.address}")
         print(f"🔷 Proxy Wallet: {proxy_address or 'Not set'}")

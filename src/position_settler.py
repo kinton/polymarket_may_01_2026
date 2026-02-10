@@ -30,6 +30,14 @@ from typing import Any
 
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import (
+    AssetType,
+    BalanceAllowanceParams,
+    MarketOrderArgs,
+    OrderType,
+    TradeParams,
+)
+from py_clob_client.order_builder.constants import SELL
 
 # Load environment variables
 load_dotenv()
@@ -157,9 +165,6 @@ class PositionSettler:
                 self.logger.info("Dry run mode: Simulating positions check")
                 return []
 
-            # Step 1: Get trade history to find token_ids we've traded
-            from py_clob_client.clob_types import TradeParams
-
             if self.client is None:
                 self.logger.error("Client not initialized")
                 return []
@@ -185,9 +190,6 @@ class PositionSettler:
                         token_ids.add(token_id)
 
             self.logger.info(f"Tracking {len(token_ids)} unique tokens from buy orders")
-
-            # Step 3: Check balance for each token
-            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
 
             positions = []
             for token_id in token_ids:
@@ -278,10 +280,6 @@ class PositionSettler:
             return {"status": "dry_run", "token_id": token_id, "price": current_price}
 
         try:
-            # Create market sell order (FOK)
-            from py_clob_client.clob_types import MarketOrderArgs, OrderType
-            from py_clob_client.order_builder.constants import SELL
-
             if self.client is None:
                 self.logger.error("Client not initialized")
                 return None
