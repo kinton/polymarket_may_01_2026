@@ -52,6 +52,10 @@ STOP_LOSS_ABSOLUTE = 0.95  # Exit if price drops below this absolute value
 TRAILING_STOP_PCT = 0.05  # Trailing stop: move stop up 5% when price moves in favor
 STOP_LOSS_CHECK_INTERVAL_S = 1.0  # Check stop-loss every 1 second
 
+# Take-profit constants
+TAKE_PROFIT_PCT = 0.10  # Exit if price rises 10% from entry
+TAKE_PROFIT_CHECK_INTERVAL_S = 1.0  # Check take-profit every 1 second
+
 # API constants
 GAMMA_API_URL = "https://gamma-api.polymarket.com/public-search"
 CLOB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"

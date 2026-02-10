@@ -49,6 +49,12 @@ from src.clob_types import (
     MIN_CONFIDENCE,
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
+    STOP_LOSS_ABSOLUTE,
+    STOP_LOSS_CHECK_INTERVAL_S,
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_CHECK_INTERVAL_S,
+    TAKE_PROFIT_PCT,
+    TRAILING_STOP_PCT,
     TRIGGER_THRESHOLD,
     OrderBook,
 )
@@ -227,6 +233,15 @@ class LastSecondTrader:
         self._oracle_guard_last_reason: str | None = None
         self._oracle_guard_last_log_ts = 0.0
         self._oracle_html_beat_attempted = False
+
+        # Position protection state
+        self.entry_price: float | None = None  # Entry price for stop-loss/take-profit
+        self.position_side: str | None = None  # "YES" or "NO" for the position
+        self.position_open = False  # Whether we have an open position
+        self.trailing_stop_price: float | None = None  # Current trailing stop level
+        self._last_stop_loss_check_ts = 0.0  # Throttle stop-loss checks
+        self._last_take_profit_check_ts = 0.0  # Throttle take-profit checks
+        self._last_trailing_stop_update_ts = 0.0  # Throttle trailing-stop updates
 
         # Initialize CLOB client
         load_dotenv()
@@ -670,6 +685,11 @@ class LastSecondTrader:
             # Check trigger conditions
             await self.check_trigger(time_remaining)
 
+            # Check stop-loss/take-profit/trailing-stop if position is open
+            # This has priority over Oracle Guard
+            if self.position_open:
+                await self._check_stop_loss_take_profit()
+
         except Exception as e:
             self._log(f"Error processing market update: {e}")
 
@@ -1079,6 +1099,22 @@ class LastSecondTrader:
             )
             ask_str = f"{winning_ask:.4f}" if winning_ask is not None else "-"
             self._log(f"  Best Ask: ${ask_str}, Type: FOK MARKET")
+            # Record position for stop-loss tracking even in dry run
+            if winning_ask is not None:
+                self.entry_price = winning_ask
+                self.position_side = side
+                self.position_open = True
+                self.trailing_stop_price = max(
+                    self.entry_price * (1 - STOP_LOSS_PCT),
+                    STOP_LOSS_ABSOLUTE,
+                )
+                self._log(
+                    (
+                        f"  📍 Position opened @ ${self.entry_price:.4f} | "
+                        f"Stop-loss: ${self.trailing_stop_price:.4f} | "
+                        f"Take-profit: ${self.entry_price * (1 + TAKE_PROFIT_PCT):.4f}"
+                    )
+                )
             self.order_executed = True
             return
 
@@ -1129,6 +1165,7 @@ class LastSecondTrader:
             self._log(f"✓ [{self.market_name}] FOK order posted: {response}")
 
             # Calculate executed price
+            executed_price = None
             try:
                 taking_amount = float(response.get("takingAmount", 0))  # type: ignore
                 making_amount = float(response.get("makingAmount", 0))  # type: ignore
@@ -1150,6 +1187,24 @@ class LastSecondTrader:
                 )
             except Exception as e:
                 self._log(f"⚠️  [{self.market_name}] Verification setup failed: {e}")
+
+            # Set position state for stop-loss tracking
+            if executed_price is not None:
+                self.entry_price = executed_price
+                self.position_side = side
+                self.position_open = True
+                # Initialize trailing stop
+                self.trailing_stop_price = max(
+                    self.entry_price * (1 - STOP_LOSS_PCT),
+                    STOP_LOSS_ABSOLUTE,
+                )
+                self._log(
+                    (
+                        f"  📍 Position opened @ ${self.entry_price:.4f} | "
+                        f"Stop-loss: ${self.trailing_stop_price:.4f} | "
+                        f"Take-profit: ${self.entry_price * (1 + TAKE_PROFIT_PCT):.4f}"
+                    )
+                )
 
             # Set flags only after successful post
             self.order_executed = True
@@ -1191,6 +1246,190 @@ class LastSecondTrader:
             else:
                 self._log("  → Max retry attempts reached. Giving up.")
                 self.order_executed = True  # Stop retrying
+
+    async def execute_sell(self, reason: str) -> None:
+        """
+        Execute a market sell order to exit the position.
+
+        Args:
+            reason: The reason for the sell (e.g., "STOP-LOSS", "TAKE-PROFIT")
+        """
+        if not self.position_open or self.position_side is None or self.entry_price is None:
+            self._log(f"❌ [{self.market_name}] No position to sell")
+            return
+
+        # Determine which token to sell (the one we bought)
+        sell_token_id = get_winning_token_id(
+            self.position_side, self.token_id_yes, self.token_id_no
+        )
+        current_price = self._get_ask_for_side(self.position_side)
+
+        if self.dry_run:
+            if current_price is not None:
+                pnl_pct = ((current_price - self.entry_price) / self.entry_price) * 100
+                pnl_sign = "+" if pnl_pct >= 0 else ""
+                self._log(
+                    (
+                        f"🔷 [{self.market_name}] DRY RUN - WOULD SELL ({reason}): "
+                        f"{self.position_side} @ ${current_price:.4f} | "
+                        f"PnL: {pnl_sign}{pnl_pct:.2f}%"
+                    )
+                )
+            else:
+                self._log(
+                    (
+                        f"🔷 [{self.market_name}] DRY RUN - WOULD SELL ({reason}): "
+                        f"{self.position_side} | No current price available"
+                    )
+                )
+            self.position_open = False
+            self.entry_price = None
+            self.position_side = None
+            self.trailing_stop_price = None
+            return
+
+        if not self.client:
+            self._log(f"❌ [{self.market_name}] CLOB client not initialized")
+            return
+
+        if not sell_token_id:
+            self._log(f"❌ [{self.market_name}] Error: No token ID to sell")
+            return
+
+        try:
+            self._log(f"🔴 [{self.market_name}] SELL ORDER ({reason}): {self.position_side}")
+
+            # Use market order to sell
+            # For selling, we need to specify the amount in tokens, not dollars
+            # Use minimum trade size as a fallback
+            amount = max(round(self.trade_size, 2), 1.00)
+
+            order_args = MarketOrderArgs(
+                token_id=sell_token_id,
+                amount=amount,
+                price=0.01,  # Minimum price we'll accept
+                side="SELL",
+                nonce=0,
+            )
+
+            # Create market order
+            created_order = await asyncio.to_thread(
+                self.client.create_market_order,
+                order_args,
+                CreateOrderOptions(tick_size="0.01", neg_risk=False),  # type: ignore
+            )
+
+            # Post order
+            response = await asyncio.to_thread(
+                self.client.post_order,
+                created_order,
+                OrderType.FOK,  # type: ignore
+            )
+
+            self._log(f"✓ [{self.market_name}] Sell order posted: {response}")
+
+            # Calculate PnL if we have current price
+            if current_price is not None:
+                pnl_pct = ((current_price - self.entry_price) / self.entry_price) * 100
+                pnl_sign = "+" if pnl_pct >= 0 else ""
+                self._log(
+                    (
+                        f"💰 [{self.market_name}] Sold @ ${current_price:.4f} | "
+                        f"PnL: {pnl_sign}{pnl_pct:.2f}%"
+                    )
+                )
+
+            # Clear position state
+            self.position_open = False
+            self.entry_price = None
+            self.position_side = None
+            self.trailing_stop_price = None
+            self._log(f"✓ [{self.market_name}] Position closed ({reason})")
+
+        except Exception as e:
+            self._log(f"❌ [{self.market_name}] Sell order failed: {e}")
+
+    async def _check_stop_loss_take_profit(self) -> None:
+        """
+        Check and execute stop-loss, take-profit, and trailing-stop logic.
+
+        This method is called periodically after a position is opened.
+        Stop-loss and take-profit have priority over Oracle Guard.
+        """
+        if not self.position_open or self.entry_price is None or self.position_side is None:
+            return
+
+        now = time.time()
+        current_price = self._get_ask_for_side(self.position_side)
+
+        if current_price is None:
+            return
+
+        # Check stop-loss (throttled)
+        if (now - self._last_stop_loss_check_ts) >= STOP_LOSS_CHECK_INTERVAL_S:
+            self._last_stop_loss_check_ts = now
+
+            # Use trailing stop if available, otherwise use initial stop level
+            stop_price = (
+                self.trailing_stop_price
+                if self.trailing_stop_price is not None
+                else max(self.entry_price * (1 - STOP_LOSS_PCT), STOP_LOSS_ABSOLUTE)
+            )
+
+            if current_price < stop_price:
+                pnl_pct = ((current_price - self.entry_price) / self.entry_price) * 100
+                self._log(
+                    (
+                        f"🚨 [{self.market_name}] STOP-LOSS TRIGGERED: "
+                        f"Price ${current_price:.4f} < Stop ${stop_price:.4f} | "
+                        f"PnL: {pnl_pct:.2f}%"
+                    )
+                )
+                await self.execute_sell("STOP-LOSS")
+                return
+
+        # Check take-profit (throttled)
+        if (now - self._last_take_profit_check_ts) >= TAKE_PROFIT_CHECK_INTERVAL_S:
+            self._last_take_profit_check_ts = now
+
+            take_profit_price = self.entry_price * (1 + TAKE_PROFIT_PCT)
+
+            if current_price > take_profit_price:
+                pnl_pct = ((current_price - self.entry_price) / self.entry_price) * 100
+                self._log(
+                    (
+                        f"💰 [{self.market_name}] TAKE-PROFIT TRIGGERED: "
+                        f"Price ${current_price:.4f} > Target ${take_profit_price:.4f} | "
+                        f"PnL: +{pnl_pct:.2f}%"
+                    )
+                )
+                await self.execute_sell("TAKE-PROFIT")
+                return
+
+        # Update trailing stop if price moved in our favor (check every second)
+        if (now - self._last_trailing_stop_update_ts) >= STOP_LOSS_CHECK_INTERVAL_S:
+            self._last_trailing_stop_update_ts = now
+
+            # Calculate new trailing stop level based on current high water mark
+            new_trailing_stop = max(
+                current_price * (1 - TRAILING_STOP_PCT),
+                STOP_LOSS_ABSOLUTE,
+            )
+
+            # Only raise the stop, never lower it
+            if (
+                self.trailing_stop_price is not None
+                and new_trailing_stop > self.trailing_stop_price
+            ):
+                old_stop = self.trailing_stop_price
+                self.trailing_stop_price = new_trailing_stop
+                self._log(
+                    (
+                        f"📈 [{self.market_name}] TRAILING-STOP MOVED: "
+                        f"${old_stop:.4f} → ${new_trailing_stop:.4f} | "
+                        f"Current price: ${current_price:.4f}"
+                    )
+                )
 
     async def listen_to_market(self):
         """Listen to WebSocket and process market updates until market closes."""
