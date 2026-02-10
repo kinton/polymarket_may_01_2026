@@ -1,0 +1,317 @@
+"""
+Risk manager for handling balance checks, risk limits, and daily PnL tracking.
+
+Ensures trades respect capital allocation limits and daily loss/trade count limits.
+"""
+
+import json
+import os
+from datetime import datetime, timezone
+from typing import Any
+
+import asyncio
+
+from py_clob_client.clob_types import AssetType
+
+from src.clob_types import (
+    EXCHANGE_CONTRACT,
+    MAX_CAPITAL_PCT_PER_TRADE,
+    MAX_DAILY_LOSS_PCT,
+    MAX_TOTAL_TRADES_PER_DAY,
+    MIN_TRADE_USDC,
+)
+
+
+class RiskManager:
+    """
+    Manages risk checks and limits.
+
+    Responsibilities:
+    - Balance and allowance checks
+    - Capital allocation limits (max % per trade)
+    - Daily loss limit enforcement
+    - Daily trade count limit
+    - PnL tracking
+    """
+
+    def __init__(
+        self,
+        client: Any | None,
+        market_name: str,
+        trade_size: float = 1.0,
+        logger: Any | None = None,
+    ):
+        """
+        Initialize risk manager.
+
+        Args:
+            client: CLOB client (None in dry-run mode)
+            market_name: Market name for logging
+            trade_size: Default trade size in USDC
+            logger: Optional logger for logging events
+        """
+        self.client = client
+        self.market_name = market_name
+        self.trade_size = trade_size
+        self.logger = logger
+
+        # Dynamic sizing thresholds
+        self.min_trade_usdc = max(MIN_TRADE_USDC, round(float(trade_size), 2))
+        self.balance_risk_pct = 0.05
+        self.balance_risk_switch_usdc = 30.0
+
+        # Planned trade amount (from balance check)
+        self._planned_trade_amount: float | None = None
+
+        # Daily limits file path
+        self._daily_limits_path = self._get_daily_limits_path()
+
+    @property
+    def planned_trade_amount(self) -> float | None:
+        """Get the planned trade amount from balance check."""
+        return self._planned_trade_amount
+
+    def _get_daily_limits_path(self) -> str:
+        """Get the path to the daily limits JSON file."""
+        return os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "log", "daily_limits.json"
+        )
+
+    def _log(self, message: str) -> None:
+        """Log message."""
+        if self.logger:
+            self.logger.info(message)
+
+    async def check_balance(self) -> bool:
+        """
+        Check if we have sufficient USDC balance and allowance for the trade.
+
+        Returns:
+            True if balance and allowance are sufficient, False otherwise
+        """
+        if not self.client:
+            self._log(f"❌ [{self.market_name}] CLOB client not initialized")
+            return False
+
+        try:
+            # Get balance and allowance for USDC
+            from py_clob_client.clob_types import BalanceAllowanceParams
+
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            balance_data_raw = await asyncio.to_thread(
+                self.client.get_balance_allowance, params
+            )
+            balance_data: dict[str, Any] = balance_data_raw
+
+            # Extract USDC balance (API returns in 6-decimal units, divide by 1e6 to get dollars)
+            usdc_balance = float(balance_data.get("balance", 0)) / 1e6
+
+            # API returns 'allowances' (dict of contract -> allowance), not 'allowance'
+            allowances_dict = balance_data.get("allowances", {})
+
+            # Allowance is also in 6-decimal units (micro-USDC), convert to dollars
+            usdc_allowance = float(allowances_dict.get(EXCHANGE_CONTRACT, 0)) / 1e6
+
+            # Dynamic sizing:
+            # - if balance < $30: use min_trade_usdc (default $1.50)
+            # - else: use 5% of balance (but not less than min_trade_usdc)
+            if usdc_balance < self.balance_risk_switch_usdc:
+                required_amount = self.min_trade_usdc
+            else:
+                required_amount = max(
+                    self.min_trade_usdc,
+                    round(usdc_balance * self.balance_risk_pct, 2),
+                )
+            required_amount = max(round(required_amount, 2), 1.00)
+            self._planned_trade_amount = required_amount
+
+            # Check both balance and allowance
+            if usdc_balance < required_amount:
+                self._log(
+                    f"❌ [{self.market_name}] Insufficient balance: "
+                    f"${usdc_balance:.2f} < ${required_amount:.2f}"
+                )
+                return False
+
+            if usdc_allowance < required_amount:
+                self._log(
+                    f"❌ [{self.market_name}] Insufficient allowance: "
+                    f"${usdc_allowance:.2f} < ${required_amount:.2f}"
+                )
+                self._log("   → Run: uv run python approve.py to approve USDC spending")
+                return False
+
+            self._log(
+                f"✓ [{self.market_name}] Balance check passed: "
+                f"${usdc_balance:.2f} available (need ${required_amount:.2f})"
+            )
+            return True
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Balance check failed: {e}")
+            return False
+
+    async def check_risk_limits(self) -> bool:
+        """
+        Check if current trade size respects the maximum capital percentage limit.
+
+        Returns:
+            True if trade size is within limits, False otherwise
+        """
+        if not self.client:
+            self._log(f"❌ [{self.market_name}] CLOB client not initialized for risk check")
+            return False
+
+        try:
+            # Get USDC balance
+            from py_clob_client.clob_types import BalanceAllowanceParams
+
+            balance_data_raw = await asyncio.to_thread(
+                self.client.get_balance_allowance,
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL),
+            )
+            balance_data: dict[str, Any] = balance_data_raw
+            usdc_balance = float(balance_data.get("balance", 0)) / 1e6
+
+            # Calculate maximum allowed trade size
+            max_trade_size = usdc_balance * MAX_CAPITAL_PCT_PER_TRADE
+
+            # Check if planned trade exceeds limit
+            trade_amount = (
+                self._planned_trade_amount
+                if self._planned_trade_amount is not None
+                else max(round(self.trade_size, 2), 1.00)
+            )
+
+            if trade_amount > max_trade_size:
+                self._log(
+                    f"🛑 [{self.market_name}] RISK LIMIT EXCEEDED: "
+                    f"Trade ${trade_amount:.2f} > Max ${max_trade_size:.2f} "
+                    f"({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of ${usdc_balance:.2f})",
+                )
+                return False
+
+            self._log(
+                f"✓ [{self.market_name}] Risk check passed: "
+                f"Trade ${trade_amount:.2f} ≤ Max ${max_trade_size:.2f} "
+                f"({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of capital)",
+            )
+            return True
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Risk limit check failed: {e}")
+            return False
+
+    def check_daily_limits(self) -> bool:
+        """
+        Check if daily limits are within acceptable bounds.
+
+        Returns:
+            True if daily limits are OK, False if limits exceeded
+        """
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = self._daily_limits_path
+
+        try:
+            # If no tracking file exists, limits are OK
+            if not os.path.exists(path):
+                return True
+
+            with open(path, "r") as f:
+                data = json.load(f)
+
+            # If data is from a different day, reset and OK
+            if data.get("date") != today:
+                return True
+
+            # Check daily loss limit
+            initial_balance = data.get("initial_balance")
+            current_pnl = data.get("current_pnl", 0.0)
+
+            if initial_balance is not None:
+                max_daily_loss = initial_balance * -MAX_DAILY_LOSS_PCT
+                if current_pnl < max_daily_loss:
+                    self._log(
+                        f"🛑 FATAL [{self.market_name}] DAILY LOSS LIMIT EXCEEDED: "
+                        f"PnL=${current_pnl:+.2f} < Max Loss=${max_daily_loss:+.2f} "
+                        f"({MAX_DAILY_LOSS_PCT * 100:.0f}% of ${initial_balance:.2f})",
+                    )
+                    return False
+
+            # Check daily trade count limit
+            total_trades = data.get("total_trades", 0)
+            if total_trades >= MAX_TOTAL_TRADES_PER_DAY:
+                self._log(
+                    f"🛑 [{self.market_name}] DAILY TRADE LIMIT EXCEEDED: "
+                    f"{total_trades} trades >= {MAX_TOTAL_TRADES_PER_DAY} max",
+                )
+                return False
+
+            return True
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Daily limits check failed: {e}")
+            # Fail open on error - allow trading if we can't check
+            return True
+
+    def track_daily_pnl(self, trade_amount: float, pnl: float = 0.0) -> None:
+        """
+        Track daily PnL and trade count in daily_limits.json.
+
+        Args:
+            trade_amount: Amount of the trade in USDC
+            pnl: Profit or loss from the trade (positive = profit, negative = loss)
+        """
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = self._daily_limits_path
+
+        try:
+            # Ensure log directory exists
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+
+            # Read existing data or create new
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    data = json.load(f)
+            else:
+                data = {}
+
+            # Check if we need to reset for new day
+            if data.get("date") != today:
+                # New day - reset tracking
+                data = {
+                    "date": today,
+                    "initial_balance": None,
+                    "current_pnl": 0.0,
+                    "total_trades": 0,
+                }
+
+            # Update trade count and PnL
+            data["total_trades"] = data.get("total_trades", 0) + 1
+            data["current_pnl"] = data.get("current_pnl", 0.0) + pnl
+
+            # Set initial balance on first trade of the day
+            if data["total_trades"] == 1 and data["initial_balance"] is None:
+                if self.client:
+                    try:
+                        from py_clob_client.clob_types import BalanceAllowanceParams
+
+                        balance_data_raw = self.client.get_balance_allowance(
+                            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                        )
+                        balance_data: dict[str, Any] = balance_data_raw
+                        data["initial_balance"] = float(balance_data.get("balance", 0)) / 1e6
+                    except Exception:
+                        data["initial_balance"] = trade_amount
+
+            # Write updated data
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+
+            self._log(
+                f"📊 [{self.market_name}] Daily stats updated: "
+                f"PnL=${data['current_pnl']:+.2f}, Trades={data['total_trades']}",
+            )
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Failed to track daily PnL: {e}")
