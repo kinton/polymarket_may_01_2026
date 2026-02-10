@@ -860,15 +860,13 @@ class LastSecondTrader:
 
             if trade_amount > max_trade_size:
                 self._log(
-                    f"🛑 [{self.market_name}] RISK LIMIT EXCEEDED: "
-                    f"Trade ${trade_amount:.2f} > Max ${max_trade_size:.2f} ({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of ${usdc_balance:.2f})",
+                    f"🛑 [{self.market_name}] RISK LIMIT EXCEEDED: Trade ${trade_amount:.2f} > Max ${max_trade_size:.2f} ({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of ${usdc_balance:.2f})",
                 )
                 self.order_executed = True  # Stop trying to trade
                 return False
 
             self._log(
-                f"✓ [{self.market_name}] Risk check passed: "
-                f"Trade ${trade_amount:.2f} ≤ Max ${max_trade_size:.2f} ({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of capital)",
+                f"✓ [{self.market_name}] Risk check passed: Trade ${trade_amount:.2f} ≤ Max ${max_trade_size:.2f} ({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of capital)",
             )
             return True
 
@@ -935,8 +933,7 @@ class LastSecondTrader:
                 json.dump(data, f, indent=2)
 
             self._log(
-                f"📊 [{self.market_name}] Daily stats updated: "
-                f"PnL=${data['current_pnl']:+.2f}, Trades={data['total_trades']}",
+                f"📊 [{self.market_name}] Daily stats updated: PnL=${data['current_pnl']:+.2f}, Trades={data['total_trades']}",
             )
 
         except Exception as e:
@@ -972,9 +969,7 @@ class LastSecondTrader:
                 max_daily_loss = initial_balance * -MAX_DAILY_LOSS_PCT
                 if current_pnl < max_daily_loss:
                     self._log(
-                        f"🛑 FATAL [{self.market_name}] DAILY LOSS LIMIT EXCEEDED: "
-                        f"PnL=${current_pnl:+.2f} < Max Loss=${max_daily_loss:+.2f} "
-                        f"({MAX_DAILY_LOSS_PCT * 100:.0f}% of ${initial_balance:.2f})",
+                        f"🛑 FATAL [{self.market_name}] DAILY LOSS LIMIT EXCEEDED: PnL=${current_pnl:+.2f} < Max Loss=${max_daily_loss:+.2f} ({MAX_DAILY_LOSS_PCT * 100:.0f}% of ${initial_balance:.2f})",
                     )
                     self.order_executed = True  # Stop trading
                     return False
@@ -983,8 +978,7 @@ class LastSecondTrader:
             total_trades = data.get("total_trades", 0)
             if total_trades >= MAX_TOTAL_TRADES_PER_DAY:
                 self._log(
-                    f"🛑 [{self.market_name}] DAILY TRADE LIMIT EXCEEDED: "
-                    f"{total_trades} trades >= {MAX_TOTAL_TRADES_PER_DAY} max",
+                    f"🛑 [{self.market_name}] DAILY TRADE LIMIT EXCEEDED: {total_trades} trades >= {MAX_TOTAL_TRADES_PER_DAY} max",
                 )
                 self.order_executed = True  # Stop trading
                 return False
