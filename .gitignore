@@ -21,3 +21,6 @@ ai/Done.md
 
 # Local Codex state
 .codex/
+
+# Hypothesis cache
+.hypothesis/
