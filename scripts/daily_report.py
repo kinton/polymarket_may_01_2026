@@ -323,8 +323,13 @@ class DailyReportGenerator:
 - Total Trades: {stats['total_trades']}
 - Win Rate: {stats['win_rate']:.1f}% ({stats['wins']}/{stats['total_trades']})
 - Total PnL: {stats['total_pnl_pct']:+.2f}%
-- Oracle Guard Blocks: {stats['oracle_guard_blocks']}
-- Stop-Loss Triggers: {stats['stop_loss_count']}
+"""
+
+        # Add Oracle Guard blocks to summary if present
+        if stats['oracle_guard_blocks'] > 0:
+            summary += f"- Oracle Guard Blocks: {stats['oracle_guard_blocks']}\n"
+
+        summary += f"""- Stop-Loss Triggers: {stats['stop_loss_count']}
 - Take-Profit Triggers: {stats['take_profit_count']}
 """
 
@@ -350,7 +355,7 @@ class DailyReportGenerator:
                 )
 
         # Oracle Guard blocks
-        if stats['oracle_blocks']:
+        if stats['oracle_guard_blocks'] > 0:
             summary += "\n## Oracle Guard Blocks\n| Time | Market | Reason |\n"
             summary += "|------|--------|--------|\n"
             for block in stats['oracle_blocks']:
