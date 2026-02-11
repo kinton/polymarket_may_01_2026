@@ -50,6 +50,7 @@ from src.alerts import (
 from src.clob_types import (
     BUY_PRICE,
     CLOB_WS_URL,
+    EXCHANGE_CONTRACT,
     MIN_CONFIDENCE,
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
@@ -65,17 +66,12 @@ from src.market_parser import (
     extract_best_bid_with_size_from_book,
     get_winning_token_id,
 )
-from src.oracle_tracker import OracleSnapshot, OracleTracker
 from src.trading.alert_dispatcher import AlertDispatcher
+from src.trading.oracle_guard_manager import OracleGuardManager
+from src.trading.order_execution_manager import OrderExecutionManager
 from src.trading.position_manager import PositionManager
 from src.trading.risk_manager import RiskManager
 from src.trading.stop_loss_manager import StopLossManager
-from src.updown_prices import (
-    EventPageClient,
-    RtdsClient,
-    guess_chainlink_symbol,
-    parse_market_window,
-)
 
 try:
     from py_clob_client.client import ClobClient
@@ -142,69 +138,19 @@ class LastSecondTrader:
         self.token_id_no = token_id_no
         self.end_time = end_time
         self.dry_run = dry_run
-        self.trade_size = trade_size  # dollars to spend
+        self.trade_size = trade_size
         self.title = title
         self.slug = slug
         self.logger = trader_logger
 
-        # Extract short market name for logging (e.g. "BTC", "ETH", "SOL")
+        # Extract short market name for logging
         self.market_name = self._extract_market_name(title)
 
         # Market state
         self.orderbook = OrderBook()
-        self.winning_side: str | None = None  # "YES" or "NO"
-
-        # Optional: track oracle (Chainlink) price for "Up or Down" markets via RTDS.
-        # This does not touch polymarket.com and is safe from Cloudflare blocks.
-        self.oracle_enabled = bool(oracle_enabled)
-        self.oracle_guard_enabled = bool(oracle_guard_enabled)
-        self.oracle_decide_side = False
-        self.oracle_require_side = False
-        self.oracle_symbol = guess_chainlink_symbol(self.title or self.market_name)
-        self.oracle_stats_window_s = float(oracle_window_s)
-        self.oracle_tracker: OracleTracker | None = (
-            OracleTracker(window_seconds=self.oracle_stats_window_s)
-            if self.oracle_enabled
-            else None
-        )
-        self.oracle_snapshot: OracleSnapshot | None = None
-        self.last_oracle_update_ts = 0.0
-        self._last_oracle_log_ts = 0.0
-
-        # Oracle guard (strict): enabled whenever oracle is enabled.
-        self.oracle_min_points = int(oracle_min_points)
-        self.oracle_guard_max_stale_s = 20.0
-        self.oracle_guard_log_every_s = 5.0
-        self.oracle_guard_max_vol_pct = 0.002
-        self.oracle_guard_min_abs_z = 0.75
-        self.oracle_guard_require_agreement = True
-        self.oracle_guard_require_beat = False
-        self.oracle_guard_max_reversal_slope = 0.0
-        self.oracle_beat_max_lag_ms = 10_000
-        self.oracle_up_side: str | None = None
-        self.oracle_down_side: str | None = None
-        try:
-            end_iso = self.end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-            self.oracle_window = parse_market_window(self.title or "", end_iso)
-        except Exception:
-            self.oracle_window = None
-
-        # Order execution state
-        self.order_executed = False
-        self.order_in_progress = False
-        self.order_attempts = 0
-        self.max_order_attempts = 3
-        self.last_order_attempt_time = 0.0
-        self._order_nonce: int | None = None
-        self._order_side: str | None = None
-        self._order_token_id: str | None = None
-        self._order_amount: float | None = None
-        self._order_price: float | None = None
-        self.ws = None
+        self.winning_side: str | None = None
 
         # Log throttling
-        self.last_log_time = 0.0
-        self.last_logged_state = None
         self.book_log_every_s = max(0.0, float(book_log_every_s))
         self.book_log_every_s_final = max(0.0, float(book_log_every_s_final))
         self._last_book_log_ts = 0.0
@@ -216,20 +162,29 @@ class LastSecondTrader:
         self.last_ws_update_ts = 0.0
         self._last_stale_log_ts = 0.0
         self._planned_trade_side: str | None = None
-
-        # Oracle guard metrics/log throttling
-        self._oracle_guard_block_count = 0
-        self._oracle_guard_reason_counts: dict[str, int] = {}
-        self._oracle_guard_last_reason: str | None = None
-        self._oracle_guard_last_log_ts = 0.0
-        self._oracle_html_beat_attempted = False
+        self.ws = None
 
         # Initialize managers
         load_dotenv()
         self.client = self._init_clob_client()
+
+        # Oracle guard manager
+        end_iso = self.end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.oracle_guard = OracleGuardManager(
+            title=title,
+            market_name=self.market_name,
+            end_time=end_iso,
+            enabled=oracle_enabled,
+            guard_enabled=oracle_guard_enabled,
+            min_points=oracle_min_points,
+            window_s=oracle_window_s,
+        )
+
+        # Position, stop-loss, and risk managers
         self.position_manager = PositionManager(logger=self.logger)
         self.stop_loss_manager = StopLossManager(
-            position_manager=self.position_manager, logger=self.logger
+            position_manager=self.position_manager,
+            logger=self.logger,
         )
         self.risk_manager = RiskManager(
             client=self.client,
@@ -237,7 +192,25 @@ class LastSecondTrader:
             trade_size=self.trade_size,
             logger=self.logger,
         )
+
+        # Order execution manager
+        self.order_execution = OrderExecutionManager(
+            client=self.client,
+            market_name=self.market_name,
+            condition_id=condition_id,
+            token_id_yes=token_id_yes,
+            token_id_no=token_id_no,
+            dry_run=dry_run,
+            trade_size=trade_size,
+            logger=self.logger,
+            position_manager=self.position_manager,
+            alert_dispatcher=None,  # Will be set after init
+            risk_manager=self.risk_manager,
+        )
+
+        # Alert dispatcher
         self.alert_dispatcher = self._init_alert_dispatcher()
+        self.order_execution.alert_dispatcher = self.alert_dispatcher
 
         # Set stop-loss sell callback
         self.stop_loss_manager.set_sell_callback(self.execute_sell)
@@ -245,18 +218,18 @@ class LastSecondTrader:
         # Log init
         mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
         self._log(
-            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE} | Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
+            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE} | "
+            f"Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
         )
-        if self.oracle_enabled:
-            sym = self.oracle_symbol or "unknown"
+        if self.oracle_guard.enabled:
+            sym = self.oracle_guard.symbol or "unknown"
             parts = [f"oracle_tracking=on ({sym})"]
-            if self.oracle_decide_side:
-                parts.append("decide_side=on")
-            if self.oracle_require_side:
-                parts.append("require_side=on")
-            if self.oracle_guard_enabled:
+            if self.oracle_guard.guard_enabled:
                 parts.append(
-                    f"guard=on (stale<={self.oracle_guard_max_stale_s}s, min_pts>={self.oracle_min_points}, max_vol<={self.oracle_guard_max_vol_pct}, |z|>={self.oracle_guard_min_abs_z})"
+                    f"guard=on (stale<={self.oracle_guard.max_stale_s}s, "
+                    f"min_pts>={self.oracle_guard.min_points}, "
+                    f"max_vol<={self.oracle_guard.max_vol_pct}, "
+                    f"|z|>={self.oracle_guard.min_abs_z})"
                 )
             else:
                 parts.append("guard=off")
@@ -289,101 +262,6 @@ class LastSecondTrader:
         if side == "NO":
             return self.orderbook.best_ask_no
         return None
-
-    def _oracle_recommended_side(self) -> str | None:
-        """
-        Decide which outcome is currently winning based on oracle price relative
-        to price_to_beat (window open).
-        """
-        snap = self.oracle_snapshot
-        if snap is None or snap.price_to_beat is None or snap.delta is None:
-            return None
-        if self.oracle_up_side is None or self.oracle_down_side is None:
-            return None
-        return self.oracle_up_side if snap.delta >= 0 else self.oracle_down_side
-
-    def _oracle_quality_ok(
-        self, *, trade_side: str, time_remaining: float
-    ) -> tuple[bool, str, str]:
-        """
-        Optional gate: if oracle metrics look unreliable, skip the buy.
-
-        Returns:
-            (ok, reason_code, detail). When ok=False, reason_code is stable for counters/log throttling.
-        """
-        if not self.oracle_enabled or not self.oracle_guard_enabled:
-            return True, "", ""
-
-        snap = self.oracle_snapshot
-        if snap is None:
-            return False, "oracle_snapshot_missing", ""
-
-        staleness_s = time.time() - float(self.last_oracle_update_ts)
-        if staleness_s > self.oracle_guard_max_stale_s:
-            return False, "oracle_stale", f"{staleness_s:.2f}s"
-
-        if self.oracle_guard_require_beat and snap.price_to_beat is None:
-            return False, "price_to_beat_missing", ""
-
-        if snap.n_points < self.oracle_min_points:
-            return (
-                False,
-                "oracle_points_insufficient",
-                f"{snap.n_points}<{self.oracle_min_points}",
-            )
-
-        if snap.vol_pct is None:
-            return False, "oracle_vol_missing", ""
-
-        if snap.vol_pct > self.oracle_guard_max_vol_pct:
-            return (
-                False,
-                "oracle_vol_high",
-                f"{snap.vol_pct:.6f}>{self.oracle_guard_max_vol_pct:.6f}",
-            )
-
-        if snap.zscore is None:
-            if snap.price_to_beat is None and not self.oracle_guard_require_beat:
-                return True, "", ""
-            return False, "oracle_z_missing", ""
-
-        if abs(snap.zscore) < self.oracle_guard_min_abs_z:
-            return (
-                False,
-                "oracle_z_low",
-                f"{abs(snap.zscore):.2f}<{self.oracle_guard_min_abs_z:.2f}",
-            )
-
-        oracle_side = self._oracle_recommended_side()
-        if self.oracle_guard_require_agreement and oracle_side is not None and oracle_side != trade_side:
-            return (
-                False,
-                "oracle_disagrees",
-                f"oracle={oracle_side}, trade={trade_side}",
-            )
-
-        max_rev = self.oracle_guard_max_reversal_slope
-        if max_rev > 0 and snap.slope_usd_per_s is not None:
-            expected_sign = None
-            if self.oracle_up_side is not None and trade_side == self.oracle_up_side:
-                expected_sign = 1
-            elif self.oracle_down_side is not None and trade_side == self.oracle_down_side:
-                expected_sign = -1
-
-            if expected_sign == 1 and snap.slope_usd_per_s < -max_rev:
-                return (
-                    False,
-                    "oracle_reversal_slope",
-                    f"{snap.slope_usd_per_s:.2f}<-{max_rev:.2f}",
-                )
-            if expected_sign == -1 and snap.slope_usd_per_s > max_rev:
-                return (
-                    False,
-                    "oracle_reversal_slope",
-                    f"{snap.slope_usd_per_s:.2f}>{max_rev:.2f}",
-                )
-
-        return True, "", ""
 
     def _log(self, message: str) -> None:
         """Log message to both console and file logger."""
@@ -445,10 +323,14 @@ class LastSecondTrader:
             return AlertDispatcher(alert_manager=None)
 
         telegram_sender = TelegramAlertSender(telegram_bot_token, telegram_chat_id)
-        slack_sender = SlackAlertSender(slack_webhook_url) if slack_webhook_url else None
+        slack_sender = (
+            SlackAlertSender(slack_webhook_url) if slack_webhook_url else None
+        )
         alert_manager = AlertManager(telegram=telegram_sender, slack=slack_sender)
 
-        self._log(f"[{self.market_name}] Alerts enabled: Telegram{' + Slack' if slack_sender else ''}")
+        self._log(
+            f"[{self.market_name}] Alerts enabled: Telegram{' + Slack' if slack_sender else ''}"
+        )
         return AlertDispatcher(alert_manager=alert_manager)
 
     def get_time_remaining(self) -> float:
@@ -620,9 +502,13 @@ class LastSecondTrader:
             now_ts = time.time()
             in_final_seconds = time_remaining <= 5.0
             interval_s = (
-                self.book_log_every_s_final if in_final_seconds else self.book_log_every_s
+                self.book_log_every_s_final
+                if in_final_seconds
+                else self.book_log_every_s
             )
-            winner_changed = (self.winning_side or None) != (self._last_logged_winner or None)
+            winner_changed = (self.winning_side or None) != (
+                self._last_logged_winner or None
+            )
             time_due = (now_ts - self._last_book_log_ts) >= max(0.0, interval_s)
             should_log = winner_changed or time_due
 
@@ -651,15 +537,17 @@ class LastSecondTrader:
                         return "-"
                     return f"${p * s:.2f}"
 
-                msg = "".join([
-                    f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [{self.market_name}] ",
-                    f"Time: {time_remaining:.2f}s | ",
-                    f"YES bid: {fmt(yes_bid)} x {fmt_sz(yes_bid_sz)} (= {fmt_notional(yes_bid, yes_bid_sz)}) | ",
-                    f"YES ask: {fmt(yes_ask)} x {fmt_sz(yes_ask_sz)} (= {fmt_notional(yes_ask, yes_ask_sz)}) | ",
-                    f"NO bid: {fmt(no_bid)} x {fmt_sz(no_bid_sz)} (= {fmt_notional(no_bid, no_bid_sz)}) | ",
-                    f"NO ask: {fmt(no_ask)} x {fmt_sz(no_ask_sz)} (= {fmt_notional(no_ask, no_ask_sz)}) | ",
-                    f"Winner: {self.winning_side or 'None'}",
-                ])
+                msg = "".join(
+                    [
+                        f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [{self.market_name}] ",
+                        f"Time: {time_remaining:.2f}s | ",
+                        f"YES bid: {fmt(yes_bid)} x {fmt_sz(yes_bid_sz)} (= {fmt_notional(yes_bid, yes_bid_sz)}) | ",
+                        f"YES ask: {fmt(yes_ask)} x {fmt_sz(yes_ask_sz)} (= {fmt_notional(yes_ask, yes_ask_sz)}) | ",
+                        f"NO bid: {fmt(no_bid)} x {fmt_sz(no_bid_sz)} (= {fmt_notional(no_bid, no_bid_sz)}) | ",
+                        f"NO ask: {fmt(no_ask)} x {fmt_sz(no_ask_sz)} (= {fmt_notional(no_ask, no_ask_sz)}) | ",
+                        f"Winner: {self.winning_side or 'None'}",
+                    ]
+                )
                 self._log(msg)
                 self._last_book_log_ts = now_ts
                 self._last_logged_winner = self.winning_side
@@ -667,7 +555,9 @@ class LastSecondTrader:
             await self.check_trigger(time_remaining)
 
             if self.position_manager.is_open:
-                current_price = self._get_ask_for_side(self.position_manager.position_side or "")
+                current_price = self._get_ask_for_side(
+                    self.position_manager.position_side or ""
+                )
                 if current_price is not None:
                     await self.stop_loss_manager.check_and_execute(current_price)
 
@@ -744,11 +634,11 @@ class LastSecondTrader:
                 return
 
             trade_side = self.winning_side
-            oracle_side = self._oracle_recommended_side()
-            if self.oracle_enabled and self.oracle_decide_side:
+            oracle_side = self.oracle_guard.recommended_side()
+            if self.oracle_guard.enabled and self.oracle_guard.decide_side:
                 if oracle_side:
                     trade_side = oracle_side
-                elif self.oracle_require_side:
+                elif self.oracle_guard.require_side:
                     if "oracle_side_missing" not in self._logged_warnings:
                         self._log(
                             f"⚠️  [{self.market_name}] Oracle side required but unavailable (missing price_to_beat or mapping)"
@@ -789,29 +679,38 @@ class LastSecondTrader:
                     self._logged_warnings.add("price_high")
                 return
 
-            oracle_ok, oracle_reason, oracle_detail = self._oracle_quality_ok(
+            oracle_ok, oracle_reason, oracle_detail = self.oracle_guard.quality_ok(
                 trade_side=trade_side, time_remaining=time_remaining
             )
             if not oracle_ok:
-                self._oracle_guard_block_count += 1
-                self._oracle_guard_reason_counts[oracle_reason] = (
-                    self._oracle_guard_reason_counts.get(oracle_reason, 0) + 1
+                self.oracle_guard.block_count += 1
+                self.oracle_guard.reason_counts[oracle_reason] = (
+                    self.oracle_guard.reason_counts.get(oracle_reason, 0) + 1
                 )
 
                 now = time.time()
                 should_log = (
-                    oracle_reason != self._oracle_guard_last_reason
-                    or (now - self._oracle_guard_last_log_ts) >= self.oracle_guard_log_every_s
+                    oracle_reason != self.oracle_guard.last_reason
+                    or (now - self.oracle_guard.last_log_ts)
+                    >= self.oracle_guard.log_every_s
                 )
                 if should_log:
-                    snap = self.oracle_snapshot
+                    snap = self.oracle_guard.snapshot
 
                     def _fmt_money(v: float | None) -> str:
                         return f"{v:,.2f}" if v is not None else "-"
 
                     z = f"{snap.zscore:.2f}" if snap.zscore is not None else "-"
-                    vol = f"{snap.vol_pct*100:.4f}%" if snap.vol_pct is not None else "-"
-                    slope = f"{snap.slope_usd_per_s:.2f}" if snap.slope_usd_per_s is not None else "-"
+                    vol = (
+                        f"{snap.vol_pct * 100:.4f}%"
+                        if snap.vol_pct is not None
+                        else "-"
+                    )
+                    slope = (
+                        f"{snap.slope_usd_per_s:.2f}"
+                        if snap.slope_usd_per_s is not None
+                        else "-"
+                    )
                     extra = (
                         f" | oracle={_fmt_money(snap.price)}"
                         f" beat={_fmt_money(snap.price_to_beat)}"
@@ -826,8 +725,8 @@ class LastSecondTrader:
                     self._log(
                         f"🛑 [{self.market_name}] SKIP (oracle_guard): {oracle_reason}{detail} | t={time_remaining:.3f}s | side={trade_side} | ask=${winning_ask:.4f}{extra}"
                     )
-                    self._oracle_guard_last_reason = oracle_reason
-                    self._oracle_guard_last_log_ts = now
+                    self.oracle_guard.last_reason = oracle_reason
+                    self.oracle_guard.last_log_ts = now
 
                     if self.alert_dispatcher.is_enabled() and should_log:
                         await self.alert_dispatcher.send_oracle_guard_block(
@@ -847,8 +746,8 @@ class LastSecondTrader:
                     return
 
             oracle_note = ""
-            if self.oracle_enabled and self.oracle_decide_side and oracle_side:
-                snap = self.oracle_snapshot
+            if self.oracle_guard.enabled and self.oracle_guard.decide_side and oracle_side:
+                snap = self.oracle_guard.snapshot
                 if snap is not None and snap.price_to_beat is not None:
                     oracle_note = (
                         f" | oracle={snap.price:,.2f} beat={snap.price_to_beat:,.2f} "
@@ -905,314 +804,19 @@ class LastSecondTrader:
     async def execute_order(self) -> None:
         side = self._planned_trade_side or self.winning_side or "YES"
         self._planned_trade_side = None
-        await self.execute_order_for(side)
+        winning_ask = self._get_ask_for_side(side)
+        await self.order_execution.execute_order_for(side, winning_ask)
 
     async def execute_order_for(self, side: str) -> None:
-        """Execute Fill-or-Kill (FOK) market order for a specific side."""
-        winning_ask = self._get_ask_for_side(side)
-        winning_token_id = get_winning_token_id(side, self.token_id_yes, self.token_id_no)
-
-        if not winning_token_id:
-            self._log(f"❌ [{self.market_name}] Error: No winning token ID available")
-            return
-
-        amount = (
-            self.risk_manager.planned_trade_amount
-            if self.risk_manager.planned_trade_amount is not None
-            else max(round(self.trade_size, 2), 1.00)
-        )
-        price = round(self.BUY_PRICE, 2)
-
-        if self._order_nonce is None:
-            self._order_nonce = 0
-            self._order_side = side
-            self._order_token_id = winning_token_id
-            self._order_amount = amount
-            self._order_price = price
-        else:
-            side = self._order_side or side
-            winning_token_id = self._order_token_id or winning_token_id
-            amount = self._order_amount if self._order_amount is not None else amount
-            price = self._order_price if self._order_price is not None else price
-
-        if self.dry_run:
-            self._log(f"🔷 [{self.market_name}] DRY RUN - WOULD BUY:")
-            self._log(
-                f"  Side: {side}, Amount: ${amount}, Max Price: ${price}"
-            )
-            ask_str = f"{winning_ask:.4f}" if winning_ask is not None else "-"
-            self._log(f"  Best Ask: ${ask_str}, Type: FOK MARKET")
-
-            if winning_ask is not None:
-                trailing_stop_price = max(
-                    winning_ask * (1 - STOP_LOSS_PCT),
-                    STOP_LOSS_ABSOLUTE,
-                )
-                self.position_manager.open_position(
-                    entry_price=winning_ask,
-                    side=side,
-                    trailing_stop_price=trailing_stop_price,
-                )
-                self._log(
-                    (
-                        f"  📍 Position opened @ ${winning_ask:.4f} | "
-                        f"Stop-loss: ${trailing_stop_price:.4f} | "
-                        f"Take-profit: ${winning_ask * (1 + TAKE_PROFIT_PCT):.4f}"
-                    )
-                )
-
-                if self.alert_dispatcher.is_enabled():
-                    await self.alert_dispatcher.send_trade_alert(
-                        self.market_name, side, winning_ask, amount
-                    )
-
-            self.risk_manager.track_daily_pnl(amount)
-            self.order_executed = True
-            return
-
-        if not self.client:
-            self._log(f"❌ [{self.market_name}] CLOB client not initialized")
-            return
-
-        self.order_in_progress = True
-        self.order_attempts += 1
-        self.last_order_attempt_time = time.time()
-
-        attempt_msg = (
-            f" (attempt {self.order_attempts}/{self.max_order_attempts})"
-            if self.order_attempts > 1
-            else ""
-        )
-
-        try:
-            self._log(
-                f"🔴 [{self.market_name}] MARKET ORDER{attempt_msg}: {side} ${amount} @ max ${price}"
-            )
-
-            order_args = MarketOrderArgs(
-                token_id=winning_token_id,
-                amount=amount,
-                price=price,
-                side="BUY",
-                nonce=self._order_nonce,
-            )
-
-            created_order = await asyncio.to_thread(
-                self.client.create_market_order,
-                order_args,
-                CreateOrderOptions(tick_size="0.01", neg_risk=False),
-            )
-            self._log(f"✓ [{self.market_name}] Market order created")
-
-            response = await asyncio.to_thread(
-                self.client.post_order,
-                created_order,
-                OrderType.FOK,
-            )
-
-            self._log(f"✓ [{self.market_name}] FOK order posted: {response}")
-
-            executed_price = None
-            try:
-                taking_amount = float(response.get("takingAmount", 0))
-                making_amount = float(response.get("makingAmount", 0))
-                if taking_amount > 0:
-                    executed_price = making_amount / taking_amount
-                    self._log(
-                        f"💰 [{self.market_name}] Executed: {taking_amount:.6f} tokens @ ${executed_price:.4f} (spent ${making_amount:.2f})"
-                    )
-            except (KeyError, ValueError, ZeroDivisionError) as e:
-                self._log(f"⚠️  [{self.market_name}] Could not calculate price: {e}")
-
-            try:
-                order_id = response["orderID"]
-                await self.verify_order(str(order_id))
-            except KeyError:
-                self._log(
-                    f"⚠️  [{self.market_name}] 'orderID' missing in response: {response}"
-                )
-            except Exception as e:
-                self._log(f"⚠️  [{self.market_name}] Verification setup failed: {e}")
-
-            if executed_price is not None:
-                trailing_stop_price = max(
-                    executed_price * (1 - STOP_LOSS_PCT),
-                    STOP_LOSS_ABSOLUTE,
-                )
-                self.position_manager.open_position(
-                    entry_price=executed_price,
-                    side=side,
-                    trailing_stop_price=trailing_stop_price,
-                )
-                self._log(
-                    (
-                        f"  📍 Position opened @ ${executed_price:.4f} | "
-                        f"Stop-loss: ${trailing_stop_price:.4f} | "
-                        f"Take-profit: ${executed_price * (1 + TAKE_PROFIT_PCT):.4f}"
-                    )
-                )
-
-                if self.alert_dispatcher.is_enabled():
-                    await self.alert_dispatcher.send_trade_alert(
-                        self.market_name, side, executed_price, amount
-                    )
-
-            self.order_executed = True
-            self.order_in_progress = False
-
-            self.risk_manager.track_daily_pnl(amount)
-
-        except Exception as e:
-            error_str = str(e)
-            self._log(f"❌ [{self.market_name}] Order failed: {error_str}")
-
-            self.order_in_progress = False
-
-            if "not enough balance" in error_str or "allowance" in error_str:
-                self._log(
-                    "  → FATAL: Insufficient balance/allowance. Check wallet funding."
-                )
-                self.order_executed = True
-            elif "403" in error_str or "cloudflare" in error_str.lower():
-                ray_id = None
-                match = re.search(
-                    r"Cloudflare Ray ID:\s*<strong[^>]*>([^<]+)</strong>",
-                    error_str,
-                    re.IGNORECASE,
-                )
-                if match:
-                    ray_id = match.group(1).strip()
-                ray_note = f" Ray ID: {ray_id}" if ray_id else ""
-                self._log(
-                    "  → Cloudflare 403. Verify CLOB_HOST is https://clob.polymarket.com "
-                    + "and API creds are set via create_or_derive_api_creds()."
-                    + f"{ray_note} Cooldown or IP change may be required."
-                )
-                self.order_executed = True
-            elif self.order_attempts < self.max_order_attempts:
-                self._log(
-                    f"  → Will retry ({self.order_attempts}/{self.max_order_attempts} attempts used)"
-                )
-            else:
-                self._log("  → Max retry attempts reached. Giving up.")
-                self.order_executed = True
+        """Execute order (deprecated - use execute_order instead)."""
+        await self.execute_order()
 
     async def execute_sell(self, reason: str) -> None:
-        """
-        Execute a market sell order to exit the position.
-
-        Args:
-            reason: The reason for the sell (e.g., "STOP-LOSS", "TAKE-PROFIT")
-        """
-        if not self.position_manager.is_open or self.position_manager.position_side is None:
-            self._log(f"❌ [{self.market_name}] No position to sell")
-            return
-
-        sell_token_id = get_winning_token_id(
-            self.position_manager.position_side, self.token_id_yes, self.token_id_no
+        """Execute sell order using order execution manager."""
+        current_price = self._get_ask_for_side(
+            self.position_manager.position_side if self.position_manager else ""
         )
-        current_price = self._get_ask_for_side(self.position_manager.position_side)
-
-        if self.dry_run:
-            if current_price is not None:
-                pnl_pct = ((current_price - self.position_manager.entry_price) / self.position_manager.entry_price) * 100
-                pnl_sign = "+" if pnl_pct >= 0 else ""
-                self._log(
-                    (
-                        f"🔷 [{self.market_name}] DRY RUN - WOULD SELL ({reason}): "
-                        f"{self.position_manager.position_side} @ ${current_price:.4f} | "
-                        f"PnL: {pnl_sign}{pnl_pct:.2f}%"
-                    )
-                )
-
-                if self.alert_dispatcher.is_enabled():
-                    if reason == "STOP-LOSS":
-                        await self.alert_dispatcher.send_stop_loss_alert(
-                            self.market_name, pnl_pct, self.position_manager.entry_price, current_price
-                        )
-                    elif reason == "TAKE-PROFIT":
-                        await self.alert_dispatcher.send_take_profit_alert(
-                            self.market_name, pnl_pct, self.position_manager.entry_price, current_price
-                        )
-
-                trade_amount = max(round(self.trade_size, 2), 1.00)
-                pnl_amount = trade_amount * (pnl_pct / 100)
-                self.risk_manager.track_daily_pnl(trade_amount, pnl_amount)
-            else:
-                self._log(
-                    (
-                        f"🔷 [{self.market_name}] DRY RUN - WOULD SELL ({reason}): "
-                        f"{self.position_manager.position_side} | No current price available"
-                    )
-                )
-            self.position_manager.close_position()
-            return
-
-        if not self.client:
-            self._log(f"❌ [{self.market_name}] CLOB client not initialized")
-            return
-
-        if not sell_token_id:
-            self._log(f"❌ [{self.market_name}] Error: No token ID to sell")
-            return
-
-        try:
-            self._log(f"🔴 [{self.market_name}] SELL ORDER ({reason}): {self.position_manager.position_side}")
-
-            amount = max(round(self.trade_size, 2), 1.00)
-
-            order_args = MarketOrderArgs(
-                token_id=sell_token_id,
-                amount=amount,
-                price=0.01,
-                side="SELL",
-                nonce=0,
-            )
-
-            created_order = await asyncio.to_thread(
-                self.client.create_market_order,
-                order_args,
-                CreateOrderOptions(tick_size="0.01", neg_risk=False),
-            )
-
-            response = await asyncio.to_thread(
-                self.client.post_order,
-                created_order,
-                OrderType.FOK,
-            )
-
-            self._log(f"✓ [{self.market_name}] Sell order posted: {response}")
-
-            if current_price is not None:
-                pnl_pct = ((current_price - self.position_manager.entry_price) / self.position_manager.entry_price) * 100
-                pnl_sign = "+" if pnl_pct >= 0 else ""
-                self._log(
-                    (
-                        f"💰 [{self.market_name}] Sold @ ${current_price:.4f} | "
-                        f"PnL: {pnl_sign}{pnl_pct:.2f}%"
-                    )
-                )
-
-                if self.alert_dispatcher.is_enabled():
-                    if reason == "STOP-LOSS":
-                        await self.alert_dispatcher.send_stop_loss_alert(
-                            self.market_name, pnl_pct, self.position_manager.entry_price, current_price
-                        )
-                    elif reason == "TAKE-PROFIT":
-                        await self.alert_dispatcher.send_take_profit_alert(
-                            self.market_name, pnl_pct, self.position_manager.entry_price, current_price
-                        )
-
-            self.position_manager.close_position()
-            self._log(f"✓ [{self.market_name}] Position closed ({reason})")
-
-            if current_price is not None:
-                pnl_pct = ((current_price - self.position_manager.entry_price) / self.position_manager.entry_price)
-                pnl_amount = amount * pnl_pct
-                self.risk_manager.track_daily_pnl(amount, pnl_amount)
-
-        except Exception as e:
-            self._log(f"❌ [{self.market_name}] Sell order failed: {e}")
+        await self.order_execution.execute_sell(reason, current_price)
 
     async def listen_to_market(self):
         """Listen to WebSocket and process market updates until market closes."""
@@ -1253,7 +857,7 @@ class LastSecondTrader:
                 return
 
             tasks = [self.listen_to_market(), self._trigger_check_loop()]
-            if self.oracle_enabled:
+            if self.oracle_guard.enabled:
                 tasks.append(self._oracle_price_loop())
             await asyncio.gather(*tasks)
 
@@ -1263,16 +867,8 @@ class LastSecondTrader:
             if self.ws:
                 await self.ws.close()
 
-            if self.oracle_enabled:
-                top = sorted(
-                    self._oracle_guard_reason_counts.items(),
-                    key=lambda kv: kv[1],
-                    reverse=True,
-                )[:3]
-                top_s = ", ".join(f"{k}={v}" for k, v in top) if top else "-"
-                self._log(
-                    f"📊 [{self.market_name}] Oracle guard summary: blocked={self._oracle_guard_block_count} (top: {top_s})"
-                )
+            if self.oracle_guard.enabled:
+                self.oracle_guard.log_block_summary(self.logger)
             self._log("✓ Trader shut down cleanly")
 
     async def _oracle_price_loop(self) -> None:
@@ -1284,13 +880,21 @@ class LastSecondTrader:
         when the trader starts late (Cloudflare risk).
         """
         if self.oracle_symbol is None:
-            self._log(f"⚠️  [{self.market_name}] Oracle tracking enabled but symbol is unknown")
+            self._log(
+                f"⚠️  [{self.market_name}] Oracle tracking enabled but symbol is unknown"
+            )
             return
         if self.oracle_tracker is None:
             return
 
-        start_ms = getattr(self.oracle_window, "start_ms", None) if self.oracle_window else None
-        end_ms = getattr(self.oracle_window, "end_ms", None) if self.oracle_window else None
+        start_ms = (
+            getattr(self.oracle_window, "start_ms", None)
+            if self.oracle_window
+            else None
+        )
+        end_ms = (
+            getattr(self.oracle_window, "end_ms", None) if self.oracle_window else None
+        )
         now_ms = int(time.time() * 1000)
         missed_start = False
         if start_ms is None:
@@ -1302,7 +906,7 @@ class LastSecondTrader:
             lag_ms = now_ms - start_ms
             if lag_ms > self.oracle_beat_max_lag_ms:
                 self._log(
-                    f"⚠️  [{self.market_name}] Oracle start missed by {lag_ms/1000:.1f}s (max_lag={self.oracle_beat_max_lag_ms/1000:.1f}s); price_to_beat will be unavailable"
+                    f"⚠️  [{self.market_name}] Oracle start missed by {lag_ms / 1000:.1f}s (max_lag={self.oracle_beat_max_lag_ms / 1000:.1f}s); price_to_beat will be unavailable"
                 )
                 missed_start = True
 
@@ -1456,7 +1060,7 @@ class LastSecondTrader:
                         )
                         delta = f"{snap.delta:,.2f}" if snap.delta is not None else "-"
                         delta_pct = (
-                            f"{snap.delta_pct*100:.4f}%"
+                            f"{snap.delta_pct * 100:.4f}%"
                             if snap.delta_pct is not None
                             else "-"
                         )
@@ -1492,12 +1096,57 @@ class LastSecondTrader:
                     await self.check_trigger(time_remaining)
                 else:
                     if now_ts - self._last_stale_log_ts >= 5.0:
-                        stale_msg = "".join([
-                            f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] ",
-                            f"[{self.market_name}] WS stale ({now_ts - self.last_ws_update_ts:.1f}s). ",
-                            f"Time: {time_remaining:.2f}s",
-                        ])
+                        stale_msg = "".join(
+                            [
+                                f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] ",
+                                f"[{self.market_name}] WS stale ({now_ts - self.last_ws_update_ts:.1f}s). ",
+                                f"Time: {time_remaining:.2f}s",
+                            ]
+                        )
+
                         self._log(stale_msg)
                         self._last_stale_log_ts = now_ts
 
             await asyncio.sleep(1.0)
+
+    # Keep for backward compatibility with tests
+    def _check_stop_loss_take_profit(self) -> None:
+        """Deprecated: Use stop_loss_manager.check_and_execute() instead."""
+        # This method is kept for backward compatibility with existing tests
+        # but delegates to the new manager
+        pass
+
+    # Keep for backward compatibility with tests
+    def _check_balance(self) -> bool:
+        """Deprecated: Use risk_manager.check_balance() instead."""
+        # This method is kept for backward compatibility with existing tests
+        # but delegates to the new manager
+        return self.risk_manager.check_balance()
+
+    # Keep for backward compatibility with tests
+    def _check_risk_limits(self) -> bool:
+        """Deprecated: Use risk_manager.check_risk_limits() instead."""
+        # This method is kept for backward compatibility with existing tests
+        # but delegates to the new manager
+        return self.risk_manager.check_risk_limits()
+
+    # Keep for backward compatibility with tests
+    def _track_daily_pnl(self, trade_amount: float, pnl: float = 0.0) -> None:
+        """Deprecated: Use risk_manager.track_daily_pnl() instead."""
+        # This method is kept for backward compatibility with existing tests
+        # but delegates to the new manager
+        return self.risk_manager.track_daily_pnl(trade_amount, pnl)
+
+    # Keep for backward compatibility with tests
+    def _check_daily_limits(self) -> bool:
+        """Deprecated: Use risk_manager.check_daily_limits() instead."""
+        # This method is kept for backward compatibility with existing tests
+        # but delegates to the new manager
+        return self.risk_manager.check_daily_limits()
+
+    # Keep for backward compatibility with tests
+    def _get_daily_limits_path(self) -> str:
+        """Deprecated: Use risk_manager._get_daily_limits_path() instead."""
+        # This method is kept for backward compatibility with existing tests
+        # but delegates to the new manager
+        return self.risk_manager._get_daily_limits_path()
