@@ -131,9 +131,24 @@ class RiskManager:
                 f"DEBUG: usdc_allowance={usdc_allowance:.2f}, exchange_contract={EXCHANGE_CONTRACT}"
             )
 
-            # Жёсткий минимум $1.1 USD (по запросу Константина)
-            required_amount = 1.10
+            # Calculate trade size: MAXIMUM of 3 values as requested by Konstantin
+            # 1. 5% of balance
+            # 2. MIN_TRADE_USDC ($1.0)
+            # 3. trade_size parameter (e.g., $1.1)
+            balance_5_pct = usdc_balance * MAX_CAPITAL_PCT_PER_TRADE
+            trade_size_param = round(self.trade_size, 2)
+
+            # Use MAXIMUM of all 3 values
+            required_amount = max(MIN_TRADE_USDC, trade_size_param, balance_5_pct)
+
+            # Ensure not exceeding MAX_TRADE_USDC
+            from src.clob_types import MAX_TRADE_USDC
+            required_amount = min(required_amount, MAX_TRADE_USDC)
+
             self._planned_trade_amount = required_amount
+            self._log(
+                f"DEBUG: trade_size=${trade_size_param:.2f}, 5%_balance=${balance_5_pct:.2f}, MIN=${MIN_TRADE_USDC:.2f} → required=${required_amount:.2f}"
+            )
 
             self._log(
                 f"DEBUG: required_amount={required_amount:.2f}, usdc_balance={usdc_balance:.2f}, usdc_allowance={usdc_allowance:.2f}"
