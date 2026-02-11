@@ -15,6 +15,7 @@ from src.clob_types import (
     EXCHANGE_CONTRACT,
     MAX_CAPITAL_PCT_PER_TRADE,
     MAX_DAILY_LOSS_PCT,
+    MAX_TRADE_USDC,
     MAX_TOTAL_TRADES_PER_DAY,
     MIN_TRADE_USDC,
 )
@@ -53,10 +54,10 @@ class RiskManager:
         self.trade_size = trade_size
         self.logger = logger
 
-        # Dynamic sizing thresholds
+        # Legacy dynamic sizing thresholds (for backward compatibility)
         self.min_trade_usdc = max(MIN_TRADE_USDC, round(float(trade_size), 2))
-        self.balance_risk_pct = 0.05
-        self.balance_risk_switch_usdc = 30.0
+        self.balance_risk_pct = MAX_CAPITAL_PCT_PER_TRADE  # Now using the global constant
+        self.balance_risk_switch_usdc = 30.0  # Legacy threshold (no longer used in check_balance)
 
         # Planned trade amount (from balance check)
         self._planned_trade_amount: float | None = None
@@ -131,17 +132,14 @@ class RiskManager:
                 f"DEBUG: usdc_allowance={usdc_allowance:.2f}, exchange_contract={EXCHANGE_CONTRACT}"
             )
 
-            # Dynamic sizing:
-            # - if balance < $30: use min_trade_usdc (default $1.50)
-            # - else: use 5% of balance (but not less than min_trade_usdc)
-            if usdc_balance < self.balance_risk_switch_usdc:
-                required_amount = self.min_trade_usdc
-            else:
-                required_amount = max(
-                    self.min_trade_usdc,
-                    round(usdc_balance * self.balance_risk_pct, 2),
-                )
-            required_amount = max(round(required_amount, 2), 1.00)
+            # Dynamic sizing: min(MAX_TRADE_USDC, max(MIN_TRADE_USDC, balance * MAX_CAPITAL_PCT_PER_TRADE))
+            # - Calculate 5% of balance
+            # - Take max of that and MIN_TRADE_USDC ($1.00)
+            # - Take min of that and MAX_TRADE_USDC ($10.00)
+            # - Finally, max with trade_size (if explicitly set via --size)
+            pct_of_balance = round(usdc_balance * MAX_CAPITAL_PCT_PER_TRADE, 2)
+            required_amount = min(MAX_TRADE_USDC, max(MIN_TRADE_USDC, pct_of_balance))
+            required_amount = max(round(required_amount, 2), round(float(self.trade_size), 2))
             self._planned_trade_amount = required_amount
 
             self._log(

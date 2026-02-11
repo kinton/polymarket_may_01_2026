@@ -45,7 +45,11 @@ TRIGGER_THRESHOLD = 30.0  # Start attempting trades when ≤ s remain (was 60s)
 PRICE_THRESHOLD = 0.85  # Legacy name, use MIN_BUY_PRICE
 PRICE_TIE_EPS = 1e-6
 MIN_CONFIDENCE = 0.75  # Only buy if winning side has ≥75% confidence (bid/ask ≥ 0.75)
-MIN_TRADE_USDC = 1.00  # Minimum trade size in USDC
+
+# Trade sizing constants (dynamic sizing: min of hard constants vs 5% of balance)
+MIN_TRADE_USDC = 1.00  # Hard minimum trade size in USDC
+MAX_TRADE_USDC = 10.00  # Hard maximum trade size in USDC
+MAX_CAPITAL_PCT_PER_TRADE = 0.05  # Maximum 5% of capital per trade
 
 # Stop-loss constants (CRITICAL!)
 STOP_LOSS_PCT = 0.30  # Exit if price drops 30% from entry
@@ -58,7 +62,6 @@ TAKE_PROFIT_PCT = 0.10  # Exit if price rises 10% from entry
 TAKE_PROFIT_CHECK_INTERVAL_S = 1.0  # Check take-profit every 1 second
 
 # Risk management limits (CRITICAL!)
-MAX_CAPITAL_PCT_PER_TRADE = 0.05  # Maximum 5% of capital per trade
 MAX_DAILY_LOSS_PCT = 0.10  # Stop if lost 10% in a day
 MAX_TOTAL_TRADES_PER_DAY = 20  # Limit total trades per day
 

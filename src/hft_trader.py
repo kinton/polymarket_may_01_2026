@@ -33,7 +33,9 @@ Requirements:
 import asyncio
 import json
 import os
+import signal
 import time
+import traceback
 from datetime import datetime, timezone
 from typing import Any
 
@@ -126,109 +128,217 @@ class LastSecondTrader:
             dry_run: If True, only print actions without executing
             trade_size: Size of trade in dollars (will buy trade_size/price tokens)
         """
-        self.condition_id = condition_id
-        self.token_id_yes = token_id_yes
-        self.token_id_no = token_id_no
-        self.end_time = end_time
-        self.dry_run = dry_run
-        self.trade_size = trade_size
-        self.title = title
-        self.slug = slug
-        self.logger = trader_logger
+        try:
+            self.condition_id = condition_id
+            self.token_id_yes = token_id_yes
+            self.token_id_no = token_id_no
+            self.end_time = end_time
+            self.dry_run = dry_run
+            self.trade_size = trade_size
+            self.title = title
+            self.slug = slug
+            self.logger = trader_logger
 
-        # Extract short market name for logging
-        self.market_name = self._extract_market_name(title)
+            # Extract short market name for logging
+            self.market_name = self._extract_market_name(title)
 
-        # Market state
-        self.orderbook = OrderBook()
-        self.winning_side: str | None = None
+            # Market state
+            self.orderbook = OrderBook()
+            self.winning_side: str | None = None
 
-        # Log throttling
-        self.book_log_every_s = max(0.0, float(book_log_every_s))
-        self.book_log_every_s_final = max(0.0, float(book_log_every_s_final))
-        self._last_book_log_ts = 0.0
-        self._last_logged_winner: str | None = None
+            # Shutdown flag
+            self._shutting_down = False
 
-        # Warning tracking
-        self._logged_warnings = set()
-        self._trigger_lock = asyncio.Lock()
-        self.last_ws_update_ts = 0.0
-        self._last_stale_log_ts = 0.0
-        self._planned_trade_side: str | None = None
-        self.ws = None
+            # Log throttling
+            self.book_log_every_s = max(0.0, float(book_log_every_s))
+            self.book_log_every_s_final = max(0.0, float(book_log_every_s_final))
+            self._last_book_log_ts = 0.0
+            self._last_logged_winner: str | None = None
 
-        # Initialize managers
-        load_dotenv()
-        self.client = self._init_clob_client()
+            # Warning tracking
+            self._logged_warnings = set()
+            self._trigger_lock = asyncio.Lock()
+            self.last_ws_update_ts = 0.0
+            self._last_stale_log_ts = 0.0
+            self._planned_trade_side: str | None = None
+            self.ws = None
 
-        # Oracle guard manager
-        end_iso = self.end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        self.oracle_guard = OracleGuardManager(
-            title=title or "Unknown",
-            market_name=self.market_name,
-            end_time=end_iso,
-            enabled=oracle_enabled,
-            guard_enabled=oracle_guard_enabled,
-            min_points=oracle_min_points,
-            window_s=oracle_window_s,
-        )
+            # Initialize managers
+            load_dotenv()
+            self.client = self._init_clob_client()
 
-        # Position, stop-loss, and risk managers
-        self.position_manager = PositionManager(logger=self.logger)
-        self.stop_loss_manager = StopLossManager(
-            position_manager=self.position_manager,
-            logger=self.logger,
-        )
-        self.risk_manager = RiskManager(
-            client=self.client,
-            market_name=self.market_name,
-            trade_size=self.trade_size,
-            logger=self.logger,
-        )
+            # Oracle guard manager
+            end_iso = self.end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            self.oracle_guard = OracleGuardManager(
+                title=title or "Unknown",
+                market_name=self.market_name,
+                end_time=end_iso,
+                enabled=oracle_enabled,
+                guard_enabled=oracle_guard_enabled,
+                min_points=oracle_min_points,
+                window_s=oracle_window_s,
+            )
 
-        # Order execution manager
-        self.order_execution = OrderExecutionManager(
-            client=self.client,
-            market_name=self.market_name,
-            condition_id=condition_id,
-            token_id_yes=token_id_yes,
-            token_id_no=token_id_no,
-            dry_run=dry_run,
-            trade_size=trade_size,
-            logger=self.logger,
-            position_manager=self.position_manager,
-            alert_dispatcher=None,  # Will be set after init
-            risk_manager=self.risk_manager,
-        )
+            # Position, stop-loss, and risk managers
+            self.position_manager = PositionManager(logger=self.logger)
+            self.stop_loss_manager = StopLossManager(
+                position_manager=self.position_manager,
+                logger=self.logger,
+            )
+            self.risk_manager = RiskManager(
+                client=self.client,
+                market_name=self.market_name,
+                trade_size=self.trade_size,
+                logger=self.logger,
+            )
 
-        # Alert dispatcher
-        self.alert_dispatcher = self._init_alert_dispatcher()
-        self.order_execution.alert_dispatcher = self.alert_dispatcher
+            # Order execution manager
+            self.order_execution = OrderExecutionManager(
+                client=self.client,
+                market_name=self.market_name,
+                condition_id=condition_id,
+                token_id_yes=token_id_yes,
+                token_id_no=token_id_no,
+                dry_run=dry_run,
+                trade_size=trade_size,
+                logger=self.logger,
+                position_manager=self.position_manager,
+                alert_dispatcher=None,  # Will be set after init
+                risk_manager=self.risk_manager,
+            )
 
-        # Set stop-loss sell callback
-        self.stop_loss_manager.set_sell_callback(self.execute_sell)
+            # Alert dispatcher
+            self.alert_dispatcher = self._init_alert_dispatcher()
+            self.order_execution.alert_dispatcher = self.alert_dispatcher
 
-        # Log init
-        mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
-        self._log(
-            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.MAX_BUY_PRICE} | "
-            + f"Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
-        )
-        if self.oracle_guard.enabled:
-            sym = self.oracle_guard.symbol or "unknown"
-            parts = [f"oracle_tracking=on ({sym})"]
-            if self.oracle_guard.guard_enabled:
-                parts.append(
-                    f"guard=on (stale<={self.oracle_guard.max_stale_s}s, "
-                    + f"min_pts>={self.oracle_guard.min_points}, "
-                    + f"max_vol<={self.oracle_guard.max_vol_pct}, "
-                    + f"|z|>={self.oracle_guard.min_abs_z})"
-                )
+            # Set stop-loss sell callback
+            self.stop_loss_manager.set_sell_callback(self.execute_sell)
+
+            # Log init
+            mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
+            self._log(
+                f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.MAX_BUY_PRICE} | "
+                + f"Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
+            )
+            if self.oracle_guard.enabled:
+                sym = self.oracle_guard.symbol or "unknown"
+                parts = [f"oracle_tracking=on ({sym})"]
+                if self.oracle_guard.guard_enabled:
+                    parts.append(
+                        f"guard=on (stale<={self.oracle_guard.max_stale_s}s, "
+                        + f"min_pts>={self.oracle_guard.min_points}, "
+                        + f"max_vol<={self.oracle_guard.max_vol_pct}, "
+                        + f"|z|>={self.oracle_guard.min_abs_z})"
+                    )
+                else:
+                    parts.append("guard=off")
+                self._log(f"[{self.market_name}] " + " | ".join(parts))
             else:
-                parts.append("guard=off")
-            self._log(f"[{self.market_name}] " + " | ".join(parts))
-        else:
-            self._log(f"[{self.market_name}] oracle_tracking=off")
+                self._log(f"[{self.market_name}] oracle_tracking=off")
+
+            # [LIFECYCLE] Trader initialized successfully
+            self._log(f"[TRADER] [{self.market_name}] Trader initialized")
+
+        except Exception as e:
+            self._log(f"[TRADER] [{self.market_name}] ERROR during initialization: {e}")
+            self._log(traceback.format_exc())
+            if self.alert_dispatcher and self.alert_dispatcher.is_enabled():
+                self.alert_dispatcher.send_alert(f"[{self.market_name}] CRITICAL: Initialization failed - {e}")
+            raise
+
+    async def graceful_shutdown(self, reason: str = "Unknown"):
+        """
+        Perform graceful shutdown of the trader.
+
+        This method:
+        1. Logs the shutdown reason
+        2. Saves current state (positions, orders)
+        3. Closes WebSocket connections cleanly
+        4. Cancels all pending tasks
+        5. Closes client sessions if any
+
+        Args:
+            reason: The reason for shutdown (e.g., "KeyboardInterrupt", "SIGTERM")
+        """
+        if self._shutting_down:
+            self._log(f"[TRADER] [{self.market_name}] Shutdown already in progress")
+            return
+
+        self._shutting_down = True
+        self._log(f"[TRADER] [{self.market_name}] Graceful shutdown initiated: {reason}")
+
+        # Save state before shutdown
+        try:
+            # Save position state
+            if self.position_manager and self.position_manager.is_open:
+                position_info = {
+                    "side": self.position_manager.position_side,
+                    "entry_price": self.position_manager.entry_price,
+                    "trailing_stop": self.position_manager.trailing_stop_price,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                self._log(f"[TRADER] [{self.market_name}] Saving position state: {position_info}")
+
+            # Log execution state
+            if self.order_execution:
+                execution_state = {
+                    "executed": self.order_execution.is_executed(),
+                    "in_progress": self.order_execution.is_in_progress(),
+                    "attempts": self.order_execution.get_attempts()
+                }
+                self._log(f"[TRADER] [{self.market_name}] Saving execution state: {execution_state}")
+        except Exception as e:
+            self._log(f"[TRADER] [{self.market_name}] ERROR saving state: {e}")
+            self._log(traceback.format_exc())
+
+        # Close WebSocket connection
+        try:
+            if self.ws and not self.ws.closed:
+                self._log(f"[TRADER] [{self.market_name}] Closing WebSocket connection...")
+                try:
+                    await asyncio.wait_for(self.ws.close(), timeout=5.0)
+                    self._log(f"[TRADER] [{self.market_name}] WebSocket closed successfully")
+                except asyncio.TimeoutError:
+                    self._log(f"[TRADER] [{self.market_name}] WebSocket close timeout")
+                except Exception as e:
+                    self._log(f"[TRADER] [{self.market_name}] ERROR closing WebSocket: {e}")
+        except Exception as e:
+            self._log(f"[TRADER] [{self.market_name}] ERROR during WebSocket cleanup: {e}")
+
+        # Close client session if applicable
+        try:
+            if self.client and hasattr(self.client, 'close'):
+                self._log(f"[TRADER] [{self.market_name}] Closing CLOB client session...")
+                await asyncio.to_thread(self.client.close)
+                self._log(f"[TRADER] [{self.market_name}] CLOB client session closed")
+        except Exception as e:
+            self._log(f"[TRADER] [{self.market_name}] ERROR closing client session: {e}")
+
+        # Cancel all pending tasks in current event loop
+        try:
+            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            if tasks:
+                self._log(f"[TRADER] [{self.market_name}] Cancelling {len(tasks)} pending task(s)...")
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                # Wait for tasks to be cancelled
+                await asyncio.gather(*tasks, return_exceptions=True)
+                self._log(f"[TRADER] [{self.market_name}] All tasks cancelled")
+        except Exception as e:
+            self._log(f"[TRADER] [{self.market_name}] ERROR cancelling tasks: {e}")
+
+        # [LIFECYCLE] Trader stopped
+        self._log(f"[TRADER] [{self.market_name}] Trader stopped ({reason})")
+
+    async def stop_trading(self):
+        """
+        Stop trading and cleanup resources.
+
+        This is called when the trader needs to stop before the market closes.
+        """
+        self._log(f"[TRADER] [{self.market_name}] Stopping trading...")
+        await self.graceful_shutdown("Manual stop")
 
     def _extract_market_name(self, title: str | None) -> str:
         """Extract short market name from title for logging."""
