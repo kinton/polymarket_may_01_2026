@@ -39,9 +39,10 @@ class OrderBook:
 
 
 # Trading constants
-BUY_PRICE = 0.99
+MAX_BUY_PRICE = 0.99  # Maximum price to buy (upper limit)
+MIN_BUY_PRICE = 0.85  # Minimum price to buy (lower threshold)
 TRIGGER_THRESHOLD = 30.0  # Start attempting trades when ≤ s remain (was 60s)
-PRICE_THRESHOLD = 0.85
+PRICE_THRESHOLD = 0.85  # Legacy name, use MIN_BUY_PRICE
 PRICE_TIE_EPS = 1e-6
 MIN_CONFIDENCE = 0.75  # Only buy if winning side has ≥75% confidence (bid/ask ≥ 0.75)
 MIN_TRADE_USDC = 1.00  # Minimum trade size in USDC

@@ -5,28 +5,34 @@ Manages buy and sell orders with FOK (Fill-or-Kill) market orders.
 """
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.clob_types import (
-    BUY_PRICE,
+    MAX_BUY_PRICE,
     STOP_LOSS_ABSOLUTE,
     STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
 )
 from src.market_parser import get_winning_token_id
 
-try:
-    from py_clob_client.client import ClobClient
+if TYPE_CHECKING:
     from py_clob_client.clob_types import (
         CreateOrderOptions,
         MarketOrderArgs,
         OrderType,
     )
-except ImportError:
-    ClobClient = None
-    CreateOrderOptions = None
-    MarketOrderArgs = None
-    OrderType = None
+else:
+    try:
+        from py_clob_client.clob_types import (
+            CreateOrderOptions,
+            MarketOrderArgs,
+            OrderType,
+        )
+    except ImportError:
+        ClobClient = None
+        CreateOrderOptions = None
+        MarketOrderArgs = None
+        OrderType = None
 
 
 class OrderExecutionManager:
@@ -36,7 +42,7 @@ class OrderExecutionManager:
 
     def __init__(
         self,
-        client: ClobClient | None,
+        client: Any | None,
         market_name: str,
         condition_id: str,
         token_id_yes: str,
@@ -88,6 +94,30 @@ class OrderExecutionManager:
         self._order_amount: float | None = None
         self._order_price: float | None = None
 
+    # Getter methods for order state
+    def is_executed(self) -> bool:
+        """Check if an order has been executed."""
+        return self.order_executed
+
+    def mark_executed(self) -> None:
+        self.order_executed = True
+
+    def is_in_progress(self) -> bool:
+        """Check if an order is currently in progress."""
+        return self.order_in_progress
+
+    def get_attempts(self) -> int:
+        """Get the number of order attempts made."""
+        return self.order_attempts
+
+    def get_max_attempts(self) -> int:
+        """Get the maximum number of order attempts allowed."""
+        return self.max_order_attempts
+
+    def get_last_attempt_time(self) -> float:
+        """Get the timestamp of the last order attempt."""
+        return self.last_order_attempt_time
+
     def _log(self, message: str) -> None:
         """Log message to console or logger."""
         if self.logger:
@@ -123,7 +153,7 @@ class OrderExecutionManager:
             if self.risk_manager and self.risk_manager.planned_trade_amount is not None
             else max(round(self.trade_size, 2), 1.00)
         )
-        price = round(BUY_PRICE, 2)
+        price = round(MAX_BUY_PRICE, 2)
 
         if self._order_nonce is None:
             self._order_nonce = 0
@@ -172,8 +202,13 @@ class OrderExecutionManager:
             self.order_executed = True
             return True
 
-        if not self.client:
-            self._log(f"❌ [{self.market_name}] CLOB client not initialized")
+        if (
+            not self.client
+            or not MarketOrderArgs
+            or not CreateOrderOptions
+            or not OrderType
+        ):
+            self._log(f"❌ [{self.market_name}] CLOB client or types not initialized")
             return False
 
         try:
@@ -253,7 +288,10 @@ class OrderExecutionManager:
             self._log(f"❌ [{self.market_name}] No position manager")
             return False
 
-        if not self.position_manager.is_open or self.position_manager.position_side is None:
+        if (
+            not self.position_manager.is_open
+            or self.position_manager.position_side is None
+        ):
             self._log(f"❌ [{self.market_name}] No position to sell")
             return False
 
@@ -296,15 +334,23 @@ class OrderExecutionManager:
 
             trade_amount = max(round(self.trade_size, 2), 1.00)
             if current_price is not None:
-                pnl_amount = trade_amount * ((current_price - self.position_manager.entry_price) / self.position_manager.entry_price)
+                pnl_amount = trade_amount * (
+                    (current_price - self.position_manager.entry_price)
+                    / self.position_manager.entry_price
+                )
                 if self.risk_manager:
                     self.risk_manager.track_daily_pnl(trade_amount, pnl_amount)
 
             self.position_manager.close_position()
             return True
 
-        if not self.client:
-            self._log(f"❌ [{self.market_name}] CLOB client not initialized")
+        if (
+            not self.client
+            or not MarketOrderArgs
+            or not CreateOrderOptions
+            or not OrderType
+        ):
+            self._log(f"❌ [{self.market_name}] CLOB client or types not initialized")
             return False
 
         if not sell_token_id:
@@ -373,7 +419,10 @@ class OrderExecutionManager:
             self._log(f"✓ [{self.market_name}] Position closed ({reason})")
 
             if current_price is not None:
-                pnl_amount = amount * ((current_price - self.position_manager.entry_price) / self.position_manager.entry_price)
+                pnl_amount = amount * (
+                    (current_price - self.position_manager.entry_price)
+                    / self.position_manager.entry_price
+                )
                 if self.risk_manager:
                     self.risk_manager.track_daily_pnl(amount, pnl_amount)
 
