@@ -60,9 +60,7 @@ class OracleGuardManager:
 
         # Oracle tracker instance
         self.tracker: OracleTracker | None = (
-            OracleTracker(window_seconds=self.stats_window_s)
-            if self.enabled
-            else None
+            OracleTracker(window_seconds=self.stats_window_s) if self.enabled else None
         )
 
         # Current snapshot
@@ -97,9 +95,6 @@ class OracleGuardManager:
         self.last_log_ts = 0.0
         self.html_beat_attempted = False
 
-        # Client for fetching price-to-beat from event page
-        self.event_page_client = EventPageClient()
-
     def recommended_side(self) -> str | None:
         """
         Determine which outcome is winning based on oracle price.
@@ -107,13 +102,19 @@ class OracleGuardManager:
         Returns:
             "YES" or "NO" if available, None otherwise
         """
-        if self.snapshot is None or self.snapshot.price_to_beat is None or self.snapshot.delta is None:
+        if (
+            self.snapshot is None
+            or self.snapshot.price_to_beat is None
+            or self.snapshot.delta is None
+        ):
             return None
         if self.up_side is None or self.down_side is None:
             return None
         return self.up_side if self.snapshot.delta >= 0 else self.down_side
 
-    def quality_ok(self, *, trade_side: str, time_remaining: float) -> tuple[bool, str, str]:
+    def quality_ok(
+        self, *, trade_side: str, time_remaining: float
+    ) -> tuple[bool, str, str]:
         """
         Check if oracle data quality is acceptable for trading.
 
@@ -184,10 +185,7 @@ class OracleGuardManager:
             expected_sign = None
             if self.up_side is not None and trade_side == self.up_side:
                 expected_sign = 1
-            elif (
-                self.down_side is not None
-                and trade_side == self.down_side
-            ):
+            elif self.down_side is not None and trade_side == self.down_side:
                 expected_sign = -1
 
             if expected_sign == 1 and snap.slope_usd_per_s < -max_rev:
@@ -214,7 +212,9 @@ class OracleGuardManager:
             slug: Market slug for fetching outcome mapping
         """
         if self.symbol is None:
-            logger.info(f"[{self.market_name}] Oracle symbol not determined, skipping oracle tracking")
+            logger.info(
+                f"[{self.market_name}] Oracle symbol not determined, skipping oracle tracking"
+            )
             return
 
         if self.tracker is None:
@@ -244,18 +244,34 @@ class OracleGuardManager:
         ):
             self.html_beat_attempted = True
             try:
-                open_price = await self.event_page_client.fetch_open_price(
-                    slug=slug,
-                    condition_id=None,
-                    start_time_iso_z=self.window.start_iso_z,
-                )
+                import aiohttp
+
+                # Determine cadence from window duration
+                cadence = "fifteen"
+                if self.window.start_ms is not None and self.window.end_ms is not None:
+                    dur_ms = self.window.end_ms - self.window.start_ms
+                    if abs(dur_ms - 300_000) <= 15_000:
+                        cadence = "five"
+
+                async with aiohttp.ClientSession() as session:
+                    from src.updown_prices import EventPageClient
+
+                    event_page = EventPageClient(session)
+                    open_price, _ = await event_page.fetch_past_results(
+                        eslug=slug,
+                        asset=self.market_name,
+                        cadence=cadence,
+                        start_time_iso_z=self.window.start_iso_z,
+                    )
                 if open_price:
                     self.tracker.price_to_beat = float(open_price)
                     logger.info(
                         f"[{self.market_name}] Fetched price_to_beat from event page: {open_price}"
                     )
             except Exception as e:
-                logger.warning(f"[{self.market_name}] Failed to fetch price_to_beat from event page: {e}")
+                logger.warning(
+                    f"[{self.market_name}] Failed to fetch price_to_beat from event page: {e}"
+                )
 
         # Determine YES/NO mapping for Up/Down outcomes
         if slug and (self.up_side is None or self.down_side is None):
@@ -286,7 +302,9 @@ class OracleGuardManager:
                                 f"Up→{self.up_side}, Down→{self.down_side}"
                             )
             except Exception as e:
-                logger.warning(f"[{self.market_name}] Failed to determine outcome mapping: {e}")
+                logger.warning(
+                    f"[{self.market_name}] Failed to determine outcome mapping: {e}"
+                )
 
         logger.info(
             f"✓ [{self.market_name}] Oracle tracking enabled (RTDS Chainlink) symbol={self.symbol}"
