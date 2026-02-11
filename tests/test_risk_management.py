@@ -22,7 +22,8 @@ from src.clob_types import (
     MAX_DAILY_LOSS_PCT,
     MAX_TOTAL_TRADES_PER_DAY,
 )
-from src.hft_trader import EXCHANGE_CONTRACT, LastSecondTrader
+from src.clob_types import EXCHANGE_CONTRACT
+from src.hft_trader import LastSecondTrader
 
 
 @pytest.fixture
@@ -399,9 +400,7 @@ async def test_check_trigger_stops_on_trade_count_limit(
 
 
 @pytest.mark.asyncio
-async def test_check_trigger_stops_on_capital_limit(
-    mock_trader, cleanup_daily_limits
-):
+async def test_check_trigger_stops_on_capital_limit(mock_trader, cleanup_daily_limits):
     """Test that check_trigger stops trading when capital % limit exceeded."""
     # Setup trigger conditions
     mock_trader.winning_side = "YES"
@@ -425,9 +424,7 @@ async def test_check_trigger_stops_on_capital_limit(
 
 
 @pytest.mark.asyncio
-async def test_check_trigger_proceeds_when_limits_ok(
-    mock_trader, cleanup_daily_limits
-):
+async def test_check_trigger_proceeds_when_limits_ok(mock_trader, cleanup_daily_limits):
     """Test that check_trigger executes order when all limits are OK."""
     # Setup daily limits file with everything in bounds
     path = mock_trader._get_daily_limits_path()
@@ -448,7 +445,10 @@ async def test_check_trigger_proceeds_when_limits_ok(
     mock_trader.orderbook.best_ask_no = 0.02
     mock_trader.TRIGGER_THRESHOLD = 90.0
     mock_trader.client.get_balance_allowance = MagicMock(
-        return_value={"balance": int(100 * 1e6), "allowances": {EXCHANGE_CONTRACT: int(100 * 1e6)}}  # $100, max 5% = $5
+        return_value={
+            "balance": int(100 * 1e6),
+            "allowances": {EXCHANGE_CONTRACT: int(100 * 1e6)},
+        }  # $100, max 5% = $5
     )
     mock_trader._planned_trade_amount = 4.0  # $4 < $5 limit
     mock_trader.execute_order = AsyncMock()

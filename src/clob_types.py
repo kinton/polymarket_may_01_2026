@@ -65,5 +65,8 @@ MAX_TOTAL_TRADES_PER_DAY = 20  # Limit total trades per day
 GAMMA_API_URL = "https://gamma-api.polymarket.com/public-search"
 CLOB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
+# Exchange contract address for USDC
+EXCHANGE_CONTRACT = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+
 # Alert rate limiting
 ALERT_RATE_LIMIT_PER_MINUTE = 10  # Max alerts per minute per channel
