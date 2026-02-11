@@ -153,7 +153,7 @@ class OrderExecutionManager:
             if self.risk_manager and self.risk_manager.planned_trade_amount is not None
             else max(round(self.trade_size, 2), 1.00)
         )
-        price = round(BUY_PRICE, 2)
+        price = round(MAX_BUY_PRICE, 2)
 
         if self._order_nonce is None:
             self._order_nonce = 0

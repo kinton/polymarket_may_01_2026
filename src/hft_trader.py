@@ -48,8 +48,8 @@ from src.alerts import (
 )
 from src.clob_types import (
     MAX_BUY_PRICE,
-    CLOB_WS_URL,
     MIN_BUY_PRICE,
+    CLOB_WS_URL,
     MIN_CONFIDENCE,
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
