@@ -432,13 +432,50 @@ class OrderExecutionManager:
             self._log(f"❌ [{self.market_name}] Sell order failed: {e}")
             return False
 
-    async def verify_order(self, order_id: str) -> None:
+    async def verify_order(self, order_id: str) -> bool:
         """
-        Verify order status by checking order book.
+        Verify order status by querying the Polymarket CLOB API.
 
         Args:
             order_id: Order ID to verify
+
+        Returns:
+            True if verification succeeded, False otherwise
         """
+        if not self.client:
+            self._log(f"❌ [{self.market_name}] No client available for verification")
+            return False
+
         self._log(f"🔍 [{self.market_name}] Verifying order {order_id}...")
-        # Verification logic would go here
-        # For now, this is a placeholder
+        try:
+            # Small delay to allow order processing
+            await asyncio.sleep(0.5)
+
+            # Query order status from API
+            order_data_raw = await asyncio.to_thread(self.client.get_order, order_id)
+            if not isinstance(order_data_raw, dict):
+                self._log(
+                    f"⚠️  [{self.market_name}] Unexpected order data type: {type(order_data_raw)}"
+                )
+                return False
+            order_data: dict[str, Any] = order_data_raw
+
+            # Extract and log order status
+            status = order_data.get("status", "unknown").lower()
+
+            if status == "matched":
+                self._log(
+                    f"✅ [{self.market_name}] Order {order_id} CONFIRMED FILLED (Status: {status})"
+                )
+            elif status in ["canceled", "killed"]:
+                self._log(
+                    f"⚠️  [{self.market_name}] Order {order_id} WAS KILLED/CANCELED (Status: {status})"
+                )
+            else:
+                self._log(f"ℹ️  [{self.market_name}] Order {order_id} status: {status}")
+
+            return True
+
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] Order verification failed: {e}")
+            return False

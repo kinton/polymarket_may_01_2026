@@ -71,3 +71,10 @@ EXCHANGE_CONTRACT = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 
 # Alert rate limiting
 ALERT_RATE_LIMIT_PER_MINUTE = 10  # Max alerts per minute per channel
+
+# Oracle Guard constants
+MAX_STALE_S = 20.0  # Maximum oracle data staleness in seconds
+MIN_ORACLE_POINTS = 4  # Minimum data points required for oracle tracking
+MAX_VOL_PCT = 0.002  # Maximum acceptable volatility percentage
+MIN_ABS_Z = 0.75  # Minimum absolute z-score threshold
+MAX_REVERSAL_SLOPE = 0.0  # Maximum reversal slope (disabled by default)
