@@ -10,6 +10,13 @@ from typing import Any
 
 import aiohttp
 
+from src.clob_types import (
+    MAX_REVERSAL_SLOPE,
+    MAX_STALE_S,
+    MAX_VOL_PCT,
+    MIN_ABS_Z,
+    MIN_ORACLE_POINTS,
+)
 from src.oracle_tracker import OracleSnapshot, OracleTracker
 from src.updown_prices import (
     EventPageClient,
@@ -34,7 +41,7 @@ class OracleGuardManager:
         end_time: str,
         enabled: bool = True,
         guard_enabled: bool = True,
-        min_points: int = 4,
+        min_points: int | None = None,
         window_s: float = 60.0,
     ):
         """
@@ -46,13 +53,13 @@ class OracleGuardManager:
             end_time: Market end time in ISO format
             enabled: Whether oracle tracking is enabled
             guard_enabled: Whether oracle guard is enabled
-            min_points: Minimum data points required
+            min_points: Minimum data points required (uses MIN_ORACLE_POINTS if None)
             window_s: Statistics window in seconds
         """
         self.enabled = bool(enabled)
         self.guard_enabled = bool(guard_enabled)
         self.market_name = market_name
-        self.min_points = int(min_points)
+        self.min_points = int(min_points) if min_points is not None else MIN_ORACLE_POINTS
         self.stats_window_s = float(window_s)
 
         # Oracle configuration
@@ -70,14 +77,14 @@ class OracleGuardManager:
         self.last_update_ts = 0.0
         self._last_log_ts = 0.0
 
-        # Oracle guard configuration
-        self.max_stale_s = 20.0
+        # Oracle guard configuration (using centralized constants)
+        self.max_stale_s = MAX_STALE_S
         self.log_every_s = 5.0
-        self.max_vol_pct = 0.002
-        self.min_abs_z = 0.75
+        self.max_vol_pct = MAX_VOL_PCT
+        self.min_abs_z = MIN_ABS_Z
         self.require_agreement = True
         self.require_beat = False
-        self.max_reversal_slope = 0.0
+        self.max_reversal_slope = MAX_REVERSAL_SLOPE
         self.beat_max_lag_ms = 10_000
 
         # Outcome mapping (YES/NO for Up/Down)
