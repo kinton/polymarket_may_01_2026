@@ -35,7 +35,9 @@ class PositionManager:
         self.position_open = False
         self.trailing_stop_price: float | None = None
 
-    def open_position(self, entry_price: float, side: str, trailing_stop_price: float) -> None:
+    def open_position(
+        self, entry_price: float, side: str, trailing_stop_price: float
+    ) -> None:
         """
         Open a new position.
 
@@ -52,7 +54,7 @@ class PositionManager:
         if self.logger:
             self.logger.info(
                 f"Position opened: {side} @ ${entry_price:.4f} | "
-                f"Stop-loss: ${trailing_stop_price:.4f}"
+                + f"Stop-loss: ${trailing_stop_price:.4f}"
             )
 
     def close_position(self) -> None:

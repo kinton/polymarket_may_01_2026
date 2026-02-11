@@ -8,6 +8,8 @@ guard functions to block trades when oracle data is unreliable.
 import time
 from typing import Any
 
+import aiohttp
+
 from src.oracle_tracker import OracleSnapshot, OracleTracker
 from src.updown_prices import (
     EventPageClient,
@@ -223,7 +225,6 @@ class OracleGuardManager:
         # Check window timing
         now_ms = int(time.time() * 1000)
         start_ms = getattr(self.window, "start_ms", None)
-        end_ms = getattr(self.window, "end_ms", None) if self.window else None
 
         # Log warning if we missed the window start
         if start_ms and now_ms > start_ms:
@@ -231,7 +232,7 @@ class OracleGuardManager:
             if lag_ms > self.beat_max_lag_ms:
                 logger.warning(
                     f"⚠️  [{self.market_name}] Oracle start missed by {lag_ms / 1000:.1f}s "
-                    f"(max_lag={self.beat_max_lag_ms / 1000:.1f}s); price_to_beat will be unavailable"
+                    + f"(max_lag={self.beat_max_lag_ms / 1000:.1f}s); price_to_beat will be unavailable"
                 )
 
         # Try to fetch price-to-beat from event page if needed
@@ -241,112 +242,100 @@ class OracleGuardManager:
             and self.window is not None
             and self.window.start_iso_z is not None
             and self.tracker.price_to_beat is None
+            and slug is not None
         ):
             self.html_beat_attempted = True
             try:
-                import aiohttp
-
-                # Determine cadence from window duration
-                cadence = "fifteen"
-                if self.window.start_ms is not None and self.window.end_ms is not None:
-                    dur_ms = self.window.end_ms - self.window.start_ms
-                    if abs(dur_ms - 300_000) <= 15_000:
-                        cadence = "five"
-
                 async with aiohttp.ClientSession() as session:
-                    from src.updown_prices import EventPageClient
-
                     event_page = EventPageClient(session)
-                    open_price, _ = await event_page.fetch_past_results(
+                    open_price, _close_price = await event_page.fetch_past_results(
                         eslug=slug,
                         asset=self.market_name,
-                        cadence=cadence,
+                        cadence="fifteen",
                         start_time_iso_z=self.window.start_iso_z,
                     )
-                if open_price:
-                    self.tracker.price_to_beat = float(open_price)
-                    logger.info(
-                        f"[{self.market_name}] Fetched price_to_beat from event page: {open_price}"
-                    )
+                    if open_price:
+                        self.tracker.price_to_beat = float(open_price)
+                        logger.info(
+                            f"[{self.market_name}] Fetched price_to_beat from event page: {open_price}"
+                        )
             except Exception as e:
                 logger.warning(
                     f"[{self.market_name}] Failed to fetch price_to_beat from event page: {e}"
                 )
 
         # Determine YES/NO mapping for Up/Down outcomes
-        if slug and (self.up_side is None or self.down_side is None):
-            try:
-                from src.updown_prices import (
-                    parse_question_tokens,
-                    fetch_market_data,
-                )
-
-                data = await fetch_market_data(slug)
-                if data and data.question:
-                    yes_token, no_token = parse_question_tokens(
-                        data.question, data.description
-                    )
-                    if yes_token and no_token:
-                        # Up = YES, Down = NO (for "price will go UP" markets)
-                        # This may need adjustment based on actual market wording
-                        if "up" in (data.question or "").lower():
-                            self.up_side = "YES"
-                            self.down_side = "NO"
-                        else:
-                            self.up_side = "NO"
-                            self.down_side = "YES"
-
-                        if self.up_side and self.down_side:
-                            logger.info(
-                                f"✓ [{self.market_name}] Oracle outcome mapping: "
-                                f"Up→{self.up_side}, Down→{self.down_side}"
-                            )
-            except Exception as e:
-                logger.warning(
-                    f"[{self.market_name}] Failed to determine outcome mapping: {e}"
-                )
+        # NOTE: This functionality is not currently available in the refactored code
+        # The Gamma API doesn't provide token IDs directly
+        # This section is commented out pending future implementation
+        # if slug and (self.up_side is None or self.down_side is None):
+        #     try:
+        #         from src.updown_prices import GammaClient
+        #         async with aiohttp.ClientSession() as session:
+        #             gamma = GammaClient(session)
+        #             data = await gamma.fetch_market_by_slug(slug)
+        #             if data and data.question:
+        #                 # Token parsing would go here
+        #                 # yes_token, no_token = parse_question_tokens(...)
+        #                 if "up" in data.question.lower():
+        #                     self.up_side = "YES"
+        #                     self.down_side = "NO"
+        #                 else:
+        #                     self.up_side = "NO"
+        #                     self.down_side = "YES"
+        #                 if self.up_side and self.down_side:
+        #                     logger.info(
+        #                         f"✓ [{self.market_name}] Oracle outcome mapping: "
+        #                         + f"Up→{self.up_side}, Down→{self.down_side}"
+        #                     )
+        #     except Exception as e:
+        #         logger.warning(
+        #             f"[{self.market_name}] Failed to determine outcome mapping: {e}"
+        #         )
 
         logger.info(
             f"✓ [{self.market_name}] Oracle tracking enabled (RTDS Chainlink) symbol={self.symbol}"
         )
 
         # Start RTDS stream
-        topics = ["chainlink", self.symbol]
-        async with RtdsClient() as rtds:
-            async for price, timestamp_iso in rtds.stream_prices(
-                symbol=self.symbol,
-                topics=topics,
-                seconds=15.0,
-            ):
-                self.last_update_ts = time.time()
+        topics = ["crypto_prices_chainlink"]
+        rtds = RtdsClient()
+        async for tick in rtds.iter_prices(
+            symbol=self.symbol,
+            topics=set(topics),
+            seconds=15.0,
+        ):
+            self.last_update_ts = time.time()
 
-                # Update tracker with new price
+            # Update tracker with new price
+            if self.window is not None and self.window.start_ms is not None:
                 self.tracker.maybe_set_price_to_beat(
-                    window=self.window,
+                    ts_ms=tick.ts_ms,
+                    price=tick.price,
+                    start_ms=self.window.start_ms,
                     max_lag_ms=self.beat_max_lag_ms,
-                    price=price,
                 )
 
-                self.snapshot = self.tracker.update(price)
+            self.snapshot = self.tracker.update(ts_ms=tick.ts_ms, price=tick.price)
 
-                # Periodic logging
-                if (time.time() - self._last_log_ts) >= 1.0:
-                    snap = self.snapshot
-                    if snap and snap.price is not None:
-                        parts = [
-                            f"{self.symbol}={snap.price:,.2f}",
-                        ]
-                        if snap.price_to_beat is not None:
-                            parts.append(f"beat={snap.price_to_beat:,.2f}")
-                            if snap.delta is not None:
-                                delta_sign = "+" if snap.delta >= 0 else ""
-                                parts.append(f"delta={delta_sign}{snap.delta:,.2f}")
-                        if snap.vol_pct is not None:
-                            parts.append(f"vol={snap.vol_pct:.4f}%")
-                        if snap.zscore is not None:
-                            parts.append(f"z={snap.zscore:.2f}")
-                        logger.info(f"[{self.market_name}] ORACLE " + " | ".join(parts))
-                    self._last_log_ts = time.time()
+            # Periodic logging
+            if (time.time() - self._last_log_ts) >= 1.0:
+                snap = self.snapshot
+                if snap:
+                    parts = [
+                        f"{self.symbol}={snap.price:,.2f}",
+                    ]
+                    if snap.price_to_beat is not None:
+                        parts.append(f"beat={snap.price_to_beat:,.2f}")
+                    if snap.delta is not None:
+                        delta_sign = "+" if snap.delta >= 0 else ""
+                        parts.append(f"delta={delta_sign}{snap.delta:,.2f}")
+                    if snap.vol_pct is not None:
+                        parts.append(f"vol={snap.vol_pct:.4f}%")
+                    if snap.zscore is not None:
+                        parts.append(f"z={snap.zscore:.2f}")
+                    logger.info(f"[{self.market_name}] ORACLE " + " | ".join(parts))
+                self._last_log_ts = time.time()
 
     def log_block_summary(self, logger: Any) -> None:
         """Log oracle guard block summary."""
@@ -362,5 +351,5 @@ class OracleGuardManager:
             top_s = ", ".join(f"{k}={v}" for k, v in top_reasons)
             logger.info(
                 f"📊 [{self.market_name}] Oracle guard summary: "
-                f"blocked={self.block_count} (top: {top_s})"
+                + f"blocked={self.block_count} (top: {top_s})"
             )

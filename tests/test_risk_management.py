@@ -18,11 +18,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.clob_types import (
+    EXCHANGE_CONTRACT,
     MAX_CAPITAL_PCT_PER_TRADE,
     MAX_DAILY_LOSS_PCT,
     MAX_TOTAL_TRADES_PER_DAY,
 )
-from src.clob_types import EXCHANGE_CONTRACT
 from src.hft_trader import LastSecondTrader
 
 

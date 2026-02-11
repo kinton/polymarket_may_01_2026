@@ -46,7 +46,8 @@ class AlertDispatcher:
             amount: Trade amount in USDC
             pnl: Optional profit/loss percentage (for sells)
         """
-        if not self.is_enabled():
+        alert_manager = self.alert_manager
+        if alert_manager is None or not alert_manager.is_enabled():
             return
 
         trade_data = {
@@ -58,7 +59,7 @@ class AlertDispatcher:
         if pnl is not None:
             trade_data["pnl"] = pnl
 
-        await self.alert_manager.send_trade_alert(trade_data)
+        await alert_manager.send_trade_alert(trade_data)
 
     async def send_stop_loss_alert(
         self,
@@ -76,10 +77,11 @@ class AlertDispatcher:
             entry_price: Entry price (optional)
             exit_price: Exit price (optional)
         """
-        if not self.is_enabled():
+        alert_manager = self.alert_manager
+        if alert_manager is None or not alert_manager.is_enabled():
             return
 
-        await self.alert_manager.send_stop_loss_alert(market, pnl, entry_price, exit_price)
+        await alert_manager.send_stop_loss_alert(market, pnl, entry_price, exit_price)
 
     async def send_take_profit_alert(
         self,
@@ -97,10 +99,11 @@ class AlertDispatcher:
             entry_price: Entry price (optional)
             exit_price: Exit price (optional)
         """
-        if not self.is_enabled():
+        alert_manager = self.alert_manager
+        if alert_manager is None or not alert_manager.is_enabled():
             return
 
-        await self.alert_manager.send_take_profit_alert(market, pnl, entry_price, exit_price)
+        await alert_manager.send_take_profit_alert(market, pnl, entry_price, exit_price)
 
     async def send_oracle_guard_block(
         self,
@@ -116,10 +119,11 @@ class AlertDispatcher:
             reason: Reason for block
             detail: Additional detail (optional)
         """
-        if not self.is_enabled():
+        alert_manager = self.alert_manager
+        if alert_manager is None or not alert_manager.is_enabled():
             return
 
-        await self.alert_manager.send_oracle_guard_block(market, reason, detail)
+        await alert_manager.send_oracle_guard_block(market, reason, detail)
 
     async def send_daily_report_summary(self, report_summary: str) -> None:
         """
@@ -128,7 +132,8 @@ class AlertDispatcher:
         Args:
             report_summary: Summary text
         """
-        if not self.is_enabled():
+        alert_manager = self.alert_manager
+        if alert_manager is None or not alert_manager.is_enabled():
             return
 
-        await self.alert_manager.send_daily_report_summary(report_summary)
+        await alert_manager.send_daily_report_summary(report_summary)

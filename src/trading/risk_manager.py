@@ -11,8 +11,6 @@ from typing import Any
 
 import asyncio
 
-from py_clob_client.clob_types import AssetType
-
 from src.clob_types import (
     EXCHANGE_CONTRACT,
     MAX_CAPITAL_PCT_PER_TRADE,
@@ -71,6 +69,11 @@ class RiskManager:
         """Get the planned trade amount from balance check."""
         return self._planned_trade_amount
 
+    @planned_trade_amount.setter
+    def planned_trade_amount(self, value: float | None) -> None:
+        """Set the planned trade amount (for test overrides)."""
+        self._planned_trade_amount = value
+
     def _get_daily_limits_path(self) -> str:
         """Get the path to the daily limits JSON file."""
         return os.path.join(
@@ -81,6 +84,9 @@ class RiskManager:
         """Log message."""
         if self.logger:
             self.logger.info(message)
+        else:
+            # When logger is None (e.g., in tests), print to stdout
+            print(message)
 
     async def check_balance(self) -> bool:
         """
@@ -97,20 +103,33 @@ class RiskManager:
             # Get balance and allowance for USDC
             from py_clob_client.clob_types import BalanceAllowanceParams
 
-            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            self._log(
+                f"DEBUG: client type={type(self.client)}, has_method={hasattr(self.client, 'get_balance_allowance')}"
+            )
+            params = BalanceAllowanceParams(asset_type="COLLATERAL")  # type: ignore[arg-type]
             balance_data_raw = await asyncio.to_thread(
                 self.client.get_balance_allowance, params
             )
             balance_data: dict[str, Any] = balance_data_raw
 
+            self._log(f"DEBUG: balance_data_raw={balance_data_raw}")
+
             # Extract USDC balance (API returns in 6-decimal units, divide by 1e6 to get dollars)
             usdc_balance = float(balance_data.get("balance", 0)) / 1e6
+
+            self._log(
+                f"DEBUG: usdc_balance={usdc_balance:.2f}, required_amount_will_be_calculated_below"
+            )
 
             # API returns 'allowances' (dict of contract -> allowance), not 'allowance'
             allowances_dict = balance_data.get("allowances", {})
 
             # Allowance is also in 6-decimal units (micro-USDC), convert to dollars
             usdc_allowance = float(allowances_dict.get(EXCHANGE_CONTRACT, 0)) / 1e6
+
+            self._log(
+                f"DEBUG: usdc_allowance={usdc_allowance:.2f}, exchange_contract={EXCHANGE_CONTRACT}"
+            )
 
             # Dynamic sizing:
             # - if balance < $30: use min_trade_usdc (default $1.50)
@@ -125,25 +144,29 @@ class RiskManager:
             required_amount = max(round(required_amount, 2), 1.00)
             self._planned_trade_amount = required_amount
 
+            self._log(
+                f"DEBUG: required_amount={required_amount:.2f}, usdc_balance={usdc_balance:.2f}, usdc_allowance={usdc_allowance:.2f}"
+            )
+
             # Check both balance and allowance
             if usdc_balance < required_amount:
                 self._log(
                     f"❌ [{self.market_name}] Insufficient balance: "
-                    f"${usdc_balance:.2f} < ${required_amount:.2f}"
+                    + f"${usdc_balance:.2f} < ${required_amount:.2f}"
                 )
                 return False
 
             if usdc_allowance < required_amount:
                 self._log(
                     f"❌ [{self.market_name}] Insufficient allowance: "
-                    f"${usdc_allowance:.2f} < ${required_amount:.2f}"
+                    + f"${usdc_allowance:.2f} < ${required_amount:.2f}"
                 )
                 self._log("   → Run: uv run python approve.py to approve USDC spending")
                 return False
 
             self._log(
                 f"✓ [{self.market_name}] Balance check passed: "
-                f"${usdc_balance:.2f} available (need ${required_amount:.2f})"
+                + f"${usdc_balance:.2f} available (need ${required_amount:.2f})"
             )
             return True
 
@@ -159,7 +182,9 @@ class RiskManager:
             True if trade size is within limits, False otherwise
         """
         if not self.client:
-            self._log(f"❌ [{self.market_name}] CLOB client not initialized for risk check")
+            self._log(
+                f"❌ [{self.market_name}] CLOB client not initialized for risk check"
+            )
             return False
 
         try:
@@ -168,7 +193,7 @@ class RiskManager:
 
             balance_data_raw = await asyncio.to_thread(
                 self.client.get_balance_allowance,
-                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL),
+                BalanceAllowanceParams(asset_type="COLLATERAL"),  # type: ignore[arg-type]
             )
             balance_data: dict[str, Any] = balance_data_raw
             usdc_balance = float(balance_data.get("balance", 0)) / 1e6
@@ -186,15 +211,15 @@ class RiskManager:
             if trade_amount > max_trade_size:
                 self._log(
                     f"🛑 [{self.market_name}] RISK LIMIT EXCEEDED: "
-                    f"Trade ${trade_amount:.2f} > Max ${max_trade_size:.2f} "
-                    f"({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of ${usdc_balance:.2f})",
+                    + f"Trade ${trade_amount:.2f} > Max ${max_trade_size:.2f} "
+                    + f"({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of ${usdc_balance:.2f})",
                 )
                 return False
 
             self._log(
                 f"✓ [{self.market_name}] Risk check passed: "
-                f"Trade ${trade_amount:.2f} ≤ Max ${max_trade_size:.2f} "
-                f"({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of capital)",
+                + f"Trade ${trade_amount:.2f} ≤ Max ${max_trade_size:.2f} "
+                + f"({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of capital)",
             )
             return True
 
@@ -233,8 +258,8 @@ class RiskManager:
                 if current_pnl < max_daily_loss:
                     self._log(
                         f"🛑 FATAL [{self.market_name}] DAILY LOSS LIMIT EXCEEDED: "
-                        f"PnL=${current_pnl:+.2f} < Max Loss=${max_daily_loss:+.2f} "
-                        f"({MAX_DAILY_LOSS_PCT * 100:.0f}% of ${initial_balance:.2f})",
+                        + f"PnL=${current_pnl:+.2f} < Max Loss=${max_daily_loss:+.2f} "
+                        + f"({MAX_DAILY_LOSS_PCT * 100:.0f}% of ${initial_balance:.2f})",
                     )
                     return False
 
@@ -243,7 +268,7 @@ class RiskManager:
             if total_trades >= MAX_TOTAL_TRADES_PER_DAY:
                 self._log(
                     f"🛑 [{self.market_name}] DAILY TRADE LIMIT EXCEEDED: "
-                    f"{total_trades} trades >= {MAX_TOTAL_TRADES_PER_DAY} max",
+                    + f"{total_trades} trades >= {MAX_TOTAL_TRADES_PER_DAY} max",
                 )
                 return False
 
@@ -297,10 +322,12 @@ class RiskManager:
                         from py_clob_client.clob_types import BalanceAllowanceParams
 
                         balance_data_raw = self.client.get_balance_allowance(
-                            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                            BalanceAllowanceParams(asset_type="COLLATERAL")  # type: ignore[arg-type]
                         )
                         balance_data: dict[str, Any] = balance_data_raw
-                        data["initial_balance"] = float(balance_data.get("balance", 0)) / 1e6
+                        data["initial_balance"] = (
+                            float(balance_data.get("balance", 0)) / 1e6
+                        )
                     except Exception:
                         data["initial_balance"] = trade_amount
 
@@ -310,7 +337,7 @@ class RiskManager:
 
             self._log(
                 f"📊 [{self.market_name}] Daily stats updated: "
-                f"PnL=${data['current_pnl']:+.2f}, Trades={data['total_trades']}",
+                + f"PnL=${data['current_pnl']:+.2f}, Trades={data['total_trades']}",
             )
 
         except Exception as e:
