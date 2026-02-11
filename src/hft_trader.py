@@ -33,7 +33,6 @@ Requirements:
 import asyncio
 import json
 import os
-import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -48,15 +47,12 @@ from src.alerts import (
     TelegramAlertSender,
 )
 from src.clob_types import (
-    BUY_PRICE,
+    MAX_BUY_PRICE,
     CLOB_WS_URL,
-    EXCHANGE_CONTRACT,
+    MIN_BUY_PRICE,
     MIN_CONFIDENCE,
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
-    STOP_LOSS_ABSOLUTE,
-    STOP_LOSS_PCT,
-    TAKE_PROFIT_PCT,
     TRIGGER_THRESHOLD,
     OrderBook,
 )
@@ -66,6 +62,7 @@ from src.market_parser import (
     extract_best_bid_with_size_from_book,
     get_winning_token_id,
 )
+from src.updown_prices import EventPageClient, RtdsClient
 from src.trading.alert_dispatcher import AlertDispatcher
 from src.trading.oracle_guard_manager import OracleGuardManager
 from src.trading.order_execution_manager import OrderExecutionManager
@@ -75,11 +72,6 @@ from src.trading.stop_loss_manager import StopLossManager
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import (
-        CreateOrderOptions,
-        MarketOrderArgs,
-        OrderType,
-    )
 except ImportError:
     print("Error: py-clob-client not installed. Run: uv pip install py-clob-client")
     exit(1)
@@ -96,7 +88,8 @@ class LastSecondTrader:
     TRADE_SIZE = 1  # Default trade size in dollars
     TRIGGER_THRESHOLD = TRIGGER_THRESHOLD
     PRICE_THRESHOLD = 0.50  # Winning side threshold
-    BUY_PRICE = BUY_PRICE
+    MAX_BUY_PRICE = MAX_BUY_PRICE
+    MIN_BUY_PRICE = MIN_BUY_PRICE
     PRICE_TIE_EPS = PRICE_TIE_EPS
     MIN_CONFIDENCE = MIN_CONFIDENCE  # Minimum confidence to buy (e.g. 0.75 = 75%)
 
@@ -171,7 +164,7 @@ class LastSecondTrader:
         # Oracle guard manager
         end_iso = self.end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         self.oracle_guard = OracleGuardManager(
-            title=title,
+            title=title or "Unknown",
             market_name=self.market_name,
             end_time=end_iso,
             enabled=oracle_enabled,
@@ -218,8 +211,8 @@ class LastSecondTrader:
         # Log init
         mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
         self._log(
-            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.BUY_PRICE} | "
-            f"Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
+            f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.MAX_BUY_PRICE} | "
+            + f"Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
         )
         if self.oracle_guard.enabled:
             sym = self.oracle_guard.symbol or "unknown"
@@ -227,9 +220,9 @@ class LastSecondTrader:
             if self.oracle_guard.guard_enabled:
                 parts.append(
                     f"guard=on (stale<={self.oracle_guard.max_stale_s}s, "
-                    f"min_pts>={self.oracle_guard.min_points}, "
-                    f"max_vol<={self.oracle_guard.max_vol_pct}, "
-                    f"|z|>={self.oracle_guard.min_abs_z})"
+                    + f"min_pts>={self.oracle_guard.min_points}, "
+                    + f"max_vol<={self.oracle_guard.max_vol_pct}, "
+                    + f"|z|>={self.oracle_guard.min_abs_z})"
                 )
             else:
                 parts.append("guard=off")
@@ -269,6 +262,47 @@ class LastSecondTrader:
             self.logger.info(message)
             return
         print(message)
+
+    # Backward compatibility properties for tests
+    @property
+    def entry_price(self) -> float | None:
+        """Get entry price from position manager."""
+        return self.position_manager.entry_price
+
+    @entry_price.setter
+    def entry_price(self, value: float | None) -> None:
+        """Set entry price in position manager."""
+        self.position_manager.entry_price = value
+
+    @property
+    def position_side(self) -> str | None:
+        """Get position side from position manager."""
+        return self.position_manager.position_side
+
+    @position_side.setter
+    def position_side(self, value: str | None) -> None:
+        """Set position side in position manager."""
+        self.position_manager.position_side = value
+
+    @property
+    def position_open(self) -> bool:
+        """Get position open status from position manager."""
+        return self.position_manager.is_open
+
+    @position_open.setter
+    def position_open(self, value: bool) -> None:
+        """Set position open status in position manager."""
+        self.position_manager.position_open = value
+
+    @property
+    def trailing_stop_price(self) -> float | None:
+        """Get trailing stop price from position manager."""
+        return self.position_manager.trailing_stop_price
+
+    @trailing_stop_price.setter
+    def trailing_stop_price(self, value: float | None) -> None:
+        """Set trailing stop price in position manager."""
+        self.position_manager.trailing_stop_price = value
 
     def _init_clob_client(self) -> ClobClient | None:
         """Initialize the CLOB client for order execution."""
@@ -379,10 +413,9 @@ class LastSecondTrader:
             if not data:
                 return
 
-            if isinstance(data, list):
-                if len(data) == 0:
-                    return
-                data = data[0]
+            if isinstance(data, list) and len(data) > 0:
+                data = data[0]  # type: ignore[arg-type]
+
             if not isinstance(data, dict):
                 return
 
@@ -609,24 +642,31 @@ class LastSecondTrader:
         async with self._trigger_lock:
             trigger_start_mono = time.monotonic()
 
-            if self.order_executed or self.order_in_progress or time_remaining <= 0:
+            if (
+                self.order_execution.is_executed()
+                or self.order_execution.is_in_progress()
+                or time_remaining <= 0
+            ):
                 return
 
             if not self.risk_manager.check_daily_limits():
                 return
 
-            if self.order_attempts >= self.max_order_attempts:
+            if (
+                self.order_execution.get_attempts()
+                >= self.order_execution.get_max_attempts()
+            ):
                 if "max_attempts" not in self._logged_warnings:
                     self._log(
-                        f"⚠️  [{self.market_name}] Max order attempts ({self.max_order_attempts}) reached"
+                        f"⚠️  [{self.market_name}] Max order attempts ({self.order_execution.get_max_attempts()}) reached"
                     )
                     self._logged_warnings.add("max_attempts")
                 return
 
             current_time = time.time()
             if (
-                self.order_attempts > 0
-                and (current_time - self.last_order_attempt_time) < 2.0
+                self.order_execution.get_attempts() > 0
+                and (current_time - self.order_execution.get_last_attempt_time()) < 2.0
             ):
                 return
 
@@ -671,10 +711,10 @@ class LastSecondTrader:
                     self._logged_warnings.add("low_confidence")
                 return
 
-            if winning_ask > self.BUY_PRICE + self.PRICE_TIE_EPS:
+            if winning_ask > self.MAX_BUY_PRICE + self.PRICE_TIE_EPS:
                 if "price_high" not in self._logged_warnings:
                     self._log(
-                        f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.BUY_PRICE}"
+                        f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.MAX_BUY_PRICE}"
                     )
                     self._logged_warnings.add("price_high")
                 return
@@ -700,26 +740,32 @@ class LastSecondTrader:
                     def _fmt_money(v: float | None) -> str:
                         return f"{v:,.2f}" if v is not None else "-"
 
-                    z = f"{snap.zscore:.2f}" if snap.zscore is not None else "-"
-                    vol = (
-                        f"{snap.vol_pct * 100:.4f}%"
-                        if snap.vol_pct is not None
-                        else "-"
-                    )
-                    slope = (
-                        f"{snap.slope_usd_per_s:.2f}"
-                        if snap.slope_usd_per_s is not None
-                        else "-"
-                    )
-                    extra = (
-                        f" | oracle={_fmt_money(snap.price)}"
-                        f" beat={_fmt_money(snap.price_to_beat)}"
-                        f" Δ={_fmt_money(snap.delta)}"
-                        f" vol={vol}"
-                        f" slope={slope}$/s"
-                        f" z={z}"
-                        f" n={snap.n_points}"
-                    )
+                    if snap is not None:
+                        z = f"{snap.zscore:.2f}" if snap.zscore is not None else "-"
+                        vol = (
+                            f"{snap.vol_pct * 100:.4f}%"
+                            if snap.vol_pct is not None
+                            else "-"
+                        )
+                        slope = (
+                            f"{snap.slope_usd_per_s:.2f}"
+                            if snap.slope_usd_per_s is not None
+                            else "-"
+                        )
+                        extra = (
+                            f" | oracle={_fmt_money(snap.price)}"
+                            + f" beat={_fmt_money(snap.price_to_beat)}"
+                            + f" Δ={_fmt_money(snap.delta)}"
+                            + f" vol={vol}"
+                            + f" slope={slope}$/s"
+                            + f" z={z}"
+                            + f" n={snap.n_points}"
+                        )
+                    else:
+                        z = "-"
+                        vol = "-"
+                        slope = "-"
+                        extra = ""
 
                     detail = f" ({oracle_detail})" if oracle_detail else ""
                     self._log(
@@ -742,11 +788,15 @@ class LastSecondTrader:
                     self._log(
                         f"❌ [{self.market_name}] FATAL: Insufficient funds. Stopping trader."
                     )
-                    self.order_executed = True
+                    self.order_execution.mark_executed()
                     return
 
             oracle_note = ""
-            if self.oracle_guard.enabled and self.oracle_guard.decide_side and oracle_side:
+            if (
+                self.oracle_guard.enabled
+                and self.oracle_guard.decide_side
+                and oracle_side
+            ):
                 snap = self.oracle_guard.snapshot
                 if snap is not None and snap.price_to_beat is not None:
                     oracle_note = (
@@ -767,22 +817,27 @@ class LastSecondTrader:
                 self._log(
                     f"⏰ [{self.market_name}] Market closed before order submission. Skipping."
                 )
-                self.order_executed = True
+                self.order_execution.mark_executed()
                 return
 
             self._planned_trade_side = trade_side
             await self.execute_order()
 
-    async def verify_order(self, order_id: str) -> None:
+    async def verify_order(self, order_id: str) -> bool:
         """Verify order status after submission by querying the API."""
         if not self.client:
-            return
+            return False
 
         self._log(f"🔎 [{self.market_name}] Verifying order {order_id}...")
         try:
             await asyncio.sleep(0.5)
 
             order_data_raw = await asyncio.to_thread(self.client.get_order, order_id)
+            if not isinstance(order_data_raw, dict):
+                self._log(
+                    f"⚠️  [{self.market_name}] Unexpected order data type: {type(order_data_raw)}"
+                )
+                return False
             order_data: dict[str, Any] = order_data_raw
 
             status = order_data.get("status", "unknown").lower()
@@ -801,6 +856,8 @@ class LastSecondTrader:
         except Exception as e:
             self._log(f"⚠️  [{self.market_name}] Verification failed: {e}")
 
+        return True
+
     async def execute_order(self) -> None:
         side = self._planned_trade_side or self.winning_side or "YES"
         self._planned_trade_side = None
@@ -813,9 +870,10 @@ class LastSecondTrader:
 
     async def execute_sell(self, reason: str) -> None:
         """Execute sell order using order execution manager."""
-        current_price = self._get_ask_for_side(
+        position_side = (
             self.position_manager.position_side if self.position_manager else ""
         )
+        current_price = self._get_ask_for_side(position_side or "")
         await self.order_execution.execute_sell(reason, current_price)
 
     async def listen_to_market(self):
@@ -879,21 +937,23 @@ class LastSecondTrader:
         hit polymarket.com except a best-effort single HTML fetch for price_to_beat
         when the trader starts late (Cloudflare risk).
         """
-        if self.oracle_symbol is None:
+        if self.oracle_guard.symbol is None:
             self._log(
                 f"⚠️  [{self.market_name}] Oracle tracking enabled but symbol is unknown"
             )
             return
-        if self.oracle_tracker is None:
+        if self.oracle_guard.tracker is None:
             return
 
         start_ms = (
-            getattr(self.oracle_window, "start_ms", None)
-            if self.oracle_window
+            getattr(self.oracle_guard.window, "start_ms", None)
+            if self.oracle_guard.window
             else None
         )
         end_ms = (
-            getattr(self.oracle_window, "end_ms", None) if self.oracle_window else None
+            getattr(self.oracle_guard.window, "end_ms", None)
+            if self.oracle_guard.window
+            else None
         )
         now_ms = int(time.time() * 1000)
         missed_start = False
@@ -904,21 +964,21 @@ class LastSecondTrader:
             missed_start = True
         else:
             lag_ms = now_ms - start_ms
-            if lag_ms > self.oracle_beat_max_lag_ms:
+            if lag_ms > self.oracle_guard.beat_max_lag_ms:
                 self._log(
-                    f"⚠️  [{self.market_name}] Oracle start missed by {lag_ms / 1000:.1f}s (max_lag={self.oracle_beat_max_lag_ms / 1000:.1f}s); price_to_beat will be unavailable"
+                    f"⚠️  [{self.market_name}] Oracle start missed by {lag_ms / 1000:.1f}s (max_lag={self.oracle_guard.beat_max_lag_ms / 1000:.1f}s); price_to_beat will be unavailable"
                 )
                 missed_start = True
 
         if (
             missed_start
-            and not self._oracle_html_beat_attempted
+            and not self.oracle_guard.html_beat_attempted
             and self.slug
-            and self.oracle_window is not None
-            and self.oracle_window.start_iso_z is not None
-            and self.oracle_tracker.price_to_beat is None
+            and self.oracle_guard.window is not None
+            and self.oracle_guard.window.start_iso_z is not None
+            and self.oracle_guard.tracker.price_to_beat is None
         ):
-            self._oracle_html_beat_attempted = True
+            self.oracle_guard.html_beat_attempted = True
             try:
                 asset = self.market_name
                 cadence = "fifteen"
@@ -935,11 +995,11 @@ class LastSecondTrader:
                         eslug=self.slug,
                         asset=asset,
                         cadence=cadence,
-                        start_time_iso_z=self.oracle_window.start_iso_z,
+                        start_time_iso_z=self.oracle_guard.window.start_iso_z,
                     )
 
                 if open_price is not None:
-                    self.oracle_tracker.price_to_beat = float(open_price)
+                    self.oracle_guard.tracker.price_to_beat = float(open_price)
                     self._log(
                         f"✓ [{self.market_name}] price_to_beat from event HTML: {open_price:,.2f}"
                     )
@@ -952,7 +1012,9 @@ class LastSecondTrader:
                     f"⚠️  [{self.market_name}] Event HTML price_to_beat fetch failed: {e}"
                 )
 
-        if self.slug and (self.oracle_up_side is None or self.oracle_down_side is None):
+        if self.slug and (
+            self.oracle_guard.up_side is None or self.oracle_guard.down_side is None
+        ):
             try:
                 url = f"https://gamma-api.polymarket.com/markets/slug/{self.slug}"
                 async with aiohttp.ClientSession() as session:
@@ -1005,18 +1067,21 @@ class LastSecondTrader:
                             down_token = str(token_ids[down_idx])
 
                             if up_token == self.token_id_yes:
-                                self.oracle_up_side = "YES"
+                                self.oracle_guard.up_side = "YES"
                             elif up_token == self.token_id_no:
-                                self.oracle_up_side = "NO"
+                                self.oracle_guard.up_side = "NO"
 
                             if down_token == self.token_id_yes:
-                                self.oracle_down_side = "YES"
+                                self.oracle_guard.down_side = "YES"
                             elif down_token == self.token_id_no:
-                                self.oracle_down_side = "NO"
+                                self.oracle_guard.down_side = "NO"
 
-                            if self.oracle_up_side and self.oracle_down_side:
+                            if (
+                                self.oracle_guard.up_side
+                                and self.oracle_guard.down_side
+                            ):
                                 self._log(
-                                    f"✓ [{self.market_name}] Oracle outcome mapping: Up→{self.oracle_up_side}, Down→{self.oracle_down_side}"
+                                    f"✓ [{self.market_name}] Oracle outcome mapping: Up→{self.oracle_guard.up_side}, Down→{self.oracle_guard.down_side}"
                                 )
                             else:
                                 self._log(
@@ -1026,7 +1091,7 @@ class LastSecondTrader:
                 self._log(f"⚠️  [{self.market_name}] Oracle mapping fetch failed: {e}")
 
         self._log(
-            f"✓ [{self.market_name}] Oracle tracking enabled (RTDS Chainlink) symbol={self.oracle_symbol}"
+            f"✓ [{self.market_name}] Oracle tracking enabled (RTDS Chainlink) symbol={self.oracle_guard.symbol}"
         )
 
         rtds = RtdsClient()
@@ -1035,24 +1100,24 @@ class LastSecondTrader:
         while self.get_time_remaining() > 0:
             try:
                 async for tick in rtds.iter_prices(
-                    symbol=self.oracle_symbol, topics=topics, seconds=15.0
+                    symbol=self.oracle_guard.symbol, topics=topics, seconds=15.0
                 ):
-                    self.last_oracle_update_ts = time.time()
+                    self.oracle_guard.last_update_ts = time.time()
 
                     if start_ms is not None:
-                        self.oracle_tracker.maybe_set_price_to_beat(
+                        self.oracle_guard.tracker.maybe_set_price_to_beat(
                             ts_ms=tick.ts_ms,
                             price=tick.price,
                             start_ms=start_ms,
-                            max_lag_ms=self.oracle_beat_max_lag_ms,
+                            max_lag_ms=self.oracle_guard.beat_max_lag_ms,
                         )
-                    self.oracle_snapshot = self.oracle_tracker.update(
+                    self.oracle_guard.snapshot = self.oracle_guard.tracker.update(
                         ts_ms=tick.ts_ms, price=tick.price
                     )
 
                     now_ts = time.time()
-                    if (now_ts - self._last_oracle_log_ts) >= 1.0:
-                        snap = self.oracle_snapshot
+                    if (now_ts - self.oracle_guard._last_log_ts) >= 1.0:
+                        snap = self.oracle_guard.snapshot
                         beat = (
                             f"{snap.price_to_beat:,.2f}"
                             if snap.price_to_beat is not None
@@ -1066,11 +1131,11 @@ class LastSecondTrader:
                         )
                         z = f"{snap.zscore:.2f}" if snap.zscore is not None else "-"
                         msg = (
-                            f"[{self.market_name}] ORACLE {self.oracle_symbol}={snap.price:,.2f} | "
+                            f"[{self.market_name}] ORACLE {self.oracle_guard.symbol}={snap.price:,.2f} | "
                             f"beat={beat} | Δ={delta} | Δ%={delta_pct} | z={z}"
                         )
                         self._log(msg)
-                        self._last_oracle_log_ts = now_ts
+                        self.oracle_guard._last_log_ts = now_ts
 
                     if end_ms is not None and tick.ts_ms >= end_ms:
                         return
@@ -1109,26 +1174,50 @@ class LastSecondTrader:
 
             await asyncio.sleep(1.0)
 
-    # Keep for backward compatibility with tests
-    def _check_stop_loss_take_profit(self) -> None:
-        """Deprecated: Use stop_loss_manager.check_and_execute() instead."""
-        # This method is kept for backward compatibility with existing tests
-        # but delegates to the new manager
-        pass
+    # Backward-compatibility properties for order execution state
+    @property
+    def order_executed(self) -> bool:
+        """Get order executed status from order execution manager."""
+        return self.order_execution.is_executed()
+
+    # Backward-compatibility alias to allow tests to override planned trade amount
+    @property
+    def _planned_trade_amount(self) -> float | None:
+        """Backward-compatibility alias to risk_manager's planned trade amount used by tests."""
+        return self.risk_manager.planned_trade_amount if self.risk_manager else None
+
+    @_planned_trade_amount.setter
+    def _planned_trade_amount(self, value: float | None) -> None:
+        self.risk_manager.planned_trade_amount = value
+
+    # Backward-compatibility property for client (needed for tests that mock the client)
+    @property
+    def client(self) -> Any | None:
+        """Get/set the CLOB client, updating managers when set."""
+        return self._client
+
+    @client.setter
+    def client(self, value: Any | None) -> None:
+        self._client = value
+        # Update all managers that depend on the client
+        if hasattr(self, "order_execution") and self.order_execution:
+            self.order_execution.client = value
+        if hasattr(self, "risk_manager") and self.risk_manager:
+            self.risk_manager.client = value
 
     # Keep for backward compatibility with tests
-    def _check_balance(self) -> bool:
+    async def _check_balance(self) -> bool:
         """Deprecated: Use risk_manager.check_balance() instead."""
         # This method is kept for backward compatibility with existing tests
         # but delegates to the new manager
-        return self.risk_manager.check_balance()
+        return await self.risk_manager.check_balance()
 
     # Keep for backward compatibility with tests
-    def _check_risk_limits(self) -> bool:
+    async def _check_risk_limits(self) -> bool:
         """Deprecated: Use risk_manager.check_risk_limits() instead."""
         # This method is kept for backward compatibility with existing tests
         # but delegates to the new manager
-        return self.risk_manager.check_risk_limits()
+        return await self.risk_manager.check_risk_limits()
 
     # Keep for backward compatibility with tests
     def _track_daily_pnl(self, trade_amount: float, pnl: float = 0.0) -> None:
@@ -1150,3 +1239,37 @@ class LastSecondTrader:
         # This method is kept for backward compatibility with existing tests
         # but delegates to the new manager
         return self.risk_manager._get_daily_limits_path()
+
+    # Keep for backward compatibility with tests
+    async def _check_stop_loss_take_profit(self) -> bool:
+        """Deprecated: Use stop_loss_manager.check_and_execute() instead."""
+        # This method is kept for backward compatibility with existing tests
+        # but delegates to the new manager
+        if not self.position_manager.is_open:
+            return False
+        current_price = self._get_ask_for_side(
+            self.position_manager.position_side or ""
+        )
+        if current_price is None:
+            return False
+
+        # Check both stop-loss and take-profit independently
+        # Get current stop-loss and take-profit prices from manager
+        stop_loss_price = self.stop_loss_manager.get_stop_loss_price()
+        take_profit_price = self.stop_loss_manager.get_take_profit_price()
+
+        # Check conditions
+        stop_loss_triggered = (
+            stop_loss_price is not None and current_price < stop_loss_price
+        )
+        take_profit_triggered = (
+            take_profit_price is not None and current_price > take_profit_price
+        )
+
+        if stop_loss_triggered or take_profit_triggered:
+            # Determine which condition triggered
+            reason = "STOP-LOSS" if stop_loss_triggered else "TAKE-PROFIT"
+            await self.execute_sell(reason)
+            return True
+
+        return False
