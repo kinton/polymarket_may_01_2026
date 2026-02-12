@@ -51,6 +51,9 @@ MIN_TRADE_USDC = 1.00  # Hard minimum trade size in USDC
 MAX_TRADE_USDC = 10.00  # Hard maximum trade size in USDC
 MAX_CAPITAL_PCT_PER_TRADE = 0.25  # Maximum 25% of capital per trade (increased from 5% for small balances)
 
+# Liquidity filtering constants
+MIN_ORDERBOOK_SIZE_USD = 100.0  # Minimum total orderbook liquidity (bids+asks) in USDC
+
 # Stop-loss constants (CRITICAL!)
 STOP_LOSS_PCT = 0.30  # Exit if price drops 30% from entry
 STOP_LOSS_ABSOLUTE = 0.95  # Exit if price drops below this absolute value

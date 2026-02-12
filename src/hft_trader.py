@@ -52,6 +52,7 @@ from src.clob_types import (
     MIN_BUY_PRICE,
     CLOB_WS_URL,
     MIN_CONFIDENCE,
+    MIN_ORDERBOOK_SIZE_USD,
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
     TRIGGER_THRESHOLD,
@@ -365,6 +366,38 @@ class LastSecondTrader:
         if side == "NO":
             return self.orderbook.best_ask_no
         return None
+
+    def check_orderbook_liquidity(self) -> bool:
+        """
+        Check if orderbook has sufficient liquidity.
+
+        Returns True if total liquidity (bids + asks on both sides) >= MIN_ORDERBOOK_SIZE_USD.
+        Returns True (allows trading) if orderbook is completely empty (no liquidity data available yet).
+        """
+        total_size = 0.0
+        has_data = False
+
+        # Add YES liquidity
+        if self.orderbook.best_bid_yes_size is not None:
+            total_size += self.orderbook.best_bid_yes_size
+            has_data = True
+        if self.orderbook.best_ask_yes_size is not None:
+            total_size += self.orderbook.best_ask_yes_size
+            has_data = True
+
+        # Add NO liquidity
+        if self.orderbook.best_bid_no_size is not None:
+            total_size += self.orderbook.best_bid_no_size
+            has_data = True
+        if self.orderbook.best_ask_no_size is not None:
+            total_size += self.orderbook.best_ask_no_size
+            has_data = True
+
+        # If no liquidity data available, allow trade (data may arrive later)
+        if not has_data:
+            return True
+
+        return total_size >= MIN_ORDERBOOK_SIZE_USD
 
     def _log(self, message: str) -> None:
         """Log message to both console and file logger."""
@@ -828,6 +861,27 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.MAX_BUY_PRICE}"
                     )
                     self._logged_warnings.add("price_high")
+                return
+
+            # Check orderbook liquidity
+            liquidity_ok = self.check_orderbook_liquidity()
+            if not liquidity_ok:
+                if "low_liquidity" not in self._logged_warnings:
+                    # Calculate total liquidity for logging
+                    total_size = 0.0
+                    if self.orderbook.best_bid_yes_size is not None:
+                        total_size += self.orderbook.best_bid_yes_size
+                    if self.orderbook.best_ask_yes_size is not None:
+                        total_size += self.orderbook.best_ask_yes_size
+                    if self.orderbook.best_bid_no_size is not None:
+                        total_size += self.orderbook.best_bid_no_size
+                    if self.orderbook.best_ask_no_size is not None:
+                        total_size += self.orderbook.best_ask_no_size
+
+                    self._log(
+                        f"⚠️  [{self.market_name}] Low liquidity: ${total_size:.2f} < ${MIN_ORDERBOOK_SIZE_USD:.2f} (need ≥${MIN_ORDERBOOK_SIZE_USD:.0f})"
+                    )
+                    self._logged_warnings.add("low_liquidity")
                 return
 
             oracle_ok, oracle_reason, oracle_detail = self.oracle_guard.quality_ok(
