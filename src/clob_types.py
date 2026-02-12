@@ -66,7 +66,7 @@ TAKE_PROFIT_CHECK_INTERVAL_S = 1.0  # Check take-profit every 1 second
 
 # Risk management limits (CRITICAL!)
 MAX_DAILY_LOSS_PCT = 0.10  # Stop if lost 10% in a day
-MAX_TOTAL_TRADES_PER_DAY = 20  # Limit total trades per day
+MAX_TOTAL_TRADES_PER_DAY = 100  # Limit total trades per day (increased from 20 to 100 per Konstantin request)
 
 # API constants
 GAMMA_API_URL = "https://gamma-api.polymarket.com/public-search"

@@ -204,7 +204,7 @@ def test_check_daily_limits_trade_count_exceeded(mock_trader, cleanup_daily_limi
                 "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "initial_balance": 100.0,
                 "current_pnl": 5.0,
-                "total_trades": 25,  # Exceeds MAX_TOTAL_TRADES_PER_DAY
+                "total_trades": 101,  # Exceeds MAX_TOTAL_TRADES_PER_DAY (limit is 100)
             },
             f,
         )
@@ -403,4 +403,4 @@ def test_max_daily_loss_pct():
 
 def test_max_total_trades_per_day():
     """Test MAX_TOTAL_TRADES_PER_DAY constant."""
-    assert MAX_TOTAL_TRADES_PER_DAY == 20
+    assert MAX_TOTAL_TRADES_PER_DAY == 100  # Increased from 20 to 100
