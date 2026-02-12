@@ -44,16 +44,12 @@ MIN_BUY_PRICE = 0.85  # Minimum price to buy (lower threshold)
 TRIGGER_THRESHOLD = 30.0  # Start attempting trades when ≤ s remain (was 60s)
 PRICE_THRESHOLD = 0.85  # Legacy name, use MIN_BUY_PRICE
 PRICE_TIE_EPS = 1e-6
-MIN_CONFIDENCE = 0.85  # Only buy if winning side has ≥85% confidence (bid/ask ≥ 0.85)
-# Changed from 0.75 to 0.50 (2026-02-12) because:
-# 1. Check now uses bid instead of ask (fixes spread issue)
-# 2. Typical winner bids are 0.50-0.60 (not 0.75+)
-# 3. This allows more trades while maintaining profitability
+MIN_CONFIDENCE = 0.85  # Only buy if winning side has ≥85% confidence (ask ≥ 0.85)
 
 # Trade sizing constants (dynamic sizing: min of hard constants vs 25% of balance)
 MIN_TRADE_USDC = 1.00  # Hard minimum trade size in USDC
 MAX_TRADE_USDC = 10.00  # Hard maximum trade size in USDC
-MAX_CAPITAL_PCT_PER_TRADE = 0.25  # Maximum 25% of capital per trade (increased from 5% for small balances)
+MAX_CAPITAL_PCT_PER_TRADE = 0.05  # Maximum 5% of capital per trade
 
 # Liquidity filtering constants
 MIN_ORDERBOOK_SIZE_USD = 100.0  # Minimum total orderbook liquidity (bids+asks) in USDC
