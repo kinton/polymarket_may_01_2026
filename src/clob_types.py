@@ -47,7 +47,7 @@ PRICE_TIE_EPS = 1e-6
 MIN_CONFIDENCE = 0.85  # Only buy if winning side has ≥85% confidence (ask ≥ 0.85)
 
 # Trade sizing constants (dynamic sizing: min of hard constants vs 25% of balance)
-MIN_TRADE_USDC = 1.00  # Hard minimum trade size in USDC
+MIN_TRADE_USDC = 1.00  # Hard minimum trade size in USDC (Polymarket minimum)
 MAX_TRADE_USDC = 10.00  # Hard maximum trade size in USDC
 MAX_CAPITAL_PCT_PER_TRADE = 0.05  # Maximum 5% of capital per trade
 

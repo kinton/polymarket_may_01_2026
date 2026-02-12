@@ -54,12 +54,16 @@ def mock_trader():
 
 @pytest.fixture
 def cleanup_daily_limits(mock_trader):
-    """Ensure daily_limits.json is cleaned up after each test."""
+    """Ensure daily_limits.json is cleaned up before and after each test."""
     path = mock_trader._get_daily_limits_path()
+
+    # Clean up before test
+    if os.path.exists(path):
+        os.remove(path)
 
     yield  # Run the test
 
-    # Clean up
+    # Clean up after test
     if os.path.exists(path):
         os.remove(path)
 
@@ -389,7 +393,7 @@ async def test_check_trigger_proceeds_when_limits_ok(mock_trader, cleanup_daily_
 # Test constants
 def test_max_capital_pct_per_trade():
     """Test MAX_CAPITAL_PCT_PER_TRADE constant."""
-    assert MAX_CAPITAL_PCT_PER_TRADE == 0.25  # 25%
+    assert MAX_CAPITAL_PCT_PER_TRADE == 0.05  # 5%
 
 
 def test_max_daily_loss_pct():

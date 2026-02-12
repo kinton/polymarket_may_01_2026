@@ -131,20 +131,15 @@ class RiskManager:
                 f"DEBUG: usdc_allowance={usdc_allowance:.2f}, exchange_contract={EXCHANGE_CONTRACT}"
             )
 
-            # Calculate trade size: MAXIMUM of 5% balance and minimum Polymarket trade
-            # Then use MINIMUM of that and trade_size parameter (as requested by Konstantin)
-            # 1. 5% of balance
-            # 2. MIN_TRADE_USDC ($1.0) - minimum Polymarket trade size
-            # 3. trade_size parameter (e.g., $1.1)
+            # Calculate trade size: MAXIMUM of three values
+            # 1. trade_size parameter (e.g., $1.1 from --size flag)
+            # 2. 5% of balance (MAX_CAPITAL_PCT_PER_TRADE)
+            # 3. MIN_TRADE_USDC ($0.10) - minimum Polymarket trade size
             balance_5_pct = usdc_balance * MAX_CAPITAL_PCT_PER_TRADE
             trade_size_param = round(self.trade_size, 2)
 
-            # Maximum of 5% balance and minimum trade size
-            min_trading_capital = max(MIN_TRADE_USDC, balance_5_pct)
-
-            # Use MINIMUM of trade_size parameter and min_trading_capital
-            # If parameter is higher than 5% min, use parameter; otherwise use 5% min
-            required_amount = min(trade_size_param, min_trading_capital)
+            # Use MAXIMUM of all three values (as requested by Konstantin)
+            required_amount = max(trade_size_param, MIN_TRADE_USDC, balance_5_pct)
 
             # Ensure not exceeding MAX_TRADE_USDC
             from src.clob_types import MAX_TRADE_USDC
