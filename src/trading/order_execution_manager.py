@@ -333,7 +333,7 @@ class OrderExecutionManager:
                         )
 
             trade_amount = max(round(self.trade_size, 2), 1.00)
-            if current_price is not None:
+            if current_price is not None and self.position_manager.entry_price is not None:
                 pnl_amount = trade_amount * (
                     (current_price - self.position_manager.entry_price)
                     / self.position_manager.entry_price
@@ -418,7 +418,7 @@ class OrderExecutionManager:
             self.position_manager.close_position()
             self._log(f"✓ [{self.market_name}] Position closed ({reason})")
 
-            if current_price is not None:
+            if current_price is not None and self.position_manager.entry_price is not None:
                 pnl_amount = amount * (
                     (current_price - self.position_manager.entry_price)
                     / self.position_manager.entry_price

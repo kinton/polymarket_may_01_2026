@@ -56,7 +56,7 @@ MIN_ORDERBOOK_SIZE_USD = 100.0  # Minimum total orderbook liquidity (bids+asks) 
 
 # Stop-loss constants (CRITICAL!)
 STOP_LOSS_PCT = 0.30  # Exit if price drops 30% from entry
-STOP_LOSS_ABSOLUTE = 0.95  # Exit if price drops below this absolute value
+STOP_LOSS_ABSOLUTE = 0.80  # Exit if price drops below this absolute value (safety floor, not trigger)
 TRAILING_STOP_PCT = 0.05  # Trailing stop: move stop up 5% when price moves in favor
 STOP_LOSS_CHECK_INTERVAL_S = 1.0  # Check stop-loss every 1 second
 

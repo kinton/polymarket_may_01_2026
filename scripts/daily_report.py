@@ -81,6 +81,12 @@ class LogParser:
     INSUFFICIENT_FUNDS_PATTERN = re.compile(
         r"❌ \[([A-Z]+)\] Insufficient balance"
     )
+    ORDER_BUY_PATTERN = re.compile(
+        r"✓ \[([A-Z]+)\] Order posted:.*?'takingAmount':\s*'([^']+)'"
+    )
+    ORDER_SELL_PATTERN = re.compile(
+        r"💰 \[([A-Z]+)\] Sold @ \$(\d+\.\d+)\s+\|\s+PnL:\s+([\+\-]\d+\.\d+)%"
+    )
     ORDER_POSTED_PATTERN = re.compile(
         r"✓ \[([A-Z]+)\] Order posted:"
     )
@@ -206,7 +212,35 @@ class LogParser:
                 if current_trade and self.INSUFFICIENT_FUNDS_PATTERN.search(line):
                     has_insufficient_funds = True
 
-                # Check for order posted (successful execution)
+                # Check for BUY order (successful buy execution)
+                buy_match = self.ORDER_BUY_PATTERN.search(line)
+                if buy_match and current_trade:
+                    amount = float(buy_match.group(1))
+                    current_trade.amount = amount
+                    current_trade.entry_price = None  # Will be determined by side
+                    # Determine entry price from order book (simplified)
+                    # In real logs, entry price is in the order book around trigger time
+                    has_insufficient_funds = False
+
+                # Check for SELL order (successful sell execution)
+                sell_match = self.ORDER_SELL_PATTERN.search(line)
+                if sell_match and current_trade:
+                    current_trade.exit_price = float(sell_match.group(2))
+                    pnl_pct = float(sell_match.group(3))
+                    current_trade.profit_loss = current_trade.amount * (pnl_pct / 100.0)
+                    # Determine outcome based on PnL
+                    if pnl_pct >= 0:
+                        current_trade.outcome = "WIN"
+                        current_trade.exit_reason = "TAKE_PROFIT" if pnl_pct > 0 else "BREAKEVEN"
+                    else:
+                        current_trade.outcome = "LOSS"
+                        current_trade.exit_reason = "STOP_LOSS"
+                    # Append trade
+                    self.trades.append(current_trade)
+                    current_trade = None
+                    has_insufficient_funds = False
+
+                # Check for order posted (successful execution) - for backward compatibility
                 if current_trade and self.ORDER_POSTED_PATTERN.search(line):
                     has_insufficient_funds = False  # Trade executed
 

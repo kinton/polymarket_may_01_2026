@@ -93,7 +93,7 @@ class TestStopLoss:
         trader.position_open = True
 
         # Absolute floor (0.95) is higher than percentage stop (0.96 * 0.7 = 0.672)
-        trader.trailing_stop_price = STOP_LOSS_ABSOLUTE  # 0.95
+        trader.trailing_stop_price = STOP_LOSS_ABSOLUTE  # 0.80
 
         # Set current price below absolute floor
         trader.orderbook.best_ask_yes = 0.94
@@ -288,7 +288,7 @@ class TestTrailingStop:
         await trader._check_stop_loss_take_profit()
 
         # Verify stop is capped at absolute floor
-        assert trader.trailing_stop_price == STOP_LOSS_ABSOLUTE  # 0.95
+        assert trader.trailing_stop_price == STOP_LOSS_ABSOLUTE  # 0.80
 
 
 class TestPriorityAndIntegration:
@@ -411,7 +411,7 @@ class TestConstants:
     def test_stop_loss_constants(self):
         """Verify stop-loss constants."""
         assert STOP_LOSS_PCT == 0.30
-        assert STOP_LOSS_ABSOLUTE == 0.95
+        assert STOP_LOSS_ABSOLUTE == 0.80
         assert STOP_LOSS_CHECK_INTERVAL_S == 1.0
 
     def test_take_profit_constants(self):
