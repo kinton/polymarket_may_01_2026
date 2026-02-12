@@ -26,8 +26,8 @@ async def test_oracle_guard_blocking_volatility_spike(integration_trader):
     - Guard enabled
     - Expected: trade blocked, alert sent
     """
-    integration_trader.oracle_guard_enabled = True
-    integration_trader.oracle_enabled = True
+    integration_trader.oracle_guard.guard_enabled = True
+    integration_trader.oracle_guard.enabled = True
 
     # Create oracle tracker with high volatility
     oracle_tracker = OracleTracker(window_seconds=60.0)
@@ -49,9 +49,9 @@ async def test_oracle_guard_blocking_volatility_spike(integration_trader):
     snapshot = replace(snapshot, n_points=6, vol_pct=0.003)  # 0.3% > 0.2% threshold
 
     # Set oracle snapshot on trader
-    integration_trader.oracle_tracker = oracle_tracker
-    integration_trader.oracle_snapshot = snapshot
-    integration_trader.last_oracle_update_ts = now / 1000.0
+    integration_trader.oracle_guard.tracker = oracle_tracker
+    integration_trader.oracle_guard.snapshot = snapshot
+    integration_trader.oracle_guard.last_update_ts = now / 1000.0
 
     # Set up orderbook with winning side
     integration_trader.orderbook = OrderBook()
@@ -62,28 +62,28 @@ async def test_oracle_guard_blocking_volatility_spike(integration_trader):
     integration_trader.orderbook.update()
     integration_trader._update_winning_side()
 
-    # Mock alert manager to verify alert is sent
-    integration_trader.alert_manager = MagicMock()
+    # Mock alert dispatcher to verify alert is sent
+    integration_trader.alert_dispatcher.is_enabled = lambda: True
+    integration_trader.alert_dispatcher.send_oracle_guard_block = AsyncMock()
 
-    # Mock execute_sell to verify no trade is executed
-    integration_trader.execute_sell = AsyncMock()
+    # Mock order_execution to verify no trade is executed
+    integration_trader.order_execution.execute_order_for = AsyncMock(wraps=integration_trader.order_execution.execute_order_for)
 
     # Run check_trigger with time within window
     time_remaining = 30.0
     await integration_trader.check_trigger(time_remaining)
 
     # Verify trade was blocked (oracle_guard should block)
-    integration_trader.execute_sell.assert_not_called()
+    integration_trader.order_execution.execute_order_for.assert_not_called()
     assert integration_trader.order_executed is False
     assert integration_trader.position_open is False
 
     # Verify oracle guard block was logged
     # Guard should increment block count
-    assert integration_trader._oracle_guard_block_count > 0
+    assert integration_trader.oracle_guard.block_count > 0
 
     # Verify alert was sent
-    if integration_trader.alert_manager:
-        integration_trader.alert_manager.send_oracle_guard_block.assert_called_once()
+    integration_trader.alert_dispatcher.send_oracle_guard_block.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -96,8 +96,8 @@ async def test_oracle_guard_allows_trade_when_volatility_low(integration_trader)
     - Guard enabled
     - Expected: trade executes, no block
     """
-    integration_trader.oracle_guard_enabled = True
-    integration_trader.oracle_enabled = True
+    integration_trader.oracle_guard.guard_enabled = True
+    integration_trader.oracle_guard.enabled = True
 
     # Create oracle tracker with low volatility
     oracle_tracker = OracleTracker(window_seconds=60.0)
@@ -113,17 +113,24 @@ async def test_oracle_guard_allows_trade_when_volatility_low(integration_trader)
     # Create snapshot with low volatility
     snapshot = oracle_tracker.update(ts_ms=now, price=100.0)
     # Use dataclasses.replace to modify frozen dataclass
-    snapshot = replace(snapshot, n_points=4, vol_pct=0.001)  # 0.1% < 0.2% threshold
+    snapshot = replace(snapshot, n_points=4, vol_pct=0.001, zscore=1.5)  # 0.1% < 0.2% threshold, zscore high enough
 
-    integration_trader.oracle_tracker = oracle_tracker
-    integration_trader.oracle_snapshot = snapshot
-    integration_trader.last_oracle_update_ts = now / 1000.0
+    integration_trader.oracle_guard.tracker = oracle_tracker
+    integration_trader.oracle_guard.snapshot = snapshot
+    integration_trader.oracle_guard.last_update_ts = now / 1000.0
 
-    # Mock alert manager
-    integration_trader.alert_manager = MagicMock()
+    # Mock alert dispatcher
+    integration_trader.alert_dispatcher.is_enabled = lambda: True
+    integration_trader.alert_dispatcher.send_oracle_guard_block = AsyncMock()
 
-    # Mock execute_order to verify trade executes
-    integration_trader.execute_order = AsyncMock(return_value="order_123")
+    # Mock order_execution to verify trade executes
+    # Use side_effect to ensure mark_executed() is called
+    async def mock_execute_order_for(side, winning_ask):
+        # Mark as executed before calling real method
+        integration_trader.order_execution.mark_executed()
+        return True
+
+    integration_trader.order_execution.execute_order_for = AsyncMock(side_effect=mock_execute_order_for)
 
     # Set up orderbook for trade to execute
     integration_trader.orderbook = OrderBook()
@@ -139,12 +146,11 @@ async def test_oracle_guard_allows_trade_when_volatility_low(integration_trader)
     await integration_trader.check_trigger(time_remaining)
 
     # Verify trade was allowed (oracle_guard should NOT block)
-    integration_trader.execute_order.assert_called_once()
+    integration_trader.order_execution.execute_order_for.assert_called_once()
     assert integration_trader.order_executed is True
 
     # Verify alert was NOT sent for blocking
-    if integration_trader.alert_manager:
-        integration_trader.alert_manager.send_oracle_guard_block.assert_not_called()
+    integration_trader.alert_dispatcher.send_oracle_guard_block.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -157,8 +163,8 @@ async def test_oracle_guard_zscore_blocking(integration_trader):
     - Guard enabled
     - Expected: trade blocked
     """
-    integration_trader.oracle_guard_enabled = True
-    integration_trader.oracle_enabled = True
+    integration_trader.oracle_guard.guard_enabled = True
+    integration_trader.oracle_guard.enabled = True
 
     # Create oracle tracker with low Z-score
     oracle_tracker = OracleTracker(window_seconds=60.0)
@@ -178,9 +184,9 @@ async def test_oracle_guard_zscore_blocking(integration_trader):
     # Use dataclasses.replace to modify frozen dataclass
     snapshot = replace(snapshot, zscore=0.5)  # Below 0.75 threshold
 
-    integration_trader.oracle_tracker = oracle_tracker
-    integration_trader.oracle_snapshot = snapshot
-    integration_trader.last_oracle_update_ts = now / 1000.0
+    integration_trader.oracle_guard.tracker = oracle_tracker
+    integration_trader.oracle_guard.snapshot = snapshot
+    integration_trader.oracle_guard.last_update_ts = now / 1000.0
 
     # Set up orderbook with winning side
     integration_trader.orderbook = OrderBook()
@@ -191,19 +197,19 @@ async def test_oracle_guard_zscore_blocking(integration_trader):
     integration_trader.orderbook.update()
     integration_trader._update_winning_side()
 
-    # Mock alert manager
-    integration_trader.alert_manager = MagicMock()
+    # Mock alert dispatcher
+    integration_trader.alert_dispatcher.is_enabled = lambda: True
+    integration_trader.alert_dispatcher.send_oracle_guard_block = AsyncMock()
 
-    # Mock execute_order to verify no trade is executed
-    integration_trader.execute_order = AsyncMock()
+    # Mock order_execution to verify no trade is executed
+    integration_trader.order_execution.execute_order_for = AsyncMock(wraps=integration_trader.order_execution.execute_order_for)
 
     # Run check_trigger
     time_remaining = 30.0
     await integration_trader.check_trigger(time_remaining)
 
     # Verify trade was blocked (zscore too low)
-    integration_trader.execute_order.assert_not_called()
+    integration_trader.order_execution.execute_order_for.assert_not_called()
 
     # Verify alert was sent
-    if integration_trader.alert_manager:
-        integration_trader.alert_manager.send_oracle_guard_block.assert_called_once()
+    integration_trader.alert_dispatcher.send_oracle_guard_block.assert_called_once()

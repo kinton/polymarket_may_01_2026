@@ -51,14 +51,16 @@ class TestStopLoss:
         # Set current price below stop-loss threshold (31% drop)
         trader.orderbook.best_ask_yes = 0.62
 
-        # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        # Mock execute_sell - both the trader method and the stop_loss_manager callback
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check
         await trader._check_stop_loss_take_profit()
 
         # Verify sell was called
-        trader.execute_sell.assert_called_once_with("STOP-LOSS")
+        mock_sell.assert_called_once_with("STOP-LOSS")
 
     @pytest.mark.asyncio
     async def test_stop_loss_does_not_trigger_on_29_percent_drop(self, trader):
@@ -72,14 +74,16 @@ class TestStopLoss:
         # Set current price above stop-loss threshold (29% drop)
         trader.orderbook.best_ask_yes = 0.64
 
-        # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        # Mock execute_sell - both the trader method and the stop_loss_manager callback
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check
         await trader._check_stop_loss_take_profit()
 
         # Verify sell was NOT called
-        trader.execute_sell.assert_not_called()
+        mock_sell.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_loss_uses_absolute_floor(self, trader):
@@ -95,14 +99,16 @@ class TestStopLoss:
         # Set current price below absolute floor
         trader.orderbook.best_ask_yes = 0.94
 
-        # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        # Mock execute_sell - both the trader method and the stop_loss_manager callback
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check
         await trader._check_stop_loss_take_profit()
 
         # Verify sell was called
-        trader.execute_sell.assert_called_once_with("STOP-LOSS")
+        mock_sell.assert_called_once_with("STOP-LOSS")
 
     @pytest.mark.asyncio
     async def test_stop_loss_throttled_by_interval(self, trader):
@@ -116,17 +122,19 @@ class TestStopLoss:
         # Set current price below stop-loss threshold
         trader.orderbook.best_ask_yes = 0.62
 
-        # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        # Mock execute_sell - both the trader method and the stop_loss_manager callback
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # First check - should trigger
         await trader._check_stop_loss_take_profit()
-        assert trader.execute_sell.call_count == 1
+        assert mock_sell.call_count == 1
 
-        # Reset mock and check again immediately - should not trigger due to throttle
-        trader.execute_sell = AsyncMock()
+        # Check again immediately - should not trigger because position is already closed
+        # (stop_loss_manager closes position on first trigger)
         await trader._check_stop_loss_take_profit()
-        trader.execute_sell.assert_not_called()
+        assert mock_sell.call_count == 1  # Still 1, not 2
 
 
 class TestTakeProfit:
@@ -145,13 +153,15 @@ class TestTakeProfit:
         trader.orderbook.best_ask_yes = 0.67  # 0.60 * 1.10 = 0.66
 
         # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check
         await trader._check_stop_loss_take_profit()
 
         # Verify sell was called
-        trader.execute_sell.assert_called_once_with("TAKE-PROFIT")
+        mock_sell.assert_called_once_with("TAKE-PROFIT")
 
     @pytest.mark.asyncio
     async def test_take_profit_does_not_trigger_on_9_percent_rise(self, trader):
@@ -166,13 +176,15 @@ class TestTakeProfit:
         trader.orderbook.best_ask_yes = 0.65  # 0.60 * 1.09 = 0.654
 
         # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check
         await trader._check_stop_loss_take_profit()
 
         # Verify sell was NOT called
-        trader.execute_sell.assert_not_called()
+        mock_sell.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_take_profit_throttled_by_interval(self, trader):
@@ -187,16 +199,20 @@ class TestTakeProfit:
         trader.orderbook.best_ask_yes = 0.67
 
         # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # First check - should trigger
         await trader._check_stop_loss_take_profit()
         assert trader.execute_sell.call_count == 1
 
         # Reset mock and check again immediately - should not trigger due to throttle
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
         await trader._check_stop_loss_take_profit()
-        trader.execute_sell.assert_not_called()
+        mock_sell.assert_not_called()
 
 
 class TestTrailingStop:
@@ -216,7 +232,9 @@ class TestTrailingStop:
         trader.orderbook.best_ask_yes = 0.66
 
         # Mock execute_sell (should not be called, just stop raised to floor)
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check
         await trader._check_stop_loss_take_profit()
@@ -224,7 +242,7 @@ class TestTrailingStop:
         # Verify stop was raised to absolute floor (0.95)
         assert trader.trailing_stop_price == STOP_LOSS_ABSOLUTE
         # Verify sell was not called
-        trader.execute_sell.assert_not_called()
+        mock_sell.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_trailing_stop_never_lowers(self, trader):
@@ -240,7 +258,9 @@ class TestTrailingStop:
         trader.orderbook.best_ask_no = 0.55
 
         # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check
         await trader._check_stop_loss_take_profit()
@@ -261,7 +281,9 @@ class TestTrailingStop:
         trader.orderbook.best_ask_yes = 0.97
 
         # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check
         await trader._check_stop_loss_take_profit()
@@ -290,13 +312,15 @@ class TestPriorityAndIntegration:
         trader.oracle_guard_enabled = True
 
         # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check - should sell despite oracle guard
         await trader._check_stop_loss_take_profit()
 
         # Verify sell was called (stop-loss has priority)
-        trader.execute_sell.assert_called_once_with("STOP-LOSS")
+        mock_sell.assert_called_once_with("STOP-LOSS")
 
     @pytest.mark.asyncio
     async def test_take_profit_has_priority_over_oracle_guard(self, trader):
@@ -315,13 +339,15 @@ class TestPriorityAndIntegration:
         trader.oracle_guard_enabled = True
 
         # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check - should sell despite oracle guard
         await trader._check_stop_loss_take_profit()
 
         # Verify sell was called (take-profit has priority)
-        trader.execute_sell.assert_called_once_with("TAKE-PROFIT")
+        mock_sell.assert_called_once_with("TAKE-PROFIT")
 
     @pytest.mark.asyncio
     async def test_no_checks_when_position_closed(self, trader):
@@ -330,13 +356,15 @@ class TestPriorityAndIntegration:
         trader.position_open = False
 
         # Mock execute_sell
-        trader.execute_sell = AsyncMock()
+        mock_sell = AsyncMock()
+        trader.execute_sell = mock_sell
+        trader.stop_loss_manager.set_sell_callback(mock_sell)
 
         # Run check - should do nothing
         await trader._check_stop_loss_take_profit()
 
         # Verify sell was never called
-        trader.execute_sell.assert_not_called()
+        mock_sell.assert_not_called()
 
 
 class TestPositionTracking:

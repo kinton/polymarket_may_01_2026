@@ -760,6 +760,7 @@ class LastSecondTrader:
                 return
 
             if not self.risk_manager.check_daily_limits():
+                self.order_execution.mark_executed()
                 return
 
             if (
@@ -1363,23 +1364,5 @@ class LastSecondTrader:
         if current_price is None:
             return False
 
-        # Check both stop-loss and take-profit independently
-        # Get current stop-loss and take-profit prices from manager
-        stop_loss_price = self.stop_loss_manager.get_stop_loss_price()
-        take_profit_price = self.stop_loss_manager.get_take_profit_price()
-
-        # Check conditions
-        stop_loss_triggered = (
-            stop_loss_price is not None and current_price < stop_loss_price
-        )
-        take_profit_triggered = (
-            take_profit_price is not None and current_price > take_profit_price
-        )
-
-        if stop_loss_triggered or take_profit_triggered:
-            # Determine which condition triggered
-            reason = "STOP-LOSS" if stop_loss_triggered else "TAKE-PROFIT"
-            await self.execute_sell(reason)
-            return True
-
-        return False
+        # Delegate to StopLossManager which handles throttling
+        return await self.stop_loss_manager.check_and_execute(current_price)

@@ -92,8 +92,7 @@ async def test_check_risk_limits_exceeds_limit(mock_trader, cleanup_daily_limits
 
     result = await mock_trader._check_risk_limits()
 
-    assert result is False
-    assert mock_trader.order_executed is True  # Should stop trading
+    assert result is False  # Risk limit exceeded
 
 
 @pytest.mark.asyncio
@@ -153,14 +152,14 @@ def test_track_daily_pnl_multiple_trades(mock_trader, cleanup_daily_limits):
 def test_track_daily_pnl_new_day_resets(mock_trader, cleanup_daily_limits):
     """Test that a new day creates a fresh tracking entry."""
     # Simulate a trade on one day
-    with patch("src.hft_trader.datetime") as mock_datetime:
+    with patch("src.trading.risk_manager.datetime") as mock_datetime:
         mock_datetime.now = MagicMock(
             return_value=datetime(2026, 2, 10, 12, 0, 0, tzinfo=timezone.utc)
         )
         mock_trader._track_daily_pnl(10.0, 1.5)
 
     # Now simulate a trade on the next day
-    with patch("src.hft_trader.datetime") as mock_datetime:
+    with patch("src.trading.risk_manager.datetime") as mock_datetime:
         mock_datetime.now = MagicMock(
             return_value=datetime(2026, 2, 11, 12, 0, 0, tzinfo=timezone.utc)
         )
@@ -237,8 +236,7 @@ def test_check_daily_limits_loss_exceeded(mock_trader, cleanup_daily_limits):
 
     result = mock_trader._check_daily_limits()
 
-    assert result is False
-    assert mock_trader.order_executed is True
+    assert result is False  # Loss limit exceeded
 
 
 def test_check_daily_limits_loss_exactly_at_limit(mock_trader, cleanup_daily_limits):
@@ -280,8 +278,7 @@ def test_check_daily_limits_trade_count_exceeded(mock_trader, cleanup_daily_limi
 
     result = mock_trader._check_daily_limits()
 
-    assert result is False
-    assert mock_trader.order_executed is True
+    assert result is False  # Trade count limit exceeded
 
 
 def test_check_daily_limits_trade_count_at_limit(mock_trader, cleanup_daily_limits):
