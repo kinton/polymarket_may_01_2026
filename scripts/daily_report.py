@@ -10,7 +10,6 @@ Usage:
 
 import argparse
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -30,12 +29,14 @@ class Trade:
     market: str
     condition_id: str
     side: str  # "YES" or "NO"
+    trigger_price: Optional[float]
     entry_price: Optional[float]
     exit_price: Optional[float]
     amount: float
     profit_loss: Optional[float]
     exit_reason: Optional[str]  # "STOP_LOSS", "TAKE_PROFIT", "MARKET_CLOSE", "MANUAL"
-    outcome: Optional[str]  # "WIN", "LOSS", "BREAKEVEN"
+    outcome: Optional[str]  # "WIN", "LOSS", "BREAKEVEN", "SKIPPED"
+    skip_reason: Optional[str]  # "INSUFFICIENT_FUNDS", "NO_EXECUTION"
 
 
 @dataclass
@@ -54,12 +55,14 @@ class DailyReport:
     total_trades: int
     winning_trades: int
     losing_trades: int
+    skipped_trades: int
     total_pnl: float
     win_rate: float
     trades: List[Trade] = field(default_factory=list)
     blocked_markets: List[BlockedMarket] = field(default_factory=list)
     risk_limit_blocks: int = 0
     oracle_guard_blocks: int = 0
+    total_triggers: int = 0
 
 
 class LogParser:
@@ -75,8 +78,8 @@ class LogParser:
     TRIGGER_PATTERN = re.compile(
         r"🎯 \[([A-Z]+)\] TRIGGER at ([\d.]+)s! ([A-Z]+) @ \$(\d+\.\d+)"
     )
-    RISK_LIMIT_PATTERN = re.compile(
-        r"🛑 \[([A-Z]+)\] RISK LIMIT EXCEEDED"
+    INSUFFICIENT_FUNDS_PATTERN = re.compile(
+        r"❌ \[([A-Z]+)\] Insufficient balance"
     )
     ORDER_POSTED_PATTERN = re.compile(
         r"✓ \[([A-Z]+)\] Order posted:"
@@ -99,6 +102,7 @@ class LogParser:
         self.trades: List[Trade] = []
         self.blocked_markets: List[BlockedMarket] = []
         self.risk_limit_blocks = 0
+        self.total_triggers = 0
 
     def parse_date(self, date_str: str) -> DailyReport:
         """Parse all logs for a specific date and generate report."""
@@ -114,6 +118,7 @@ class LogParser:
                 total_trades=0,
                 winning_trades=0,
                 losing_trades=0,
+                skipped_trades=0,
                 total_pnl=0.0,
                 win_rate=0.0,
             )
@@ -128,12 +133,13 @@ class LogParser:
         # Calculate statistics
         winning_trades = sum(1 for t in self.trades if t.outcome == "WIN")
         losing_trades = sum(1 for t in self.trades if t.outcome == "LOSS")
+        skipped_trades = sum(1 for t in self.trades if t.outcome == "SKIPPED")
         total_pnl = daily_pnl if daily_pnl is not None else sum(
-            t.profit_loss for t in self.trades if t.profit_loss
+            t.profit_loss for t in self.trades if t.profit_loss is not None
         )
         win_rate = (
-            (winning_trades / len(self.trades)) * 100
-            if self.trades
+            (winning_trades / max(len(self.trades) - skipped_trades, 1)) * 100
+            if (len(self.trades) - skipped_trades) > 0
             else 0.0
         )
 
@@ -142,12 +148,14 @@ class LogParser:
             total_trades=len(self.trades),
             winning_trades=winning_trades,
             losing_trades=losing_trades,
+            skipped_trades=skipped_trades,
             total_pnl=total_pnl,
             win_rate=win_rate,
             trades=self.trades,
             blocked_markets=self.blocked_markets,
             risk_limit_blocks=self.risk_limit_blocks,
             oracle_guard_blocks=len(self.blocked_markets),
+            total_triggers=self.total_triggers,
         )
 
     def _parse_log_file(self, log_file: Path):
@@ -155,6 +163,7 @@ class LogParser:
         current_market = None
         current_condition_id = None
         current_trade: Optional[Trade] = None
+        has_insufficient_funds = False
 
         with open(log_file, "r", encoding="utf-8") as f:
             for line in f:
@@ -167,17 +176,12 @@ class LogParser:
                 if condition_match:
                     current_condition_id = condition_match.group(1)
 
-                # Check for risk limit blocks
-                if self.RISK_LIMIT_PATTERN.search(line):
-                    self.risk_limit_blocks += 1
-                    continue
-
-                # Check for trade triggers
+                # Check for trigger events (new trades)
                 trigger_match = self.TRIGGER_PATTERN.search(line)
                 if trigger_match and current_market and current_condition_id:
+                    self.total_triggers += 1
+
                     # Extract trigger info
-                    market_abbr = trigger_match.group(1)
-                    time_remaining = trigger_match.group(2)
                     side = trigger_match.group(3)
                     price = float(trigger_match.group(4))
 
@@ -187,13 +191,24 @@ class LogParser:
                         market=current_market,
                         condition_id=current_condition_id,
                         side=side,
-                        entry_price=price,
+                        trigger_price=price,
+                        entry_price=None,
                         exit_price=None,
                         amount=1.10,  # Default trade size
                         profit_loss=None,
                         exit_reason=None,
                         outcome=None,
+                        skip_reason=None,
                     )
+                    has_insufficient_funds = False  # Reset for new trade
+
+                # Check for insufficient funds (mark as skipped)
+                if current_trade and self.INSUFFICIENT_FUNDS_PATTERN.search(line):
+                    has_insufficient_funds = True
+
+                # Check for order posted (successful execution)
+                if current_trade and self.ORDER_POSTED_PATTERN.search(line):
+                    has_insufficient_funds = False  # Trade executed
 
                 # Check for position opened
                 if current_trade and self.POSITION_OPENED_PATTERN.search(line):
@@ -219,6 +234,7 @@ class LogParser:
                             )
                         self.trades.append(current_trade)
                         current_trade = None
+                        has_insufficient_funds = False
 
                 # Check for take-profit
                 if current_trade and self.TAKE_PROFIT_PATTERN.search(line):
@@ -237,12 +253,26 @@ class LogParser:
                             )
                         self.trades.append(current_trade)
                         current_trade = None
+                        has_insufficient_funds = False
 
                 # Check for market close (position exits at close)
+                # If we have a pending trade and market closes without execution,
+                # mark it as SKIPPED
                 if current_trade and self.MARKET_CLOSED_PATTERN.search(line):
-                    # This is a simplified approach - in reality, we'd need to
-                    # check if a position was open and resolve it at closing price
-                    pass
+                    if has_insufficient_funds:
+                        current_trade.outcome = "SKIPPED"
+                        current_trade.skip_reason = "INSUFFICIENT_FUNDS"
+                        self.trades.append(current_trade)
+                    else:
+                        # Trade was triggered but no exit recorded
+                        # This might be a market close without prior position
+                        # or the trade is still pending
+                        current_trade.outcome = "SKIPPED"
+                        current_trade.skip_reason = "NO_EXECUTION"
+                        self.trades.append(current_trade)
+
+                    current_trade = None
+                    has_insufficient_funds = False
 
     def _load_daily_pnl(self, date_str: str) -> Optional[float]:
         """Load daily PnL from daily_limits.json."""
@@ -278,10 +308,12 @@ class ReportGenerator:
             "",
             "## 📊 Summary",
             "",
+            f"- **Total Triggers:** {report.total_triggers}",
             f"- **Total Trades:** {report.total_trades}",
             f"- **Winning Trades:** {report.winning_trades}",
             f"- **Losing Trades:** {report.losing_trades}",
-            f"- **Win Rate:** {report.win_rate:.1f}%",
+            f"- **Skipped Trades:** {report.skipped_trades}",
+            f"- **Win Rate:** {report.win_rate:.1f}% (excluding skipped)",
             f"- **Total PnL:** ${report.total_pnl:.4f}",
             f"- **Risk Limit Blocks:** {report.risk_limit_blocks}",
             f"- **Oracle Guard Blocks:** {report.oracle_guard_blocks}",
@@ -293,20 +325,20 @@ class ReportGenerator:
             lines.extend([
                 "## 💼 Trade Details",
                 "",
-                "| Time | Market | Side | Entry | Exit | PnL | Reason | Outcome |",
-                "|------|--------|------|-------|------|-----|--------|---------|",
+                "| Time | Market | Side | Trigger | Entry | Exit | PnL | Reason | Outcome |",
+                "|------|--------|------|---------|-------|------|-----|--------|---------|",
             ])
 
             for trade in report.trades:
+                trigger_str = f"${trade.trigger_price:.4f}" if trade.trigger_price else "-"
                 entry_str = f"${trade.entry_price:.4f}" if trade.entry_price else "-"
                 exit_str = f"${trade.exit_price:.4f}" if trade.exit_price else "-"
-                pnl_str = f"${trade.profit_loss:.4f}" if trade.profit_loss else "-"
-                reason_str = trade.exit_reason or "-"
+                pnl_str = f"${trade.profit_loss:.4f}" if trade.profit_loss is not None else "-"
+                reason_str = trade.exit_reason or trade.skip_reason or "-"
                 outcome_str = trade.outcome or "-"
 
                 lines.append(
-                    f"| {trade.timestamp[:19]} | {trade.market[:30]} | {trade.side} | "
-                    f"{entry_str} | {exit_str} | {pnl_str} | {reason_str} | {outcome_str} |"
+                    f"| {trade.timestamp[:19]} | {trade.market[:30]} | {trade.side} | {trigger_str} | {entry_str} | {exit_str} | {pnl_str} | {reason_str} | {outcome_str} |"
                 )
             lines.append("")
 
@@ -330,8 +362,9 @@ class ReportGenerator:
             "## 📈 Performance Metrics",
             "",
             f"- **Average PnL per Trade:** ${report.total_pnl / report.total_trades if report.total_trades > 0 else 0:.4f}",
-            f"- **Risk Efficiency:** {(report.winning_trades / (report.winning_trades + report.losing_trades) if report.total_trades > 0 else 0) * 100:.1f}%",
-            f"- **Block Rate:** {(report.risk_limit_blocks + report.oracle_guard_blocks) / (report.total_trades + report.risk_limit_blocks + report.oracle_guard_blocks) if report.total_trades > 0 else 0 * 100:.1f}%",
+            f"- **Execution Rate:** {((report.total_trades - report.skipped_trades) / report.total_triggers * 100) if report.total_triggers > 0 else 0:.1f}%",
+            f"- **Skip Rate:** {(report.skipped_trades / report.total_triggers * 100) if report.total_triggers > 0 else 0:.1f}%",
+            f"- **Block Rate:** {((report.risk_limit_blocks + report.oracle_guard_blocks) / report.total_triggers * 100) if report.total_triggers > 0 else 0:.1f}%",
             "",
         ])
 
@@ -406,10 +439,12 @@ def main():
     # Print summary
     print()
     print("📈 Report Summary:")
+    print(f"  Total Triggers: {report.total_triggers}")
     print(f"  Total Trades: {report.total_trades}")
-    print(f"  Winning: {report.winning_trades} | Losing: {report.losing_trades}")
+    print(f"  Winning: {report.winning_trades} | Losing: {report.losing_trades} | Skipped: {report.skipped_trades}")
     print(f"  Win Rate: {report.win_rate:.1f}%")
     print(f"  Total PnL: ${report.total_pnl:.4f}")
+    print(f"  Execution Rate: {((report.total_trades - report.skipped_trades) / report.total_triggers * 100) if report.total_triggers > 0 else 0:.1f}%")
     print(f"  Blocks: Risk={report.risk_limit_blocks}, Oracle={report.oracle_guard_blocks}")
 
 
