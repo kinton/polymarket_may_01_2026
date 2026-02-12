@@ -221,7 +221,7 @@ class OrderExecutionManager:
             )
 
             created_order = await asyncio.to_thread(
-                self.client.create_order,
+                self.client.create_market_order,
                 order_args,
                 CreateOrderOptions(tick_size="0.01", neg_risk=False),
             )
