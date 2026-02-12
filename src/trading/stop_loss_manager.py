@@ -107,22 +107,28 @@ class StopLossManager:
         stop_price = (
             self.position_manager.trailing_stop_price
             if self.position_manager.trailing_stop_price is not None
-            else max(
-                self.position_manager.entry_price * (1 - STOP_LOSS_PCT),
-                STOP_LOSS_ABSOLUTE,
+            else (
+                max(
+                    self.position_manager.entry_price * (1 - STOP_LOSS_PCT),
+                    STOP_LOSS_ABSOLUTE,
+                )
+                if self.position_manager.entry_price is not None
+                else STOP_LOSS_ABSOLUTE
             )
         )
 
         if current_price < stop_price:
-            pnl_pct = (
-                (current_price - self.position_manager.entry_price)
-                / self.position_manager.entry_price
-            ) * 100
+            pnl_pct = 0.0
+            if self.position_manager.entry_price is not None:
+                pnl_pct = (
+                    (current_price - self.position_manager.entry_price)
+                    / self.position_manager.entry_price
+                ) * 100
 
             if self.logger:
                 self.logger.info(
                     f"STOP-LOSS TRIGGERED: Price ${current_price:.4f} < "
-                    f"Stop ${stop_price:.4f} | PnL: {pnl_pct:.2f}%"
+                    + f"Stop ${stop_price:.4f} | PnL: {pnl_pct:.2f}%"
                 )
 
             if self._sell_callback:
@@ -147,6 +153,10 @@ class StopLossManager:
 
         self._last_take_profit_check_ts = now
 
+        # Return False if no entry price set
+        if self.position_manager.entry_price is None:
+            return False
+
         take_profit_price = self.position_manager.entry_price * (1 + TAKE_PROFIT_PCT)
 
         if current_price > take_profit_price:
@@ -158,7 +168,7 @@ class StopLossManager:
             if self.logger:
                 self.logger.info(
                     f"TAKE-PROFIT TRIGGERED: Price ${current_price:.4f} > "
-                    f"Target ${take_profit_price:.4f} | PnL: +{pnl_pct:.2f}%"
+                    + f"Target ${take_profit_price:.4f} | PnL: +{pnl_pct:.2f}%"
                 )
 
             if self._sell_callback:
@@ -203,13 +213,15 @@ class StopLossManager:
         if not self.position_manager.is_open:
             return None
 
-        return (
-            self.position_manager.trailing_stop_price
-            if self.position_manager.trailing_stop_price is not None
-            else max(
-                self.position_manager.entry_price * (1 - STOP_LOSS_PCT),
-                STOP_LOSS_ABSOLUTE,
-            )
+        if self.position_manager.trailing_stop_price is not None:
+            return self.position_manager.trailing_stop_price
+
+        if self.position_manager.entry_price is None:
+            return None
+
+        return max(
+            self.position_manager.entry_price * (1 - STOP_LOSS_PCT),
+            STOP_LOSS_ABSOLUTE,
         )
 
     def get_take_profit_price(self) -> float | None:
@@ -220,6 +232,9 @@ class StopLossManager:
             Take-profit price, or None if no position
         """
         if not self.position_manager.is_open or not self.position_manager.has_entry:
+            return None
+
+        if self.position_manager.entry_price is None:
             return None
 
         return self.position_manager.entry_price * (1 + TAKE_PROFIT_PCT)

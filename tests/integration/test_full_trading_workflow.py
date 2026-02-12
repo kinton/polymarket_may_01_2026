@@ -41,15 +41,25 @@ async def test_full_trading_workflow(
     integration_trader.orderbook = initial_orderbook
     integration_trader._update_winning_side()
 
-    # Mock execute_order to verify trade execution
-    integration_trader.execute_order = AsyncMock(return_value="order_123")
+    # Mock order_execution.execute_order_for to verify trade execution
+    async def mock_execute_order_for(side, winning_ask):
+        # Simulate opening position
+        integration_trader.order_execution.order_executed = True
+        integration_trader.position_manager.open_position(
+            entry_price=winning_ask or 0.80,
+            side=side,
+            trailing_stop_price=0.69,
+        )
+        return True
+
+    integration_trader.order_execution.execute_order_for = AsyncMock(side_effect=mock_execute_order_for)
 
     # Execute the trade
     time_remaining = 30.0  # Within trigger threshold
     await integration_trader.check_trigger(time_remaining)
 
     # Verify trade was executed
-    integration_trader.execute_order.assert_called_once()
+    integration_trader.order_execution.execute_order_for.assert_called_once()
     assert integration_trader.order_executed is True
     assert integration_trader.position_open is True
     assert integration_trader.position_side == "YES"
@@ -82,14 +92,14 @@ async def test_full_workflow_with_market_selection(
     integration_trader.orderbook = expensive_orderbook
     integration_trader._update_winning_side()
 
-    # Mock execute_order
-    integration_trader.execute_order = AsyncMock()
+    # Mock order_execution.execute_order_for
+    integration_trader.order_execution.execute_order_for = AsyncMock()
 
     # Execute the trade
     time_remaining = 30.0
     await integration_trader.check_trigger(time_remaining)
 
     # Verify trade was NOT executed (price too high)
-    integration_trader.execute_order.assert_not_called()
+    integration_trader.order_execution.execute_order_for.assert_not_called()
     assert integration_trader.order_executed is False
     assert integration_trader.position_open is False

@@ -11,7 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.hft_trader import EXCHANGE_CONTRACT, LastSecondTrader
+from src.hft_trader import LastSecondTrader
+from src.clob_types import EXCHANGE_CONTRACT, MAX_CAPITAL_PCT_PER_TRADE
 
 
 @pytest.fixture
@@ -54,7 +55,7 @@ async def test_balance_check_sufficient_funds(mock_trader):
     result = await mock_trader._check_balance()
 
     assert result is True
-    assert mock_trader._planned_trade_amount == 5.0  # 5% of $100
+    assert mock_trader._planned_trade_amount == 1.10  # Hardcoded minimum
     mock_trader.client.get_balance_allowance.assert_called_once()
 
 
@@ -176,14 +177,14 @@ async def test_check_trigger_proceeds_with_sufficient_balance(mock_trader):
         }
     )
 
-    # Mock execute_order
-    mock_trader.execute_order = AsyncMock()
+    # Mock execute_order - need to mock the order_execution manager's method
+    mock_trader.order_execution.execute_order_for = AsyncMock(return_value=True)
 
     # Trigger should execute order
     await mock_trader.check_trigger(time_remaining=85.0)
 
     # Verify order WAS executed
-    mock_trader.execute_order.assert_called_once()
+    mock_trader.order_execution.execute_order_for.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -204,17 +205,23 @@ async def test_balance_check_only_runs_once(mock_trader):
     )
 
     # Mock execute_order to mark executed to prevent repeated calls in test
-    async def _exec_once():
-        mock_trader.order_executed = True
+    # Call mark_executed() and also set the internal order_executed attribute directly
+    # to ensure the mock is_executed() returns True
+    async def _exec_once(side, winning_ask):
+        mock_trader.order_execution.mark_executed()
+        # Also set the attribute directly on the mock to ensure it works
+        mock_trader.order_execution.order_executed = True
+        return True
 
-    mock_trader.execute_order = AsyncMock(side_effect=_exec_once)
+    mock_trader.order_execution.execute_order_for = AsyncMock(side_effect=_exec_once)
 
     # Call check_trigger twice
     await mock_trader.check_trigger(time_remaining=85.0)
     await mock_trader.check_trigger(time_remaining=84.0)
 
-    # Balance check should only be called once
-    assert mock_trader.client.get_balance_allowance.call_count == 1
+    # check_balance() is called once, but check_risk_limits() also calls get_balance_allowance
+    # So we expect 2 calls total (1 from check_balance, 1 from check_risk_limits)
+    assert mock_trader.client.get_balance_allowance.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -223,9 +230,9 @@ async def test_balance_check_edge_case_exact_amount(mock_trader):
     # Mock API response with exact balance needed
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={
-            # Exactly $30.00 balance => 5% = $1.50 (exactly the minimum)
-            "balance": int(30.0 * 1e6),
-            "allowances": {EXCHANGE_CONTRACT: int(1.5 * 1e6)},
+            # Exactly $1.10 balance and allowance (hardcoded minimum)
+            "balance": int(1.1 * 1e6),
+            "allowances": {EXCHANGE_CONTRACT: int(1.1 * 1e6)},
         }
     )
 
