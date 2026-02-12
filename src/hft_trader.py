@@ -1019,10 +1019,6 @@ class LastSecondTrader:
                 f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {trade_side} @ ${winning_ask:.4f}{oracle_note}"
             )
 
-            risk_ok = await self.risk_manager.check_risk_limits()
-            if not risk_ok:
-                return
-
             elapsed = time.monotonic() - trigger_start_mono
             if (time_remaining - elapsed) <= 0:
                 self._log(
@@ -1417,25 +1413,16 @@ class LastSecondTrader:
             self.risk_manager.client = value
 
     # Keep for backward compatibility with tests
-    async def _check_balance(self) -> bool:
-        """Deprecated: Use risk_manager.check_balance() instead."""
-        # This method is kept for backward compatibility with existing tests
-        # but delegates to the new manager
-        return await self.risk_manager.check_balance()
-
-    # Keep for backward compatibility with tests
-    async def _check_risk_limits(self) -> bool:
-        """Deprecated: Use risk_manager.check_risk_limits() instead."""
-        # This method is kept for backward compatibility with existing tests
-        # but delegates to the new manager
-        return await self.risk_manager.check_risk_limits()
-
-    # Keep for backward compatibility with tests
     def _track_daily_pnl(self, trade_amount: float, pnl: float = 0.0) -> None:
         """Deprecated: Use risk_manager.track_daily_pnl() instead."""
         # This method is kept for backward compatibility with existing tests
         # but delegates to the new manager
         return self.risk_manager.track_daily_pnl(trade_amount, pnl)
+
+    # Keep for backward compatibility with tests
+    async def _check_balance(self) -> bool:
+        """Deprecated: Use risk_manager.check_balance() instead."""
+        return await self.risk_manager.check_balance()
 
     # Keep for backward compatibility with tests
     def _check_daily_limits(self) -> bool:

@@ -180,65 +180,6 @@ class RiskManager:
             self._log(f"⚠️  [{self.market_name}] Balance check failed: {e}")
             return False
 
-    async def check_risk_limits(self) -> bool:
-        """
-        Check if current trade size respects the maximum capital percentage limit.
-
-        Note: check_balance() validates we have sufficient funds for the planned trade.
-        This method additionally validates that the trade doesn't exceed the
-        maximum capital percentage per trade (5% by default).
-
-        Returns:
-            True if trade size is within limits, False otherwise
-        """
-        if not self.client:
-            self._log(
-                f"❌ [{self.market_name}] CLOB client not initialized for risk check"
-            )
-            return False
-
-        try:
-            # Get USDC balance
-            from py_clob_client.clob_types import BalanceAllowanceParams
-
-            balance_data_raw = await asyncio.to_thread(
-                self.client.get_balance_allowance,
-                BalanceAllowanceParams(asset_type="COLLATERAL"),  # type: ignore[arg-type]
-            )
-            balance_data: dict[str, Any] = balance_data_raw
-            usdc_balance = float(balance_data.get("balance", 0)) / 1e6
-
-            # Get trade amount
-            trade_amount = (
-                self._planned_trade_amount
-                if self._planned_trade_amount is not None
-                else max(round(self.trade_size, 2), 1.00)
-            )
-
-            # Calculate maximum allowed trade size
-            max_trade_size = usdc_balance * MAX_CAPITAL_PCT_PER_TRADE
-
-            # Check if planned trade exceeds limit
-            if trade_amount > max_trade_size:
-                self._log(
-                    f"🛑 [{self.market_name}] RISK LIMIT EXCEEDED: "
-                    + f"Trade ${trade_amount:.2f} > Max ${max_trade_size:.2f} "
-                    + f"({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of ${usdc_balance:.2f})",
-                )
-                return False
-
-            # Log the trade size for visibility
-            self._log(
-                f"✓ [{self.market_name}] Risk check passed: "
-                + f"Trade ${trade_amount:.2f} ≤ Max ${max_trade_size:.2f} "
-                + f"({MAX_CAPITAL_PCT_PER_TRADE * 100:.0f}% of capital)",
-            )
-            return True
-
-        except Exception as e:
-            self._log(f"⚠️  [{self.market_name}] Risk limit check failed: {e}")
-            return False
-
     def check_daily_limits(self) -> bool:
         """
         Check if daily limits are within acceptable bounds.
