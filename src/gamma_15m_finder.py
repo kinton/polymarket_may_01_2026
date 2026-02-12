@@ -37,6 +37,8 @@ class GammaAPI15mFinder:
 
     BASE_URL = "https://gamma-api.polymarket.com/public-search"
     ET_TZ = ZoneInfo("America/New_York")  # Handles DST correctly
+    CACHE_FILE = "/tmp/gamma_cache.json"
+    CACHE_TTL_SECONDS = 60  # Cache results for 60 seconds
 
     def __init__(
         self,
@@ -67,6 +69,9 @@ class GammaAPI15mFinder:
         self.max_retries = int(os.getenv("GAMMA_MAX_RETRIES", "3"))
         self.backoff_base = float(os.getenv("GAMMA_BACKOFF_BASE", "0.5"))
         self.backoff_max = float(os.getenv("GAMMA_BACKOFF_MAX", "4.0"))
+        # Cache stats
+        self.cache_hits = 0
+        self.cache_misses = 0
 
     def _out(self, message: str) -> None:
         if not message:
@@ -75,6 +80,45 @@ class GammaAPI15mFinder:
             self.logger.info(message)
             return
         print(message)
+
+    def _load_cache(self) -> dict[str, Any] | None:
+        """Load cached market data if still valid."""
+        try:
+            if not os.path.exists(self.CACHE_FILE):
+                return None
+
+            with open(self.CACHE_FILE, "r") as f:
+                cache_data = json.load(f)
+
+            # Check if cache is still fresh
+            cache_age = time.time() - cache_data.get("timestamp", 0)
+            if cache_age > self.CACHE_TTL_SECONDS:
+                self._out(f"Cache expired (age: {cache_age:.1f}s, TTL: {self.CACHE_TTL_SECONDS}s)")
+                return None
+
+            self._out(f"Cache HIT! Using cached data (age: {cache_age:.1f}s)")
+            self.cache_hits += 1
+            return cache_data
+
+        except Exception as e:
+            self._out(f"Failed to load cache: {e}")
+            return None
+
+    def _save_cache(self, markets: list[dict[str, Any]], all_events: list[dict[str, Any]]) -> None:
+        """Save market data to cache."""
+        try:
+            cache_data = {
+                "timestamp": time.time(),
+                "markets": markets,
+                "all_events": all_events,
+            }
+
+            with open(self.CACHE_FILE, "w") as f:
+                json.dump(cache_data, f)
+
+            self._out(f"Cache SAVED: {len(all_events)} events, {len(markets) or 'no'} matching markets")
+        except Exception as e:
+            self._out(f"Failed to save cache: {e}")
 
     async def _rate_limit(self) -> None:
         """Throttle Gamma API requests to avoid rate limits."""
@@ -380,62 +424,47 @@ class GammaAPI15mFinder:
             f"Searching for markets ending in the next {self.max_minutes_ahead} minutes..."
         )
 
-        # Step 2: Query API for markets
-        self._out("Querying Polymarket Gamma API...")
+        # Step 1: Check cache first
+        cached_data = self._load_cache()
+        if cached_data:
+            all_events = cached_data.get("all_events", [])
+        else:
+            # Step 2: Query API for markets
+            self._out("Querying Polymarket Gamma API...")
+            self.cache_misses += 1
 
-        all_events = []
-        seen_ids = set()
+            all_events = []
+            seen_ids = set()
 
-        # Step 1: Run targeted searches with specific queries
-        self._out(f"Using targeted search with {len(self.base_queries)} base queries...")
+            # Step 2a: Run targeted searches with specific queries
+            self._out(f"Using targeted search with {len(self.base_queries)} base queries...")
 
-        # Generate date strings for today
-        # Polymarket inconsistently uses "February 2" vs "February 02"
-        # So we generate both formats to be safe
-        current_date_no_zero = now.strftime("%B %-d")  # "February 2"
-        current_date_with_zero = now.strftime("%B %d")  # "February 02"
+            # Generate date strings for today
+            # Polymarket inconsistently uses "February 2" vs "February 02"
+            # So we generate both formats to be safe
+            current_date_no_zero = now.strftime("%B %-d")  # "February 2"
+            current_date_with_zero = now.strftime("%B %d")  # "February 02"
 
-        # Get current hour in 12h format
-        current_hour_24 = now.hour
-        hour_12 = current_hour_24 % 12 or 12
+            # Get current hour in 12h format
+            current_hour_24 = now.hour
+            hour_12 = current_hour_24 % 12 or 12
 
-        queries = []
-        for base in self.base_queries:
-            if "Up or Down" in base:
-                # Add date+hour queries (both date formats for reliability)
-                # This helps API find recent markets instead of old popular ones
-                queries.append(f"{base} - {current_date_no_zero}, {hour_12}:")
-                queries.append(f"{base} - {current_date_with_zero}, {hour_12}:")
-            queries.append(base)
-
-        async with aiohttp.ClientSession() as session:
-            for query in queries:
-                markets_data = await self.search_markets(query=query, session=session)
-                events = markets_data.get("events", [])
-
-                if events:
-                    self._out(f"Query '{query[:50]}...' returned {len(events)} events")
-
-                    for event in events:
-                        event_id = event.get("id")
-                        if event_id and event_id not in seen_ids:
-                            seen_ids.add(event_id)
-                            all_events.append(event)
-
-        # Step 2: Optionally run wide search if enabled
-        if self.use_wide_search:
-            self._out("Additionally running wide search (a-e)...")
-            wide_queries = ["a", "b", "c", "d", "e"]
+            queries = []
+            for base in self.base_queries:
+                if "Up or Down" in base:
+                    # Add date+hour queries (both date formats for reliability)
+                    # This helps API find recent markets instead of old popular ones
+                    queries.append(f"{base} - {current_date_no_zero}, {hour_12}:")
+                    queries.append(f"{base} - {current_date_with_zero}, {hour_12}:")
+                queries.append(base)
 
             async with aiohttp.ClientSession() as session:
-                for query in wide_queries:
-                    markets_data = await self.search_markets(
-                        query=query, session=session
-                    )
+                for query in queries:
+                    markets_data = await self.search_markets(query=query, session=session)
                     events = markets_data.get("events", [])
 
                     if events:
-                        self._out(f"Query '{query}' returned {len(events)} events")
+                        self._out(f"Query '{query[:50]}...' returned {len(events)} events")
 
                         for event in events:
                             event_id = event.get("id")
@@ -443,16 +472,41 @@ class GammaAPI15mFinder:
                                 seen_ids.add(event_id)
                                 all_events.append(event)
 
-        if not all_events:
-            self._out("No markets found")
-            return None
+            # Step 2b: Optionally run wide search if enabled
+            if self.use_wide_search:
+                self._out("Additionally running wide search (a-e)...")
+                wide_queries = ["a", "b", "c", "d", "e"]
 
-        self._out(f"Found {len(all_events)} unique events total")
+                async with aiohttp.ClientSession() as session:
+                    for query in wide_queries:
+                        markets_data = await self.search_markets(
+                            query=query, session=session
+                        )
+                        events = markets_data.get("events", [])
+
+                        if events:
+                            self._out(f"Query '{query}' returned {len(events)} events")
+
+                            for event in events:
+                                event_id = event.get("id")
+                                if event_id and event_id not in seen_ids:
+                                    seen_ids.add(event_id)
+                                    all_events.append(event)
+
+            if not all_events:
+                self._out("No markets found")
+                return None
+
+            self._out(f"Found {len(all_events)} unique events total")
 
         # Step 3: Filter for active markets ending in less than max_minutes_ahead
         active_markets = self.filter_markets(
             all_events, max_minutes_ahead=self.max_minutes_ahead
         )
+
+        # Save cache only on miss (fresh data)
+        if cached_data is None:
+            self._save_cache(active_markets, all_events)
 
         if not active_markets:
             self._out(
