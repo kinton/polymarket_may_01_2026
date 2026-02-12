@@ -9,10 +9,9 @@ This test mocks:
 """
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 import pytest
 
-from src.hft_trader import LastSecondTrader
 
 
 @pytest.mark.asyncio
@@ -26,7 +25,6 @@ async def test_websocket_reconnection_exponential_backoff(integration_trader):
     - Successful reconnection after failures
     """
     connection_attempts = []
-    backoff_delays = []
 
     # Track the number of calls to simulate retry logic
     call_count = [0]
@@ -179,7 +177,7 @@ async def test_websocket_backoff_delays(integration_trader):
             pass  # Expected
 
         # Third attempt (2s backoff: 2^1 = 2s)
-        result = await integration_trader.connect_websocket()
+        await integration_trader.connect_websocket()
 
         # Verify delays (allowing for some timing variance)
         assert len(delays) >= 2

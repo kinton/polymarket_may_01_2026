@@ -7,8 +7,7 @@ This test mocks:
 - RTDS WebSocket (oracle)
 """
 
-import asyncio
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock
 import pytest
 
 from src.clob_types import OrderBook
@@ -27,7 +26,6 @@ async def test_full_trading_workflow(
     - Position is opened and tracked
     """
     # Simulate market discovery
-    selected_market = sample_market_data
 
     # Simulate orderbook data with winning side = YES
     initial_orderbook = OrderBook()

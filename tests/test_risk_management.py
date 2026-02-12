@@ -82,13 +82,13 @@ async def test_check_risk_limits_sufficient_balance(mock_trader, cleanup_daily_l
 
 @pytest.mark.asyncio
 async def test_check_risk_limits_exceeds_limit(mock_trader, cleanup_daily_limits):
-    """Test that risk check fails when trade size exceeds 5% limit."""
-    # Mock balance ($100, max 5% = $5)
+    """Test that risk check fails when trade size exceeds 25% limit."""
+    # Mock balance ($100, max 25% = $25)
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={"balance": int(100 * 1e6), "allowances": {}}
     )
 
-    mock_trader._planned_trade_amount = 10.0  # $10 trade > $5 limit
+    mock_trader._planned_trade_amount = 30.0  # $30 trade > $25 limit
 
     result = await mock_trader._check_risk_limits()
 
@@ -460,7 +460,7 @@ async def test_check_trigger_proceeds_when_limits_ok(mock_trader, cleanup_daily_
 # Test constants
 def test_max_capital_pct_per_trade():
     """Test MAX_CAPITAL_PCT_PER_TRADE constant."""
-    assert MAX_CAPITAL_PCT_PER_TRADE == 0.05  # 5%
+    assert MAX_CAPITAL_PCT_PER_TRADE == 0.25  # 25%
 
 
 def test_max_daily_loss_pct():

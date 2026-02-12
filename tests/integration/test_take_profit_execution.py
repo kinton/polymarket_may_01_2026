@@ -12,7 +12,6 @@ This test mocks:
 import pytest
 from unittest.mock import AsyncMock
 
-from src.clob_types import TAKE_PROFIT_PCT
 
 
 @pytest.mark.asyncio

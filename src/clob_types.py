@@ -46,10 +46,10 @@ PRICE_THRESHOLD = 0.85  # Legacy name, use MIN_BUY_PRICE
 PRICE_TIE_EPS = 1e-6
 MIN_CONFIDENCE = 0.75  # Only buy if winning side has ≥75% confidence (bid/ask ≥ 0.75)
 
-# Trade sizing constants (dynamic sizing: min of hard constants vs 5% of balance)
+# Trade sizing constants (dynamic sizing: min of hard constants vs 25% of balance)
 MIN_TRADE_USDC = 1.00  # Hard minimum trade size in USDC
 MAX_TRADE_USDC = 10.00  # Hard maximum trade size in USDC
-MAX_CAPITAL_PCT_PER_TRADE = 0.05  # Maximum 5% of capital per trade
+MAX_CAPITAL_PCT_PER_TRADE = 0.25  # Maximum 25% of capital per trade (increased from 5% for small balances)
 
 # Stop-loss constants (CRITICAL!)
 STOP_LOSS_PCT = 0.30  # Exit if price drops 30% from entry

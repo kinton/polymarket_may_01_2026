@@ -33,7 +33,6 @@ Requirements:
 import asyncio
 import json
 import os
-import signal
 import time
 import traceback
 from datetime import datetime, timezone
@@ -161,7 +160,7 @@ class LastSecondTrader:
             self.last_ws_update_ts = 0.0
             self._last_stale_log_ts = 0.0
             self._planned_trade_side: str | None = None
-            self.ws = None
+            self.ws: Any = None
 
             # Initialize managers
             load_dotenv()
@@ -242,8 +241,9 @@ class LastSecondTrader:
         except Exception as e:
             self._log(f"[TRADER] [{self.market_name}] ERROR during initialization: {e}")
             self._log(traceback.format_exc())
-            if self.alert_dispatcher and self.alert_dispatcher.is_enabled():
-                self.alert_dispatcher.send_alert(f"[{self.market_name}] CRITICAL: Initialization failed - {e}")
+            # TODO: Add alert for initialization failures
+            # if self.alert_dispatcher and self.alert_dispatcher.is_enabled():
+            #     await self.alert_dispatcher.send_critical_alert(f"[{self.market_name}] CRITICAL: Initialization failed - {e}")
             raise
 
     async def graceful_shutdown(self, reason: str = "Unknown"):

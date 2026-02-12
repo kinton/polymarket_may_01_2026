@@ -10,7 +10,7 @@ This test mocks:
 
 import pytest
 from dataclasses import replace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from src.clob_types import OrderBook
 from src.oracle_tracker import OracleTracker

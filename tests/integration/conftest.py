@@ -11,14 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.hft_trader import LastSecondTrader
-from src.clob_types import (
-    STOP_LOSS_ABSOLUTE,
-    STOP_LOSS_CHECK_INTERVAL_S,
-    STOP_LOSS_PCT,
-    TAKE_PROFIT_CHECK_INTERVAL_S,
-    TAKE_PROFIT_PCT,
-    TRAILING_STOP_PCT,
-)
 
 
 @pytest.fixture

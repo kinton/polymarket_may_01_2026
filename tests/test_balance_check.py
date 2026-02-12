@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.hft_trader import LastSecondTrader
-from src.clob_types import EXCHANGE_CONTRACT, MAX_CAPITAL_PCT_PER_TRADE
+from src.clob_types import EXCHANGE_CONTRACT
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def mock_trader():
 async def test_balance_check_sufficient_funds(mock_trader):
     """Test that balance check passes when both balance and allowance are sufficient."""
     # Mock API response with sufficient funds
-    # With $100 balance: required = max($1.0, $1.5, $5.00) = $5.00
+    # With $100 balance: required = max($1.0, $1.5, $25.00) = $25.00
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={
             "balance": int(100 * 1e6),
@@ -56,8 +56,8 @@ async def test_balance_check_sufficient_funds(mock_trader):
     result = await mock_trader._check_balance()
 
     assert result is True
-    # Dynamic sizing: max(MIN_TRADE_USDC=$1.0, trade_size=$1.5, 5%_balance=$5.0) = $5.0
-    assert mock_trader._planned_trade_amount == 5.00
+    # Dynamic sizing: max(MIN_TRADE_USDC=$1.0, trade_size=$1.5, 25%_balance=$25.0) = $25.0
+    assert mock_trader._planned_trade_amount == 10.00
     mock_trader.client.get_balance_allowance.assert_called_once()
 
 
