@@ -224,9 +224,9 @@ async def test_balance_check_only_runs_once(mock_trader):
     await mock_trader.check_trigger(time_remaining=85.0)
     await mock_trader.check_trigger(time_remaining=84.0)
 
-    # check_balance() is called once, but check_risk_limits() also calls get_balance_allowance
-    # So we expect 2 calls total (1 from check_balance, 1 from check_risk_limits)
-    assert mock_trader.client.get_balance_allowance.call_count == 2
+    # check_risk_limits() was removed (2026-02-12), so check_balance() only calls get_balance_allowance once
+    # Expected: 1 call from check_balance() (subsequent calls skip due to order_executed)
+    assert mock_trader.client.get_balance_allowance.call_count == 1
 
 
 @pytest.mark.asyncio

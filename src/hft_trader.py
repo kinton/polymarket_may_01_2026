@@ -371,6 +371,13 @@ class LastSecondTrader:
             return self.orderbook.best_ask_no
         return None
 
+    def _get_bid_for_side(self, side: str) -> float | None:
+        if side == "YES":
+            return self.orderbook.best_bid_yes
+        if side == "NO":
+            return self.orderbook.best_bid_no
+        return None
+
     def check_orderbook_liquidity(self) -> bool:
         """
         Check if orderbook has sufficient liquidity.
@@ -893,12 +900,19 @@ class LastSecondTrader:
                     self._logged_warnings.add("no_ask")
                 return
 
-            if winning_ask < self.MIN_CONFIDENCE:
+            # Use bid for confidence check (ask includes spread, causing false negatives)
+            # Fallback to ask if bid unavailable (for tests/market data issues)
+            winning_bid = self._get_bid_for_side(trade_side)
+            if winning_bid is None:
+                # Fallback to ask (legacy behavior for tests)
+                winning_bid = winning_ask
+
+            if winning_bid < self.MIN_CONFIDENCE:
                 if "low_confidence" not in self._logged_warnings:
                     self._log(
-                        f"⚠️  [{self.market_name}] Low confidence: ${winning_ask:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE * 100:.0f}%)"
+                        f"⚠️  [{self.market_name}] Low confidence: ${winning_bid:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE * 100:.0f}%)"
                     )
-                    self._logged_warnings.add("low_confidence")
+                self._logged_warnings.add("low_confidence")
                 return
 
             if winning_ask > self.MAX_BUY_PRICE + self.PRICE_TIE_EPS:
