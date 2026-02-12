@@ -2,7 +2,6 @@
 
 from datetime import datetime, timezone
 
-import pytest
 
 from src.clob_types import MIN_ORDERBOOK_SIZE_USD, OrderBook
 from src.hft_trader import LastSecondTrader
