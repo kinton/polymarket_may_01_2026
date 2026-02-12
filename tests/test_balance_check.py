@@ -45,6 +45,7 @@ def mock_trader():
 async def test_balance_check_sufficient_funds(mock_trader):
     """Test that balance check passes when both balance and allowance are sufficient."""
     # Mock API response with sufficient funds
+    # With $100 balance: required = max($1.0, $1.5, $5.00) = $5.00
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={
             "balance": int(100 * 1e6),
@@ -55,7 +56,8 @@ async def test_balance_check_sufficient_funds(mock_trader):
     result = await mock_trader._check_balance()
 
     assert result is True
-    assert mock_trader._planned_trade_amount == 1.10  # Hardcoded minimum
+    # Dynamic sizing: max(MIN_TRADE_USDC=$1.0, trade_size=$1.5, 5%_balance=$5.0) = $5.0
+    assert mock_trader._planned_trade_amount == 5.00
     mock_trader.client.get_balance_allowance.assert_called_once()
 
 
@@ -63,16 +65,19 @@ async def test_balance_check_sufficient_funds(mock_trader):
 async def test_balance_check_insufficient_balance(mock_trader):
     """Test that balance check fails when USDC balance is below trade size."""
     # Mock API response with insufficient balance
+    # With $1.0 balance: required = max($1.0, $1.5, $0.05) = $1.5 (5% is negligible)
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={
             "balance": int(1.0 * 1e6),
-            "allowances": {"0x4b2...4a44": int(100 * 1e6)},
+            "allowances": {EXCHANGE_CONTRACT: int(100 * 1e6)},
         }
     )
 
     result = await mock_trader._check_balance()
 
     assert result is False
+    # Should calculate required = $1.50 (max of MIN=$1.0, trade_size=$1.5, 5%=$0.05)
+    assert mock_trader._planned_trade_amount == 1.50
     mock_trader.client.get_balance_allowance.assert_called_once()
 
 
@@ -142,7 +147,7 @@ async def test_check_trigger_stops_on_insufficient_balance(mock_trader):
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={
             "balance": int(1.0 * 1e6),
-            "allowances": {"0x4b2...4a44": int(100 * 1e6)},
+            "allowances": {EXCHANGE_CONTRACT: int(100 * 1e6)},
         }
     )
 
@@ -173,7 +178,7 @@ async def test_check_trigger_proceeds_with_sufficient_balance(mock_trader):
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={
             "balance": int(100 * 1e6),
-            "allowances": {"0x4b2...4a44": int(100 * 1e6)},
+            "allowances": {EXCHANGE_CONTRACT: int(100 * 1e6)},
         }
     )
 
@@ -200,7 +205,7 @@ async def test_balance_check_only_runs_once(mock_trader):
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={
             "balance": int(100 * 1e6),
-            "allowances": {"0x4b2...4a44": int(100 * 1e6)},
+            "allowances": {EXCHANGE_CONTRACT: int(100 * 1e6)},
         }
     )
 
@@ -230,9 +235,9 @@ async def test_balance_check_edge_case_exact_amount(mock_trader):
     # Mock API response with exact balance needed
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={
-            # Exactly $1.10 balance and allowance (hardcoded minimum)
-            "balance": int(1.1 * 1e6),
-            "allowances": {EXCHANGE_CONTRACT: int(1.1 * 1e6)},
+            # Exactly $1.50 balance and allowance (trade_size param)
+            "balance": int(1.5 * 1e6),
+            "allowances": {EXCHANGE_CONTRACT: int(1.5 * 1e6)},
         }
     )
 
