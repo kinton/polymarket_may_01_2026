@@ -29,10 +29,10 @@ async def test_full_trading_workflow(
 
     # Simulate orderbook data with winning side = YES
     initial_orderbook = OrderBook()
-    initial_orderbook.best_ask_yes = 0.80  # Winning side price
-    initial_orderbook.best_bid_yes = 0.79
-    initial_orderbook.best_ask_no = 0.20  # Losing side
-    initial_orderbook.best_bid_no = 0.19
+    initial_orderbook.best_ask_yes = 0.90  # Winning side price (>= 85%)
+    initial_orderbook.best_bid_yes = 0.89
+    initial_orderbook.best_ask_no = 0.10  # Losing side
+    initial_orderbook.best_bid_no = 0.09
     initial_orderbook.update()
 
     # Set orderbook to simulate market conditions
@@ -44,9 +44,9 @@ async def test_full_trading_workflow(
         # Simulate opening position
         integration_trader.order_execution.order_executed = True
         integration_trader.position_manager.open_position(
-            entry_price=winning_ask or 0.80,
+            entry_price=winning_ask or 0.90,
             side=side,
-            trailing_stop_price=0.69,
+            trailing_stop_price=0.78,
         )
         return True
 
@@ -61,7 +61,7 @@ async def test_full_trading_workflow(
     assert integration_trader.order_executed is True
     assert integration_trader.position_open is True
     assert integration_trader.position_side == "YES"
-    assert integration_trader.entry_price == 0.80  # Entry price from winning ask
+    assert integration_trader.entry_price == 0.90  # Entry price from winning ask
 
     # Verify position is tracked
     assert integration_trader.position_open is True

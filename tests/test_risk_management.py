@@ -63,12 +63,6 @@ def cleanup_daily_limits(mock_trader):
     if os.path.exists(path):
         os.remove(path)
 
-    with open(path, "r") as f:
-        data = json.load(f)
-
-    assert data["total_trades"] == 1
-    assert data["current_pnl"] == 1.5
-
 
 def test_track_daily_pnl_multiple_trades(mock_trader, cleanup_daily_limits):
     """Test that tracking accumulates PnL across multiple trades."""
