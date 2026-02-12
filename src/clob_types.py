@@ -84,3 +84,9 @@ MIN_ORACLE_POINTS = 4  # Minimum data points required for oracle tracking
 MAX_VOL_PCT = 0.002  # Maximum acceptable volatility percentage
 MIN_ABS_Z = 0.75  # Minimum absolute z-score threshold
 MAX_REVERSAL_SLOPE = 0.0  # Maximum reversal slope (disabled by default)
+
+# Early entry mode constants
+EARLY_ENTRY_ENABLED = True  # Enable early entry mode
+EARLY_ENTRY_CONFIDENCE_THRESHOLD = 0.90  # Require 90% confidence for early entry
+EARLY_ENTRY_START_TIME_S = 600.0  # Start early entry 10 minutes before close (600s)
+EARLY_ENTRY_END_TIME_S = 60.0  # Stop early entry 60 seconds before close

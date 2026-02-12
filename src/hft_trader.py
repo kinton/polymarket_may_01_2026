@@ -56,6 +56,10 @@ from src.clob_types import (
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
     TRIGGER_THRESHOLD,
+    EARLY_ENTRY_ENABLED,
+    EARLY_ENTRY_CONFIDENCE_THRESHOLD,
+    EARLY_ENTRY_START_TIME_S,
+    EARLY_ENTRY_END_TIME_S,
     OrderBook,
 )
 from src.market_parser import (
@@ -778,6 +782,40 @@ class LastSecondTrader:
             return self.orderbook.best_bid_no
         return None
 
+    def _check_early_entry_eligibility(self) -> bool:
+        """
+        Check if early entry conditions are met.
+
+        Returns True if:
+        - Early entry is enabled
+        - Time remaining is between EARLY_ENTRY_END_TIME_S and EARLY_ENTRY_START_TIME_S
+        - Winning side confidence >= EARLY_ENTRY_CONFIDENCE_THRESHOLD
+        - Orderbook has sufficient liquidity
+        """
+        if not EARLY_ENTRY_ENABLED:
+            return False
+
+        # Calculate time remaining
+        time_remaining = (self.end_time - datetime.now(timezone.utc)).total_seconds()
+
+        # Check time window (must be between 60s and 600s before close)
+        if not (EARLY_ENTRY_END_TIME_S <= time_remaining <= EARLY_ENTRY_START_TIME_S):
+            return False
+
+        # Check confidence threshold (must have >= 90% confidence)
+        if self.winning_side is None:
+            return False
+
+        winning_bid = self._get_winning_bid()
+        if winning_bid is None or winning_bid < EARLY_ENTRY_CONFIDENCE_THRESHOLD:
+            return False
+
+        # Check liquidity requirement
+        if not self.check_orderbook_liquidity():
+            return False
+
+        return True
+
     async def check_trigger(self, time_remaining: float):
         """
         Check if trigger conditions are met and execute trade if appropriate.
@@ -815,6 +853,14 @@ class LastSecondTrader:
                 return
 
             if time_remaining > self.TRIGGER_THRESHOLD:
+                # Check for early entry opportunity (before late window)
+                if self._check_early_entry_eligibility():
+                    winning_bid = self._get_winning_bid()
+                    self._log(
+                        f"[TRADER] [{self.market_name}] Early entry triggered: confidence={winning_bid:.4f} (≥{EARLY_ENTRY_CONFIDENCE_THRESHOLD:.2f}), time={time_remaining:.0f}s"
+                    )
+                    await self.execute_order()
+                    return
                 return
 
             trade_side = self.winning_side
