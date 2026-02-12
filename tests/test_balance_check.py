@@ -44,13 +44,13 @@ def mock_trader():
 @pytest.mark.asyncio
 async def test_balance_check_sufficient_funds(mock_trader):
     """Test that balance check passes when both balance and allowance are sufficient."""
-        # Mock API response with sufficient funds
-        mock_trader.client.get_balance_allowance = MagicMock(
-            return_value={
-                "balance": int(100 * 1e6),
-                "allowances": {EXCHANGE_CONTRACT: int(100 * 1e6)},
-            }
-        )
+    # Mock API response with sufficient funds
+    mock_trader.client.get_balance_allowance = MagicMock(
+        return_value={
+            "balance": int(100 * 1e6),
+            "allowances": {EXCHANGE_CONTRACT: int(100 * 1e6)},
+        }
+    )
 
     result = await mock_trader._check_balance()
 

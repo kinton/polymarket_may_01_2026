@@ -45,7 +45,7 @@ class TradingBotRunner:
 
     # Configuration
     POLL_INTERVAL = 120  # Check for new markets every 120 seconds to reduce API load
-    TRADER_START_WINDOW_MAX = 300  # Start trader up to 5 minutes before market close (INCREASED from 240s)
+    TRADER_START_WINDOW_MAX = 900  # Start trader up to 15 minutes before market close (INCREASED from 300s)
     TRADER_START_WINDOW_MIN = 20  # But not less than 20 seconds before close (too late)
 
     def __init__(
