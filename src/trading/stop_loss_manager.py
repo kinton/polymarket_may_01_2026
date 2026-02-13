@@ -196,11 +196,11 @@ class StopLossManager:
             STOP_LOSS_ABSOLUTE,
         )
 
+        # Initialize trailing stop if not set yet
+        if self.position_manager.trailing_stop_price is None:
+            self.position_manager.update_trailing_stop(new_trailing_stop)
         # Only raise the stop, never lower it
-        if (
-            self.position_manager.trailing_stop_price is not None
-            and new_trailing_stop > self.position_manager.trailing_stop_price
-        ):
+        elif new_trailing_stop > self.position_manager.trailing_stop_price:
             self.position_manager.update_trailing_stop(new_trailing_stop)
 
     def get_stop_loss_price(self) -> float | None:

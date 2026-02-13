@@ -229,8 +229,8 @@ class RiskManager:
 
         except Exception as e:
             self._log(f"⚠️  [{self.market_name}] Daily limits check failed: {e}")
-            # Fail open on error - allow trading if we can't check
-            return True
+            # Fail closed on error - block trading if we can't verify limits
+            return False
 
     def track_daily_pnl(self, trade_amount: float, pnl: float = 0.0) -> None:
         """
@@ -278,11 +278,20 @@ class RiskManager:
                             BalanceAllowanceParams(asset_type="COLLATERAL")  # type: ignore[arg-type]
                         )
                         balance_data: dict[str, Any] = balance_data_raw
-                        data["initial_balance"] = (
-                            float(balance_data.get("balance", 0)) / 1e6
+                        fetched_balance = float(balance_data.get("balance", 0)) / 1e6
+                        # Sanity check: initial balance must be reasonable (> $1)
+                        if fetched_balance > 1.0:
+                            data["initial_balance"] = fetched_balance
+                        else:
+                            self._log(
+                                f"⚠️  [{self.market_name}] Fetched balance too low "
+                                + f"(${fetched_balance:.2f}), skipping initial_balance set"
+                            )
+                    except Exception as e:
+                        self._log(
+                            f"⚠️  [{self.market_name}] Failed to fetch initial balance: {e}"
                         )
-                    except Exception:
-                        data["initial_balance"] = trade_amount
+                        # Don't set initial_balance to trade_amount — it's meaningless for limits
 
             # Write updated data
             with open(path, "w") as f:

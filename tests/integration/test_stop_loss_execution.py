@@ -103,10 +103,10 @@ async def test_stop_loss_uses_absolute_floor(integration_trader):
     integration_trader.entry_price = 0.96
     integration_trader.position_side = "YES"
     integration_trader.position_open = True
-    integration_trader.trailing_stop_price = STOP_LOSS_ABSOLUTE  # $0.95
+    integration_trader.trailing_stop_price = STOP_LOSS_ABSOLUTE  # $0.80
 
-    # Price drops to $0.94, below absolute floor of $0.95
-    integration_trader.orderbook.best_ask_yes = 0.94
+    # Price drops to $0.79, below absolute floor of $0.80
+    integration_trader.orderbook.best_ask_yes = 0.79
 
     # Mock order_execution.execute_sell to verify stop-loss execution and close position
     async def mock_execute_sell(reason, current_price):
@@ -121,5 +121,5 @@ async def test_stop_loss_uses_absolute_floor(integration_trader):
     await integration_trader._check_stop_loss_take_profit()
 
     # Verify stop-loss triggered due to absolute floor
-    integration_trader.order_execution.execute_sell.assert_called_once_with("STOP-LOSS", 0.94)
+    integration_trader.order_execution.execute_sell.assert_called_once_with("STOP-LOSS", 0.79)
     assert integration_trader.position_open is False

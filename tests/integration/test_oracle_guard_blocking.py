@@ -55,10 +55,10 @@ async def test_oracle_guard_blocking_volatility_spike(integration_trader):
 
     # Set up orderbook with winning side
     integration_trader.orderbook = OrderBook()
-    integration_trader.orderbook.best_ask_yes = 0.80
-    integration_trader.orderbook.best_bid_yes = 0.79
-    integration_trader.orderbook.best_ask_no = 0.20
-    integration_trader.orderbook.best_bid_no = 0.19
+    integration_trader.orderbook.best_ask_yes = 0.90
+    integration_trader.orderbook.best_bid_yes = 0.89
+    integration_trader.orderbook.best_ask_no = 0.10
+    integration_trader.orderbook.best_bid_no = 0.09
     integration_trader.orderbook.update()
     integration_trader._update_winning_side()
 
@@ -134,10 +134,10 @@ async def test_oracle_guard_allows_trade_when_volatility_low(integration_trader)
 
     # Set up orderbook for trade to execute
     integration_trader.orderbook = OrderBook()
-    integration_trader.orderbook.best_ask_yes = 0.75
-    integration_trader.orderbook.best_bid_yes = 0.74
-    integration_trader.orderbook.best_ask_no = 0.25
-    integration_trader.orderbook.best_bid_no = 0.24
+    integration_trader.orderbook.best_ask_yes = 0.90
+    integration_trader.orderbook.best_bid_yes = 0.89
+    integration_trader.orderbook.best_ask_no = 0.10
+    integration_trader.orderbook.best_bid_no = 0.09
     integration_trader.orderbook.update()
     integration_trader._update_winning_side()
 
@@ -190,10 +190,10 @@ async def test_oracle_guard_zscore_blocking(integration_trader):
 
     # Set up orderbook with winning side
     integration_trader.orderbook = OrderBook()
-    integration_trader.orderbook.best_ask_yes = 0.80
-    integration_trader.orderbook.best_bid_yes = 0.79
-    integration_trader.orderbook.best_ask_no = 0.20
-    integration_trader.orderbook.best_bid_no = 0.19
+    integration_trader.orderbook.best_ask_yes = 0.90
+    integration_trader.orderbook.best_bid_yes = 0.89
+    integration_trader.orderbook.best_ask_no = 0.10
+    integration_trader.orderbook.best_bid_no = 0.09
     integration_trader.orderbook.update()
     integration_trader._update_winning_side()
 
