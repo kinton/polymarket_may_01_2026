@@ -25,8 +25,10 @@ Usage:
 
 import asyncio
 import argparse
+import functools
 import logging
 import random
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -86,6 +88,10 @@ class TradingBotRunner:
         # Active traders (track running tasks)
         self.active_traders = {}  # condition_id -> asyncio.Task
         self.monitored_markets = set()  # Track markets we've already processed
+
+        # Graceful shutdown state
+        self._shutdown_event = asyncio.Event()
+        self._traders: Dict[str, Any] = {}  # condition_id -> LastSecondTrader instance
 
         # Setup logging
         self.setup_logging()
@@ -279,6 +285,9 @@ class TradingBotRunner:
                 book_log_every_s_final=self.book_log_every_s_final,
             )
 
+            # Track trader instance for graceful shutdown
+            self._traders[condition_id] = trader
+
             # Run trader (this will block until market closes or trader finishes)
             await trader.run()
 
@@ -292,14 +301,53 @@ class TradingBotRunner:
             # Clean up
             if condition_id in self.active_traders:
                 del self.active_traders[condition_id]
+            self._traders.pop(condition_id, None)
+
+    def _register_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Register OS signal handlers for graceful shutdown (SIGINT, SIGTERM)."""
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(
+                sig,
+                functools.partial(self._handle_signal, sig),
+            )
+        self.finder_logger.info("Signal handlers registered (SIGINT, SIGTERM)")
+
+    def _handle_signal(self, sig: signal.Signals) -> None:
+        """Handle shutdown signal by setting the shutdown event."""
+        sig_name = sig.name
+        self.finder_logger.warning(f"Received {sig_name} — initiating graceful shutdown...")
+        self._shutdown_event.set()
+
+    async def _shutdown_traders(self) -> None:
+        """Gracefully shut down all active traders."""
+        if not self._traders:
+            return
+        self.finder_logger.info(
+            f"Shutting down {len(self._traders)} active trader(s) gracefully..."
+        )
+        shutdown_tasks = []
+        for cid, trader in list(self._traders.items()):
+            self.finder_logger.info(f"  → Shutting down trader for {cid}")
+            shutdown_tasks.append(trader.graceful_shutdown(reason="Signal shutdown"))
+        if shutdown_tasks:
+            results = await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    self.finder_logger.error(f"Error during trader shutdown: {result}")
+        self.finder_logger.info("All traders shut down")
 
     async def poll_and_trade(self):
         """
         Main loop: continuously poll for markets and start traders as needed.
+        Exits cleanly on SIGINT/SIGTERM via the shutdown event.
         """
+        # Register signal handlers on the running event loop
+        loop = asyncio.get_running_loop()
+        self._register_signal_handlers(loop)
+
         self.finder_logger.info("Starting market polling loop...")
 
-        while True:
+        while not self._shutdown_event.is_set():
             try:
                 self.finder_logger.info(
                     f"Polling for active markets... (every {self.poll_interval}s)"
@@ -345,19 +393,29 @@ class TradingBotRunner:
                 self.finder_logger.info(
                     f"Sleeping {sleep_for}s before next poll (jitter {jitter:.2f}x)"
                 )
-                await asyncio.sleep(sleep_for)
+                # Interruptible sleep: wake early on shutdown signal
+                try:
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(), timeout=sleep_for
+                    )
+                    # If we get here, shutdown was requested during sleep
+                    self.finder_logger.info("Shutdown requested during sleep — exiting loop")
+                    break
+                except asyncio.TimeoutError:
+                    pass  # Normal: sleep finished, continue polling
 
-            except KeyboardInterrupt:
-                self.finder_logger.info("Received shutdown signal...")
-                break
             except Exception as e:
                 self.finder_logger.error(f"Error in poll loop: {e}", exc_info=True)
-                await asyncio.sleep(self.poll_interval)
+                if not self._shutdown_event.is_set():
+                    await asyncio.sleep(self.poll_interval)
 
-        # Cleanup: wait for all active traders to finish
+        # Graceful shutdown: stop all active traders properly
+        await self._shutdown_traders()
+
+        # Wait for all trader tasks to complete
         if self.active_traders:
             self.finder_logger.info(
-                f"Waiting for {len(self.active_traders)} active trader(s) to finish..."
+                f"Waiting for {len(self.active_traders)} trader task(s) to finish..."
             )
             await asyncio.gather(*self.active_traders.values(), return_exceptions=True)
 
@@ -369,6 +427,8 @@ class TradingBotRunner:
             await self.poll_and_trade()
         except KeyboardInterrupt:
             self.finder_logger.info("\n⚠️  Interrupted by user")
+            self._shutdown_event.set()
+            await self._shutdown_traders()
         except Exception as e:
             self.finder_logger.error(f"Fatal error: {e}", exc_info=True)
         finally:
