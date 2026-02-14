@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.13.3",
+    "aiosqlite>=0.22.1",
     "py-clob-client>=0.34.5",
     "python-dotenv>=1.2.1",
     "web3>=7.14.0",
