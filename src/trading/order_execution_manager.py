@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from src.metrics import MetricsCollector
+from src.trading.rate_limiter import RateLimiter
 from src.trading.retry import retry_api_call
 
 from src.clob_types import (
@@ -57,6 +58,7 @@ class OrderExecutionManager:
         position_manager: Any | None = None,
         alert_dispatcher: Any | None = None,
         risk_manager: Any | None = None,
+        rate_limiter: RateLimiter | None = None,
     ):
         """
         Initialize the order execution manager.
@@ -85,6 +87,9 @@ class OrderExecutionManager:
         self.position_manager = position_manager
         self.alert_dispatcher = alert_dispatcher
         self.risk_manager = risk_manager
+        self.rate_limiter = rate_limiter or RateLimiter(
+            max_tokens=10.0, refill_rate=2.0, name="polymarket-api"
+        )
 
         # Order state
         self.order_executed = False
@@ -224,6 +229,7 @@ class OrderExecutionManager:
                 nonce=self._order_nonce,
             )
 
+            await self.rate_limiter.acquire()
             created_order = await retry_api_call(
                 self.client.create_market_order,
                 order_args,
@@ -234,6 +240,7 @@ class OrderExecutionManager:
             )
 
             _t0 = time.perf_counter()
+            await self.rate_limiter.acquire()
             response = await retry_api_call(
                 self.client.post_order,
                 created_order,
@@ -390,6 +397,7 @@ class OrderExecutionManager:
                 nonce=0,
             )
 
+            await self.rate_limiter.acquire()
             created_order = await retry_api_call(
                 self.client.create_market_order,
                 order_args,
@@ -399,6 +407,7 @@ class OrderExecutionManager:
                 operation_name=f"{self.market_name}:create_sell_order",
             )
 
+            await self.rate_limiter.acquire()
             response = await retry_api_call(
                 self.client.post_order,
                 created_order,
@@ -480,6 +489,7 @@ class OrderExecutionManager:
             await asyncio.sleep(0.5)
 
             # Query order status from API
+            await self.rate_limiter.acquire()
             order_data_raw = await retry_api_call(
                 self.client.get_order,
                 order_id,
