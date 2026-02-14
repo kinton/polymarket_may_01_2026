@@ -32,6 +32,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from src.logging_config import setup_bot_loggers
+from src.healthcheck import HealthCheckServer
 
 # Import our modules
 from src.gamma_15m_finder import GammaAPI15mFinder
@@ -91,6 +92,9 @@ class TradingBotRunner:
         # Graceful shutdown state
         self._shutdown_event = asyncio.Event()
         self._traders: Dict[str, Any] = {}  # condition_id -> LastSecondTrader instance
+
+        # Health check server
+        self._health: Optional[HealthCheckServer] = HealthCheckServer()
 
         # Setup logging
         self.setup_logging()
@@ -304,6 +308,16 @@ class TradingBotRunner:
         loop = asyncio.get_running_loop()
         self._register_signal_handlers(loop)
 
+        # Start health check server
+        if self._health is not None:
+            try:
+                await self._health.start()
+                self._health.set_status("running")
+                self._health.set_extra("dry_run", self.dry_run)
+                self._health.set_extra("trade_size", self.trade_size)
+            except Exception as exc:
+                self.finder_logger.warning(f"Health check server failed to start: {exc}")
+
         self.finder_logger.info("Starting market polling loop...")
 
         while not self._shutdown_event.is_set():
@@ -311,6 +325,11 @@ class TradingBotRunner:
                 self.finder_logger.info(
                     f"Polling for active markets... (every {self.poll_interval}s)"
                 )
+
+                # Record poll in health check
+                if self._health is not None:
+                    self._health.record_poll()
+                    self._health.set_active_traders(len(self.active_traders))
 
                 # Find active markets
                 markets = await self.find_active_markets()
@@ -377,6 +396,11 @@ class TradingBotRunner:
                 f"Waiting for {len(self.active_traders)} trader task(s) to finish..."
             )
             await asyncio.gather(*self.active_traders.values(), return_exceptions=True)
+
+        # Stop health check server
+        if self._health is not None:
+            self._health.set_status("stopped")
+            await self._health.stop()
 
         self.finder_logger.info("Trading bot shut down cleanly")
 
