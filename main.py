@@ -26,13 +26,12 @@ Usage:
 import asyncio
 import argparse
 import functools
-import logging
 import random
 import signal
-import sys
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, Optional
+
+from src.logging_config import setup_bot_loggers
 
 # Import our modules
 from src.gamma_15m_finder import GammaAPI15mFinder
@@ -111,55 +110,15 @@ class TradingBotRunner:
         self.finder_logger.info("=" * 80)
 
     def setup_logging(self):
-        """Setup separate loggers for finder and trader activities."""
-        # Create log directory if it doesn't exist
-        log_dir = Path("log")
-        log_dir.mkdir(exist_ok=True)
+        """Setup separate loggers with rotating file handlers.
 
-        # Finder logger (market discovery)
-        self.finder_logger = logging.getLogger("finder")
-        self.finder_logger.setLevel(logging.INFO)
-
-        # Clear existing handlers to prevent accumulation on restarts
-        if self.finder_logger.hasHandlers():
-            self.finder_logger.handlers.clear()
-
-        finder_handler = logging.FileHandler(log_dir / "finder.log")
-        finder_handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        Uses src.logging_config for centralized configuration.
+        Log rotation prevents unbounded disk growth (default 10MB × 5 backups).
+        Override via env: LOG_MAX_BYTES, LOG_BACKUP_COUNT, LOG_LEVEL, LOG_CONSOLE.
+        """
+        self.finder_logger, self.trader_logger, self.trader_log_file = (
+            setup_bot_loggers()
         )
-        self.finder_logger.addHandler(finder_handler)
-
-        # Console handler for finder (optional)
-        finder_console = logging.StreamHandler(sys.stdout)
-        finder_console.setFormatter(
-            logging.Formatter("%(asctime)s - [FINDER] - %(message)s")
-        )
-        self.finder_logger.addHandler(finder_console)
-
-        # Trader logger (trading execution) — create per-run file trades-<timestamp>.log
-        run_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.trader_log_file = log_dir / f"trades-{run_ts}.log"
-
-        self.trader_logger = logging.getLogger("trader")
-        self.trader_logger.setLevel(logging.INFO)
-
-        # Clear existing handlers to prevent accumulation on restarts
-        if self.trader_logger.hasHandlers():
-            self.trader_logger.handlers.clear()
-
-        trader_handler = logging.FileHandler(self.trader_log_file)
-        trader_handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        )
-        self.trader_logger.addHandler(trader_handler)
-
-        # Console handler for trader
-        trader_console = logging.StreamHandler(sys.stdout)
-        trader_console.setFormatter(
-            logging.Formatter("%(asctime)s - [TRADER] - %(message)s")
-        )
-        self.trader_logger.addHandler(trader_console)
 
     async def find_active_markets(self) -> Optional[list]:
         """
