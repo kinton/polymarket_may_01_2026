@@ -65,7 +65,7 @@ TAKE_PROFIT_PCT = 0.10  # Exit if price rises 10% from entry
 TAKE_PROFIT_CHECK_INTERVAL_S = 1.0  # Check take-profit every 1 second
 
 # Risk management limits (CRITICAL!)
-MAX_DAILY_LOSS_PCT = 0.10  # Stop if lost 10% in a day
+MAX_DAILY_LOSS_PCT = 0.20  # Stop if lost 20% in a day (for $10 capital: $2 max loss)
 MAX_TOTAL_TRADES_PER_DAY = 100  # Limit total trades per day (increased from 20 to 100 per Konstantin request)
 
 # API constants

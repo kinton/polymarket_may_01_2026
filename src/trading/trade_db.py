@@ -132,9 +132,71 @@ async def _apply_v1(db: aiosqlite.Connection) -> None:
     await db.executescript(_V1_TABLES)
 
 
+_V2_TABLES = """
+-- trade_decisions: records every buy/skip decision with full context
+CREATE TABLE IF NOT EXISTS trade_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL NOT NULL,
+    timestamp_iso TEXT NOT NULL,
+    market_name TEXT NOT NULL,
+    condition_id TEXT NOT NULL,
+    action TEXT NOT NULL,          -- 'buy' or 'skip'
+    side TEXT,
+    price REAL,
+    amount REAL,
+    confidence REAL,
+    time_remaining REAL,
+    reason TEXT NOT NULL,          -- e.g. 'trigger', 'oracle_guard_blocked', 'low_confidence', etc.
+    reason_detail TEXT,            -- additional context
+    oracle_price REAL,
+    oracle_z REAL,
+    oracle_vol REAL,
+    oracle_delta REAL,
+    oracle_n_points INTEGER,
+    dry_run INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_td_timestamp ON trade_decisions(timestamp);
+CREATE INDEX IF NOT EXISTS idx_td_market ON trade_decisions(market_name);
+CREATE INDEX IF NOT EXISTS idx_td_action ON trade_decisions(action);
+CREATE INDEX IF NOT EXISTS idx_td_reason ON trade_decisions(reason);
+CREATE INDEX IF NOT EXISTS idx_td_date ON trade_decisions(date(timestamp_iso));
+
+-- dry_run_positions: virtual positions for dry-run PnL simulation
+CREATE TABLE IF NOT EXISTS dry_run_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id INTEGER,
+    condition_id TEXT NOT NULL,
+    market_name TEXT NOT NULL,
+    side TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    exit_price REAL,
+    amount REAL NOT NULL,
+    trailing_stop REAL,
+    stop_loss_price REAL,
+    take_profit_price REAL,
+    status TEXT NOT NULL DEFAULT 'open',  -- 'open', 'stop_loss', 'take_profit', 'trailing_stop', 'expired'
+    pnl REAL,
+    pnl_pct REAL,
+    opened_at REAL NOT NULL,
+    closed_at REAL,
+    close_reason TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_drp_status ON dry_run_positions(status);
+CREATE INDEX IF NOT EXISTS idx_drp_condition ON dry_run_positions(condition_id);
+"""
+
+
+async def _apply_v2(db: aiosqlite.Connection) -> None:
+    """Create v2 tables (trade_decisions, dry_run_positions)."""
+    await db.executescript(_V2_TABLES)
+
+
 # List of (version, coroutine_factory).  Each is applied once, in order.
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, _apply_v1),
+    (2, _apply_v2),
 ]
 
 
@@ -452,6 +514,189 @@ class TradeDatabase:
                FROM events GROUP BY session_id ORDER BY start_ts DESC"""
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+    # -- trade decisions -----------------------------------------------------
+
+    async def insert_trade_decision(
+        self,
+        *,
+        timestamp: float,
+        timestamp_iso: str,
+        market_name: str,
+        condition_id: str,
+        action: str,
+        side: str | None = None,
+        price: float | None = None,
+        amount: float | None = None,
+        confidence: float | None = None,
+        time_remaining: float | None = None,
+        reason: str,
+        reason_detail: str | None = None,
+        oracle_price: float | None = None,
+        oracle_z: float | None = None,
+        oracle_vol: float | None = None,
+        oracle_delta: float | None = None,
+        oracle_n_points: int | None = None,
+        dry_run: bool = True,
+    ) -> int:
+        cur = await self._db.execute(
+            """INSERT INTO trade_decisions
+               (timestamp, timestamp_iso, market_name, condition_id,
+                action, side, price, amount, confidence, time_remaining,
+                reason, reason_detail,
+                oracle_price, oracle_z, oracle_vol, oracle_delta, oracle_n_points,
+                dry_run)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                timestamp, timestamp_iso, market_name, condition_id,
+                action, side, price, amount, confidence, time_remaining,
+                reason, reason_detail,
+                oracle_price, oracle_z, oracle_vol, oracle_delta, oracle_n_points,
+                int(dry_run),
+            ),
+        )
+        await self._db.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def get_trade_decisions(
+        self,
+        *,
+        date: str | None = None,
+        action: str | None = None,
+        reason: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if date:
+            clauses.append("date(timestamp_iso) = ?")
+            params.append(date)
+        if action:
+            clauses.append("action = ?")
+            params.append(action)
+        if reason:
+            clauses.append("reason = ?")
+            params.append(reason)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        async with self._db.execute(
+            f"SELECT * FROM trade_decisions {where} ORDER BY timestamp DESC LIMIT ?",
+            params,
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def get_skip_reason_counts(self, date: str | None = None) -> list[dict]:
+        """Get counts of skip reasons, optionally filtered by date."""
+        clauses = ["action = 'skip'"]
+        params: list[Any] = []
+        if date:
+            clauses.append("date(timestamp_iso) = ?")
+            params.append(date)
+        where = "WHERE " + " AND ".join(clauses)
+        async with self._db.execute(
+            f"SELECT reason, COUNT(*) as cnt FROM trade_decisions {where} GROUP BY reason ORDER BY cnt DESC",
+            params,
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+    # -- dry-run positions ---------------------------------------------------
+
+    async def open_dry_run_position(
+        self,
+        *,
+        trade_id: int | None = None,
+        condition_id: str,
+        market_name: str,
+        side: str,
+        entry_price: float,
+        amount: float,
+        trailing_stop: float | None = None,
+        stop_loss_price: float | None = None,
+        take_profit_price: float | None = None,
+        opened_at: float,
+    ) -> int:
+        cur = await self._db.execute(
+            """INSERT INTO dry_run_positions
+               (trade_id, condition_id, market_name, side, entry_price,
+                amount, trailing_stop, stop_loss_price, take_profit_price,
+                status, opened_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                trade_id, condition_id, market_name, side, entry_price,
+                amount, trailing_stop, stop_loss_price, take_profit_price,
+                "open", opened_at,
+            ),
+        )
+        await self._db.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def close_dry_run_position(
+        self,
+        position_id: int,
+        *,
+        exit_price: float,
+        status: str,
+        close_reason: str,
+        pnl: float,
+        pnl_pct: float,
+        closed_at: float,
+    ) -> None:
+        await self._db.execute(
+            """UPDATE dry_run_positions
+               SET exit_price=?, status=?, close_reason=?, pnl=?, pnl_pct=?,
+                   closed_at=?
+               WHERE id=?""",
+            (exit_price, status, close_reason, pnl, pnl_pct, closed_at, position_id),
+        )
+        await self._db.commit()
+
+    async def get_open_dry_run_positions(self) -> list[dict]:
+        async with self._db.execute(
+            "SELECT * FROM dry_run_positions WHERE status = 'open'"
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def get_dry_run_positions(
+        self, *, date: str | None = None, limit: int = 200
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if date:
+            clauses.append("date(datetime(opened_at, 'unixepoch')) = ?")
+            params.append(date)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        async with self._db.execute(
+            f"SELECT * FROM dry_run_positions {where} ORDER BY opened_at DESC LIMIT ?",
+            params,
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def get_dry_run_summary(self, date: str | None = None) -> dict:
+        """Get aggregated dry-run PnL summary."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if date:
+            clauses.append("date(datetime(opened_at, 'unixepoch')) = ?")
+            params.append(date)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        async with self._db.execute(
+            f"""SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status != 'open' THEN 1 ELSE 0 END) as closed,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+                SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open_count,
+                COALESCE(SUM(pnl), 0) as total_pnl,
+                COALESCE(AVG(pnl), 0) as avg_pnl
+            FROM dry_run_positions {where}""",
+            params,
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else {
+                "total": 0, "closed": 0, "wins": 0, "losses": 0,
+                "open_count": 0, "total_pnl": 0, "avg_pnl": 0,
+            }
 
     # -- maintenance ---------------------------------------------------------
 

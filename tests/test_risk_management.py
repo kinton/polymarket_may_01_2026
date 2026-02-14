@@ -155,13 +155,13 @@ def test_check_daily_limits_loss_exceeded(mock_trader, cleanup_daily_limits):
     """Test that loss limit check stops trading when exceeded."""
     path = mock_trader._get_daily_limits_path()
 
-    # Create file with exceeded loss (10% of $100 = $10 max loss, we lost $15)
+    # Create file with exceeded loss (20% of $100 = $20 max loss, we lost $25)
     with open(path, "w") as f:
         json.dump(
             {
                 "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "initial_balance": 100.0,
-                "current_pnl": -15.0,
+                "current_pnl": -25.0,
                 "total_trades": 5,
             },
             f,
@@ -176,13 +176,13 @@ def test_check_daily_limits_loss_exactly_at_limit(mock_trader, cleanup_daily_lim
     """Test that loss limit check passes when exactly at limit."""
     path = mock_trader._get_daily_limits_path()
 
-    # Create file with loss exactly at limit (10% of $100 = $10)
+    # Create file with loss exactly at limit (20% of $100 = $20)
     with open(path, "w") as f:
         json.dump(
             {
                 "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "initial_balance": 100.0,
-                "current_pnl": -10.0,
+                "current_pnl": -20.0,
                 "total_trades": 5,
             },
             f,
@@ -398,7 +398,7 @@ def test_max_capital_pct_per_trade():
 
 def test_max_daily_loss_pct():
     """Test MAX_DAILY_LOSS_PCT constant."""
-    assert MAX_DAILY_LOSS_PCT == 0.10  # 10%
+    assert MAX_DAILY_LOSS_PCT == 0.20  # 20% (for $10 capital)
 
 
 def test_max_total_trades_per_day():

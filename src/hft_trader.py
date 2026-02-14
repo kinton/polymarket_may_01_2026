@@ -80,6 +80,7 @@ from src.trading.position_manager import PositionManager
 from src.trading.risk_manager import RiskManager
 from src.trading.stop_loss_manager import StopLossManager
 from src.trading.dry_run_replay import EventRecorder
+from src.trading.dry_run_simulator import DryRunSimulator
 from src.trading.orderbook_ws import OrderbookWS
 from src.trading.orderbook_ws_adapter import OrderbookWSAdapter
 
@@ -131,6 +132,7 @@ class LastSecondTrader:
         replay_book_throttle_s: float = 0.5,
         use_orderbook_ws: bool | None = None,
         orderbook_ws_poll_interval: float = 0.1,
+        trade_db: Any | None = None,
     ):
         """
         Initialize the trader.
@@ -252,6 +254,19 @@ class LastSecondTrader:
                 self._log(f"[{self.market_name}] EventRecorder enabled → {self.event_recorder.filepath}")
             else:
                 self.event_recorder = None
+
+            # Dry-run simulator (SQLite-backed decision recording)
+            self._trade_db = trade_db
+            if trade_db is not None:
+                self.dry_run_sim: DryRunSimulator | None = DryRunSimulator(
+                    db=trade_db,
+                    market_name=self.market_name,
+                    condition_id=condition_id,
+                    dry_run=dry_run,
+                )
+                self._log(f"[{self.market_name}] DryRunSimulator enabled (SQLite)")
+            else:
+                self.dry_run_sim = None
 
             # OrderbookWS adapter (optional, enabled via USE_ORDERBOOK_WS env or param)
             if use_orderbook_ws is None:
@@ -831,6 +846,12 @@ class LastSecondTrader:
                 if current_price is not None:
                     await self.stop_loss_manager.check_and_execute(current_price)
 
+            # Check virtual dry-run positions for simulated stop-loss/take-profit
+            if self.dry_run_sim and self.winning_side:
+                sim_price = self._get_ask_for_side(self.winning_side)
+                if sim_price is not None:
+                    await self.dry_run_sim.check_virtual_positions(sim_price)
+
         except Exception as e:
             self._log(f"Error processing market update: {e}")
 
@@ -921,6 +942,11 @@ class LastSecondTrader:
                 return
 
             if not self.risk_manager.check_daily_limits():
+                if self.dry_run_sim:
+                    await self.dry_run_sim.record_skip(
+                        reason="daily_loss_limit",
+                        time_remaining=time_remaining,
+                    )
                 self.order_execution.mark_executed()
                 return
 
@@ -991,6 +1017,16 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] Low confidence: ${winning_ask:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE * 100:.0f}%)"
                     )
                 self._logged_warnings.add("low_confidence")
+                if self.dry_run_sim:
+                    await self.dry_run_sim.record_skip(
+                        reason="low_confidence",
+                        reason_detail=f"ask={winning_ask:.4f}<{self.MIN_CONFIDENCE:.2f}",
+                        side=trade_side,
+                        price=winning_ask,
+                        confidence=winning_ask,
+                        time_remaining=time_remaining,
+                        oracle_snap=self.oracle_guard.snapshot,
+                    )
                 return
 
             if winning_ask > self.MAX_BUY_PRICE + self.PRICE_TIE_EPS:
@@ -999,6 +1035,13 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.MAX_BUY_PRICE}"
                     )
                     self._logged_warnings.add("price_high")
+                if self.dry_run_sim:
+                    await self.dry_run_sim.record_skip(
+                        reason="price_out_of_range",
+                        reason_detail=f"ask={winning_ask:.4f}>{self.MAX_BUY_PRICE}",
+                        side=trade_side, price=winning_ask,
+                        time_remaining=time_remaining,
+                    )
                 return
 
             # Check orderbook liquidity
@@ -1020,6 +1063,12 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] Low liquidity: ${total_size:.2f} < ${MIN_ORDERBOOK_SIZE_USD:.2f} (need ≥${MIN_ORDERBOOK_SIZE_USD:.0f})"
                     )
                     self._logged_warnings.add("low_liquidity")
+                if self.dry_run_sim:
+                    await self.dry_run_sim.record_skip(
+                        reason="low_liquidity",
+                        side=trade_side, price=winning_ask,
+                        time_remaining=time_remaining,
+                    )
                 return
 
             oracle_ok, oracle_reason, oracle_detail = self.oracle_guard.quality_ok(
@@ -1081,6 +1130,16 @@ class LastSecondTrader:
                         await self.alert_dispatcher.send_oracle_guard_block(
                             self.market_name, oracle_reason, oracle_detail
                         )
+                if self.dry_run_sim:
+                    await self.dry_run_sim.record_skip(
+                        reason=oracle_reason,
+                        reason_detail=oracle_detail,
+                        side=trade_side,
+                        price=winning_ask,
+                        confidence=winning_ask,
+                        time_remaining=time_remaining,
+                        oracle_snap=self.oracle_guard.snapshot,
+                    )
                 return
 
             if "balance_checked" not in self._logged_warnings:
@@ -1110,6 +1169,18 @@ class LastSecondTrader:
             self._log(
                 f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {trade_side} @ ${winning_ask:.4f}{oracle_note}"
             )
+
+            # Record buy decision in dry-run simulator
+            if self.dry_run_sim:
+                await self.dry_run_sim.record_buy(
+                    side=trade_side,
+                    price=winning_ask,
+                    amount=self.trade_size,
+                    confidence=winning_ask,
+                    time_remaining=time_remaining,
+                    reason="trigger",
+                    oracle_snap=self.oracle_guard.snapshot,
+                )
 
             # Record trigger check for replay
             if self.event_recorder is not None:

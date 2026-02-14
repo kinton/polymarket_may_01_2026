@@ -310,7 +310,34 @@ def format_report(report: PnLReport) -> str:
     return "\n".join(lines)
 
 
-def render_rich_report(report: PnLReport, console: Console | None = None) -> None:
+async def load_dry_run_report(
+    db: TradeDatabase,
+    date: str | None = None,
+) -> dict[str, Any]:
+    """Load dry-run specific data from SQLite."""
+    # Dry-run positions summary
+    summary = await db.get_dry_run_summary(date=date)
+
+    # Skip reason counts
+    skip_reasons = await db.get_skip_reason_counts(date=date)
+
+    # Recent dry-run trades (buys)
+    decisions = await db.get_trade_decisions(date=date, action="buy", limit=20)
+
+    # Oracle guard block stats
+    oracle_blocks = [
+        r for r in skip_reasons if r["reason"].startswith("oracle_")
+    ]
+
+    return {
+        "summary": summary,
+        "skip_reasons": skip_reasons,
+        "recent_buys": decisions,
+        "oracle_blocks": oracle_blocks,
+    }
+
+
+def render_rich_report(report: PnLReport, console: Console | None = None, dry_run_data: dict[str, Any] | None = None) -> None:
     """Render a full Rich-formatted dashboard to the console."""
     if console is None:
         console = Console()
@@ -393,6 +420,10 @@ def render_rich_report(report: PnLReport, console: Console | None = None) -> Non
     if report.equity_curve:
         _render_equity_curve(report.equity_curve, console)
 
+    # --- Dry-run section ---
+    if dry_run_data:
+        _render_dry_run_section(dry_run_data, console)
+
 
 def _render_equity_curve(
     curve: list[tuple[str, float]],
@@ -439,6 +470,73 @@ def _render_equity_curve(
     console.print(Panel(text, title="📈 Equity Curve", border_style="green"))
 
 
+def _render_dry_run_section(data: dict[str, Any], console: Console) -> None:
+    """Render the dry-run analysis section."""
+    summary = data.get("summary", {})
+    skip_reasons = data.get("skip_reasons", [])
+    oracle_blocks = data.get("oracle_blocks", [])
+    recent_buys = data.get("recent_buys", [])
+
+    # Virtual PnL summary
+    tbl = Table(show_header=False, box=None, padding=(0, 2))
+    tbl.add_column("Key", style="bold")
+    tbl.add_column("Value", justify="right")
+
+    total = summary.get("total", 0)
+    wins = summary.get("wins", 0)
+    losses = summary.get("losses", 0)
+    open_count = summary.get("open_count", 0)
+    total_pnl = summary.get("total_pnl", 0)
+    avg_pnl = summary.get("avg_pnl", 0)
+
+    pnl_c = "green" if total_pnl >= 0 else "red"
+    wr = _win_rate(wins, wins + losses)
+
+    tbl.add_row("Virtual Positions", str(total))
+    tbl.add_row("Open", str(open_count))
+    tbl.add_row("Wins / Losses", f"[green]{wins}[/] / [red]{losses}[/]")
+    tbl.add_row("Win Rate", f"{wr:.1f}%")
+    tbl.add_row("Total Virtual PnL", f"[{pnl_c}]${total_pnl:+.4f}[/]")
+    tbl.add_row("Avg PnL/Trade", f"${avg_pnl:+.4f}")
+
+    console.print(Panel(tbl, title="🧪 Dry-Run Simulation", border_style="yellow"))
+
+    # Skip reasons
+    if skip_reasons:
+        rtbl = Table(title="Skip Reasons (Top)", border_style="red")
+        rtbl.add_column("Reason", style="bold")
+        rtbl.add_column("Count", justify="right")
+        for r in skip_reasons[:10]:
+            rtbl.add_row(r["reason"], str(r["cnt"]))
+        console.print(rtbl)
+
+    # Oracle guard stats
+    if oracle_blocks:
+        otbl = Table(title="🛡️ Oracle Guard Blocks", border_style="magenta")
+        otbl.add_column("Reason", style="bold")
+        otbl.add_column("Count", justify="right")
+        for r in oracle_blocks:
+            otbl.add_row(r["reason"], str(r["cnt"]))
+        console.print(otbl)
+
+    # Recent dry-run buys
+    if recent_buys:
+        btbl = Table(title="Recent Dry-Run Buys", border_style="green")
+        btbl.add_column("Time", style="dim")
+        btbl.add_column("Market")
+        btbl.add_column("Side")
+        btbl.add_column("Price", justify="right")
+        btbl.add_column("Confidence", justify="right")
+        btbl.add_column("Time Left", justify="right")
+        for b in recent_buys[:10]:
+            ts = b.get("timestamp_iso", "")[:19]
+            conf = f"{b['confidence']:.2f}" if b.get("confidence") else "-"
+            tr = f"{b['time_remaining']:.1f}s" if b.get("time_remaining") else "-"
+            price = f"${b['price']:.4f}" if b.get("price") else "-"
+            btbl.add_row(ts, b.get("market_name", ""), b.get("side", ""), price, conf, tr)
+        console.print(btbl)
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -450,12 +548,14 @@ async def async_main(
 ) -> None:
     """Async entry point — load from SQLite and render."""
     db_file = Path(db_path)
+    dry_run_data = None
     if db_file.exists():
         db = await TradeDatabase.initialize(db_path)
         try:
             if date is None:
                 date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             report = await load_report_from_sqlite(db, date=date)
+            dry_run_data = await load_dry_run_report(db, date=date)
         finally:
             await db.close()
     else:
@@ -465,7 +565,7 @@ async def async_main(
         report = compute_pnl_report(trades, daily_limits)
 
     if HAS_RICH:
-        render_rich_report(report)
+        render_rich_report(report, dry_run_data=dry_run_data)
     else:
         print(format_report(report))
 

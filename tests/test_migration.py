@@ -189,7 +189,7 @@ class TestRiskManagerSQLite:
         run(db._db.commit())
 
         rm = RiskManager(client=None, market_name="BTC", trade_db=db)
-        # PnL=-2.0 on 100.0 balance, MAX_DAILY_LOSS_PCT=0.10 → max_loss=-10 → OK
+        # PnL=-2.0 on 100.0 balance, MAX_DAILY_LOSS_PCT=0.20 → max_loss=-20 → OK
         assert rm.check_daily_limits() is True
 
     def test_check_daily_limits_sqlite_exceeded(self, run, db):
@@ -197,14 +197,14 @@ class TestRiskManagerSQLite:
         from src.trading.risk_manager import RiskManager
 
         run(db.get_or_create_daily_stats("2026-02-14"))
-        run(db.update_daily_stats("2026-02-14", pnl_delta=-15.0, trade_count_delta=2))
+        run(db.update_daily_stats("2026-02-14", pnl_delta=-25.0, trade_count_delta=2))
         run(db._db.execute(
             "UPDATE daily_stats SET initial_balance = 100.0 WHERE date = '2026-02-14'",
         ))
         run(db._db.commit())
 
         rm = RiskManager(client=None, market_name="BTC", trade_db=db)
-        # PnL=-15 on 100.0, max_loss=-10 → EXCEEDED
+        # PnL=-25 on 100.0, max_loss=-20 (20%) → EXCEEDED
         assert rm.check_daily_limits() is False
 
     def test_check_daily_limits_fallback_json(self, tmp_path):
