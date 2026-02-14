@@ -4,9 +4,8 @@ Realistic capital projection with multiple scenarios.
 Analyzes different market conditions and capital levels.
 """
 
-import json
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict
 import numpy as np
 
 

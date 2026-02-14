@@ -5,8 +5,10 @@ Manages buy and sell orders with FOK (Fill-or-Kill) market orders.
 """
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, Any
 
+from src.metrics import MetricsCollector
 from src.trading.retry import retry_api_call
 
 from src.clob_types import (
@@ -231,6 +233,7 @@ class OrderExecutionManager:
                 operation_name=f"{self.market_name}:create_market_order",
             )
 
+            _t0 = time.perf_counter()
             response = await retry_api_call(
                 self.client.post_order,
                 created_order,
@@ -239,8 +242,12 @@ class OrderExecutionManager:
                 base_delay=0.5,
                 operation_name=f"{self.market_name}:post_order",
             )
+            MetricsCollector.get().record_order_latency(
+                (time.perf_counter() - _t0) * 1000
+            )
 
             self._log(f"✓ [{self.market_name}] Order posted: {response}")
+            MetricsCollector.get().record_trade("buy")
 
             if winning_ask is not None and self.position_manager:
                 trailing_stop_price = max(
@@ -273,6 +280,7 @@ class OrderExecutionManager:
 
         except Exception as e:
             self._log(f"❌ [{self.market_name}] Order failed: {e}")
+            MetricsCollector.get().record_error(type(e).__name__)
             self.order_attempts += 1
             self.last_order_attempt_time = asyncio.get_event_loop().time()
             return False
@@ -406,6 +414,7 @@ class OrderExecutionManager:
                 num_contracts = amount / self.position_manager.entry_price
                 position_value = num_contracts * current_price
                 pnl_amount = position_value - amount
+                MetricsCollector.get().record_trade("sell", pnl=pnl_amount)
                 pnl_pct = (pnl_amount / amount) * 100
                 pnl_sign = "+" if pnl_pct >= 0 else ""
                 self._log(
@@ -448,6 +457,7 @@ class OrderExecutionManager:
 
         except Exception as e:
             self._log(f"❌ [{self.market_name}] Sell order failed: {e}")
+            MetricsCollector.get().record_error(type(e).__name__)
             return False
 
     async def verify_order(self, order_id: str) -> bool:

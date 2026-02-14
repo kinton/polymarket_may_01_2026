@@ -23,6 +23,8 @@ from typing import Any, Dict, Optional
 
 from aiohttp import web
 
+from src.metrics import MetricsCollector
+
 logger = logging.getLogger("healthcheck")
 
 # ---------------------------------------------------------------------------
@@ -93,6 +95,15 @@ class HealthCheckServer:
             return web.json_response({"ready": True})
         return web.json_response({"ready": False, "status": self._status}, status=503)
 
+    async def _handle_metrics_json(self, _request: web.Request) -> web.Response:
+        """Return all metrics as JSON."""
+        return web.json_response(MetricsCollector.get().snapshot())
+
+    async def _handle_metrics_prom(self, _request: web.Request) -> web.Response:
+        """Return metrics in Prometheus text exposition format."""
+        text = MetricsCollector.get().prometheus_text()
+        return web.Response(text=text, content_type="text/plain; version=0.0.4")
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -101,6 +112,8 @@ class HealthCheckServer:
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_get("/ready", self._handle_ready)
+        app.router.add_get("/metrics", self._handle_metrics_json)
+        app.router.add_get("/metrics/prometheus", self._handle_metrics_prom)
         return app
 
     async def start(self) -> None:

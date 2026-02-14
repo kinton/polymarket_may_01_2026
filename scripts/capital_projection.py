@@ -7,7 +7,7 @@ Compares 3 stop-loss strategies with realistic market scenarios.
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 
 
@@ -486,8 +486,8 @@ def print_comparison_report(results: dict):
     print("=" * 80)
     print(f"Initial Capital: ${4.49:.2f}")
     print(f"Trade Size: ${1.10:.2f}")
-    print(f"Simulation Runs: 1000 per strategy")
-    print(f"Trading Days: 30")
+    print("Simulation Runs: 1000 per strategy")
+    print("Trading Days: 30")
     print("=" * 80)
     print()
 
@@ -572,7 +572,7 @@ def print_comparison_report(results: dict):
         ts = result["trade_stats"]
         rm = result["risk_metrics"]
 
-        print(f"\n📊 Final Capital Distribution:")
+        print("\n📊 Final Capital Distribution:")
         print(f"  Mean:     ${stats['mean_final_capital']:>8.2f}")
         print(f"  Median:   ${stats['median_final_capital']:>8.2f}")
         print(f"  Std Dev:  ${stats['std_final_capital']:>8.2f}")
@@ -584,7 +584,7 @@ def print_comparison_report(results: dict):
         print(f"  75th %ile:${stats['percentile_75']:>8.2f}")
         print(f"  95th %ile:${stats['percentile_95']:>8.2f}")
 
-        print(f"\n📈 Trade Performance:")
+        print("\n📈 Trade Performance:")
         print(f"  Total Trades:     {ts['total_trades']}")
         print(f"  Winning Trades:   {ts['winning_trades']}")
         print(f"  Losing Trades:    {ts['losing_trades']}")
@@ -593,13 +593,13 @@ def print_comparison_report(results: dict):
         print(f"  Avg Win:          ${ts['avg_win']:.4f}")
         print(f"  Avg Loss:         ${ts['avg_loss']:.4f}")
 
-        print(f"\n⚠️  Risk Profile:")
+        print("\n⚠️  Risk Profile:")
         print(f"  Bankruptcy Rate:  {rm['bankruptcy_rate']:.1f}%")
         print(f"  Max Drawdown:     {rm['max_drawdown_pct']:.1f}%")
         print(f"  Sharpe Ratio:     {rm['sharpe_ratio']:.2f}")
 
         if result["params"]:
-            print(f"\n⚙️  Parameters:")
+            print("\n⚙️  Parameters:")
             for k, v in result["params"].items():
                 print(f"  {k}: {v}")
 
@@ -691,7 +691,7 @@ def main():
     config = SimulationConfig()
 
     print(f"Running Monte Carlo simulation with {config.trading_days} trading days...")
-    print(f"Simulating 3 stop-loss strategies...")
+    print("Simulating 3 stop-loss strategies...")
     print()
 
     simulator = CapitalProjectionSimulator(config, num_simulations=1000)
@@ -735,7 +735,7 @@ def main():
     with open("capital_projection_results.json", "w") as f:
         json.dump(output, f, indent=2)
 
-    print(f"\n💾 Results saved to: capital_projection_results.json")
+    print("\n💾 Results saved to: capital_projection_results.json")
 
 
 if __name__ == "__main__":
