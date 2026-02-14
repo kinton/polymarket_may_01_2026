@@ -1,0 +1,118 @@
+{
+  "timestamp": "2026-02-13T15:26:45.031146",
+  "config": {
+    "initial_capital": 4.49,
+    "trade_size": 1.1,
+    "stop_loss_pct": 0.3,
+    "stop_loss_absolute": 0.8,
+    "take_profit_pct": 0.1,
+    "trailing_stop_pct": 0.05,
+    "min_confidence": 0.85,
+    "daily_loss_limit_pct": 0.1,
+    "max_trades_per_day": 100,
+    "max_capital_per_trade": 0.05,
+    "trading_days": 30,
+    "num_simulations": 1000
+  },
+  "results": {
+    "strategy_1": {
+      "strategy_name": "Strategy 1: Only 30% Stop-Loss",
+      "statistics": {
+        "mean_final_capital": 0.41097586233175903,
+        "median_final_capital": 0.4201839595011646,
+        "std_final_capital": 0.06478706783087021,
+        "min_final_capital": 0.18011344288753534,
+        "max_final_capital": 0.4996213158747134,
+        "percentile_5": 0.290520316041494,
+        "percentile_25": 0.3645395264645206,
+        "percentile_75": 0.4668109859860224,
+        "percentile_95": 0.4938904621908598
+      },
+      "trade_stats": {
+        "total_trades": 14489.0,
+        "winning_trades": 3355.0,
+        "losing_trades": 11134.0,
+        "win_rate": 23.155497273793912,
+        "avg_profit_per_trade": -0.2815255806244904,
+        "avg_win": 0.24254607146891521,
+        "avg_loss": -0.4394437046386251
+      },
+      "risk_metrics": {
+        "bankruptcy_rate": 100.0,
+        "max_drawdown_pct": -95.98856474638005,
+        "sharpe_ratio": -0.5440081842104342
+      },
+      "exit_reasons": {
+        "TRAILING-STOP": 8147,
+        "TAKE-PROFIT": 2918,
+        "STOP-LOSS": 3424
+      }
+    },
+    "strategy_2": {
+      "strategy_name": "Strategy 2: Only $0.80 Absolute Floor",
+      "statistics": {
+        "mean_final_capital": 0.43986693407277516,
+        "median_final_capital": 0.4500706211744543,
+        "std_final_capital": 0.047080372257049884,
+        "min_final_capital": 0.19306099658506615,
+        "max_final_capital": 0.49999383448790263,
+        "percentile_5": 0.3498010816543952,
+        "percentile_25": 0.41377629017787426,
+        "percentile_75": 0.47724100668354474,
+        "percentile_95": 0.49544411699358626
+      },
+      "trade_stats": {
+        "total_trades": 17517.0,
+        "winning_trades": 3420.0,
+        "losing_trades": 14097.0,
+        "win_rate": 19.523891077239252,
+        "avg_profit_per_trade": -0.23121156967101816,
+        "avg_win": 0.2318089152361621,
+        "avg_loss": -0.3435425662222388
+      },
+      "risk_metrics": {
+        "bankruptcy_rate": 100.0,
+        "max_drawdown_pct": -95.70020052149073,
+        "sharpe_ratio": -0.6062668942597618
+      },
+      "exit_reasons": {
+        "STOP-LOSS": 6182,
+        "TAKE-PROFIT": 2989,
+        "TRAILING-STOP": 8346
+      }
+    },
+    "strategy_3": {
+      "strategy_name": "Strategy 3: Both 30% + $0.80 Floor",
+      "statistics": {
+        "mean_final_capital": 0.4381464578839563,
+        "median_final_capital": 0.4467777177784898,
+        "std_final_capital": 0.04695647445243113,
+        "min_final_capital": 0.23563386870183428,
+        "max_final_capital": 0.49990078733257,
+        "percentile_5": 0.35173075494611694,
+        "percentile_25": 0.410683900891743,
+        "percentile_75": 0.4769249656113933,
+        "percentile_95": 0.4959004117585327
+      },
+      "trade_stats": {
+        "total_trades": 17372.0,
+        "winning_trades": 3347.0,
+        "losing_trades": 14025.0,
+        "win_rate": 19.266635965922173,
+        "avg_profit_per_trade": -0.23324047559958808,
+        "avg_win": 0.22080919922982487,
+        "avg_loss": -0.3415972856996982
+      },
+      "risk_metrics": {
+        "bankruptcy_rate": 100.0,
+        "max_drawdown_pct": -94.75202965029322,
+        "sharpe_ratio": -0.6176293681927925
+      },
+      "exit_reasons": {
+        "TRAILING-STOP": 8322,
+        "STOP-LOSS": 6106,
+        "TAKE-PROFIT": 2944
+      }
+    }
+  }
+}

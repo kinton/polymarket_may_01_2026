@@ -69,19 +69,23 @@ Add to crontab for automatic daily reports:
 
 The bot implements a "last-second" strategy:
 
-1. **Market Discovery**: Find 5/15-minute markets ending in the next 4 minutes
+1. **Market Discovery**: Find 5/15-minute markets ending in the next 15 minutes
 2. **Monitoring**: Stream real-time order book data via WebSocket
-3. **Trigger**: Execute when time remaining ≤ 120 seconds AND winning side ≤ $0.99
-4. **Exit**: Sell on stop-loss (-5%) or take-profit (+2%)
+3. **Trigger**: Execute when time remaining ≤ 30 seconds AND winning side ≤ $0.99
+4. **Exit**: Sell on stop-loss (-30%), take-profit (+10%), or trailing stop
 
 ## Safety Features
 
 - **Dry Run Mode**: Simulate trades without real execution (default)
 - **Oracle Guard**: Block trades when oracle signals are unreliable
-- **Stop-Loss**: Automatic exit at -5% (or $0.50 absolute)
-- **Take-Profit**: Automatic exit at +2%
-- **Minimum Confidence**: Only trade when winning side ≥ 75%
+- **Stop-Loss**: Automatic exit at -30% (or $0.80 absolute floor)
+- **Take-Profit**: Automatic exit at +10%
+- **Trailing Stop**: Move stop up 5% when price moves in favor
+- **Minimum Confidence**: Only trade when winning side ≥ 85%
 - **Balance Checks**: Verify sufficient funds before trading
+- **Daily Loss Limit**: Stop trading if daily PnL drops below -10%
+- **Max Trades Per Day**: Limit to 100 trades per day
+- **Max Capital Per Trade**: Maximum 5% of capital per trade
 
 ## Risk Warning
 

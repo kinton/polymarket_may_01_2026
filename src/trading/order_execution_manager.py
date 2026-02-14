@@ -7,6 +7,8 @@ Manages buy and sell orders with FOK (Fill-or-Kill) market orders.
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from src.trading.retry import retry_api_call
+
 from src.clob_types import (
     MAX_BUY_PRICE,
     STOP_LOSS_ABSOLUTE,
@@ -220,16 +222,22 @@ class OrderExecutionManager:
                 nonce=self._order_nonce,
             )
 
-            created_order = await asyncio.to_thread(
+            created_order = await retry_api_call(
                 self.client.create_market_order,
                 order_args,
                 CreateOrderOptions(tick_size="0.01", neg_risk=False),
+                max_retries=3,
+                base_delay=0.5,
+                operation_name=f"{self.market_name}:create_market_order",
             )
 
-            response = await asyncio.to_thread(
+            response = await retry_api_call(
                 self.client.post_order,
                 created_order,
                 OrderType.FOK,
+                max_retries=2,
+                base_delay=0.5,
+                operation_name=f"{self.market_name}:post_order",
             )
 
             self._log(f"✓ [{self.market_name}] Order posted: {response}")
@@ -303,10 +311,10 @@ class OrderExecutionManager:
 
         if self.dry_run:
             if current_price is not None:
-                pnl_pct = (
-                    (current_price - self.position_manager.entry_price)
-                    / self.position_manager.entry_price
-                ) * 100
+                num_contracts = self.trade_size / self.position_manager.entry_price
+                position_value = num_contracts * current_price
+                pnl_amount = position_value - self.trade_size
+                pnl_pct = (pnl_amount / self.trade_size) * 100
                 pnl_sign = "+" if pnl_pct >= 0 else ""
                 self._log(
                     (
@@ -333,11 +341,13 @@ class OrderExecutionManager:
                         )
 
             trade_amount = max(round(self.trade_size, 2), 1.00)
-            if current_price is not None and self.position_manager.entry_price is not None:
-                pnl_amount = trade_amount * (
-                    (current_price - self.position_manager.entry_price)
-                    / self.position_manager.entry_price
-                )
+            if (
+                current_price is not None
+                and self.position_manager.entry_price is not None
+            ):
+                num_contracts = trade_amount / self.position_manager.entry_price
+                position_value = num_contracts * current_price
+                pnl_amount = position_value - trade_amount
                 if self.risk_manager:
                     self.risk_manager.track_daily_pnl(trade_amount, pnl_amount)
 
@@ -372,25 +382,31 @@ class OrderExecutionManager:
                 nonce=0,
             )
 
-            created_order = await asyncio.to_thread(
+            created_order = await retry_api_call(
                 self.client.create_market_order,
                 order_args,
                 CreateOrderOptions(tick_size="0.01", neg_risk=False),
+                max_retries=3,
+                base_delay=0.5,
+                operation_name=f"{self.market_name}:create_sell_order",
             )
 
-            response = await asyncio.to_thread(
+            response = await retry_api_call(
                 self.client.post_order,
                 created_order,
                 OrderType.FOK,
+                max_retries=2,
+                base_delay=0.5,
+                operation_name=f"{self.market_name}:post_sell_order",
             )
 
             self._log(f"✓ [{self.market_name}] Sell order posted: {response}")
 
             if current_price is not None:
-                pnl_pct = (
-                    (current_price - self.position_manager.entry_price)
-                    / self.position_manager.entry_price
-                ) * 100
+                num_contracts = amount / self.position_manager.entry_price
+                position_value = num_contracts * current_price
+                pnl_amount = position_value - amount
+                pnl_pct = (pnl_amount / amount) * 100
                 pnl_sign = "+" if pnl_pct >= 0 else ""
                 self._log(
                     (
@@ -418,11 +434,13 @@ class OrderExecutionManager:
             self.position_manager.close_position()
             self._log(f"✓ [{self.market_name}] Position closed ({reason})")
 
-            if current_price is not None and self.position_manager.entry_price is not None:
-                pnl_amount = amount * (
-                    (current_price - self.position_manager.entry_price)
-                    / self.position_manager.entry_price
-                )
+            if (
+                current_price is not None
+                and self.position_manager.entry_price is not None
+            ):
+                num_contracts = amount / self.position_manager.entry_price
+                position_value = num_contracts * current_price
+                pnl_amount = position_value - amount
                 if self.risk_manager:
                     self.risk_manager.track_daily_pnl(amount, pnl_amount)
 
@@ -452,7 +470,13 @@ class OrderExecutionManager:
             await asyncio.sleep(0.5)
 
             # Query order status from API
-            order_data_raw = await asyncio.to_thread(self.client.get_order, order_id)
+            order_data_raw = await retry_api_call(
+                self.client.get_order,
+                order_id,
+                max_retries=2,
+                base_delay=1.0,
+                operation_name=f"{self.market_name}:get_order",
+            )
             if not isinstance(order_data_raw, dict):
                 self._log(
                     f"⚠️  [{self.market_name}] Unexpected order data type: {type(order_data_raw)}"
