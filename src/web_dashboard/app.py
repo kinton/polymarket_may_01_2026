@@ -102,10 +102,10 @@ async def overview(request: Request) -> HTMLResponse:
     daily = await _fetch_one(
         "SELECT * FROM daily_stats WHERE date = ?", (today,)
     )
-    daily_pnl = daily["current_pnl"] if daily else 0.0
-    daily_trades = daily["total_trades"] if daily else 0
-    daily_wins = daily["winning_trades"] if daily else 0
-    daily_losses = daily["losing_trades"] if daily else 0
+    daily_pnl = (daily["current_pnl"] if daily else None) or 0.0
+    daily_trades = (daily["total_trades"] if daily else None) or 0
+    daily_wins = (daily["winning_trades"] if daily else None) or 0
+    daily_losses = (daily["losing_trades"] if daily else None) or 0
 
     # Total PnL
     total_row = await _fetch_one(
@@ -114,10 +114,10 @@ async def overview(request: Request) -> HTMLResponse:
         "SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses, "
         "COUNT(*) as total FROM trades WHERE pnl IS NOT NULL"
     )
-    total_pnl = total_row["total_pnl"] if total_row else 0.0
-    total_wins = total_row["wins"] if total_row else 0
-    total_losses = total_row["losses"] if total_row else 0
-    total_count = total_row["total"] if total_row else 0
+    total_pnl = (total_row["total_pnl"] if total_row else None) or 0.0
+    total_wins = (total_row["wins"] if total_row else None) or 0
+    total_losses = (total_row["losses"] if total_row else None) or 0
+    total_count = (total_row["total"] if total_row else None) or 0
 
     # Open positions
     open_positions = await _fetch_all(
@@ -140,7 +140,7 @@ async def overview(request: Request) -> HTMLResponse:
     active_row = await _fetch_one(
         "SELECT COUNT(*) as cnt FROM trades WHERE timestamp > ?", (cutoff,)
     )
-    bot_active = (active_row["cnt"] if active_row else 0) > 0
+    bot_active = ((active_row["cnt"] if active_row else None) or 0) > 0
 
     ctx = {
         "request": request,
@@ -418,9 +418,9 @@ async def api_stats() -> dict:
         "SELECT COALESCE(SUM(pnl), 0) as total_pnl FROM trades WHERE pnl IS NOT NULL"
     )
     return {
-        "daily_pnl": daily["current_pnl"] if daily else 0,
-        "total_pnl": total_row["total_pnl"] if total_row else 0,
-        "daily_trades": daily["total_trades"] if daily else 0,
+        "daily_pnl": (daily["current_pnl"] if daily else None) or 0,
+        "total_pnl": (total_row["total_pnl"] if total_row else None) or 0,
+        "daily_trades": (daily["total_trades"] if daily else None) or 0,
     }
 
 

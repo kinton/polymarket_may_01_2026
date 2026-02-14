@@ -482,12 +482,12 @@ def _render_dry_run_section(data: dict[str, Any], console: Console) -> None:
     tbl.add_column("Key", style="bold")
     tbl.add_column("Value", justify="right")
 
-    total = summary.get("total", 0)
-    wins = summary.get("wins", 0)
-    losses = summary.get("losses", 0)
-    open_count = summary.get("open_count", 0)
-    total_pnl = summary.get("total_pnl", 0)
-    avg_pnl = summary.get("avg_pnl", 0)
+    total = summary.get("total") or 0
+    wins = summary.get("wins") or 0
+    losses = summary.get("losses") or 0
+    open_count = summary.get("open_count") or 0
+    total_pnl = summary.get("total_pnl") or 0
+    avg_pnl = summary.get("avg_pnl") or 0
 
     pnl_c = "green" if total_pnl >= 0 else "red"
     wr = _win_rate(wins, wins + losses)
