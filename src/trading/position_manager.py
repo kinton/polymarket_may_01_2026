@@ -2,9 +2,14 @@
 Position manager for tracking trading position state.
 
 Manages position state including entry price, side, open status, and trailing stop.
+Supports optional persistence to disk for crash recovery.
 """
 
+from __future__ import annotations
+
 from typing import Any
+
+from src.trading.position_persist import PositionPersister
 
 
 class PositionManager:
@@ -16,16 +21,32 @@ class PositionManager:
     - Position side (YES/NO)
     - Position open/closed status
     - Trailing stop price level
+
+    Optionally persists state to disk via PositionPersister for crash recovery.
     """
 
-    def __init__(self, logger: Any | None = None):
+    def __init__(
+        self,
+        logger: Any | None = None,
+        condition_id: str | None = None,
+        persist_dir: str | None = None,
+    ):
         """
         Initialize position manager.
 
         Args:
             logger: Optional logger for logging position events
+            condition_id: Market condition ID (enables persistence if provided)
+            persist_dir: Directory for position state files
         """
         self.logger = logger
+        self._persister: PositionPersister | None = None
+        if condition_id:
+            self._persister = PositionPersister(
+                condition_id=condition_id,
+                persist_dir=persist_dir,
+                logger=logger,
+            )
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -56,12 +77,15 @@ class PositionManager:
                 f"Position opened: {side} @ ${entry_price:.4f} | "
                 + f"Stop-loss: ${trailing_stop_price:.4f}"
             )
+        self._persist()
 
     def close_position(self) -> None:
         """Close the current position."""
         if self.logger and self.position_open:
             self.logger.info(f"Position closed: {self.position_side}")
         self._reset_state()
+        if self._persister:
+            self._persister.remove()
 
     def update_trailing_stop(self, new_stop_price: float) -> None:
         """
@@ -77,6 +101,7 @@ class PositionManager:
             self.logger.info(
                 f"Trailing-stop moved: ${old_stop:.4f} → ${new_stop_price:.4f}"
             )
+        self._persist()
 
     @property
     def is_open(self) -> bool:
@@ -87,3 +112,40 @@ class PositionManager:
     def has_entry(self) -> bool:
         """Check if entry price is set."""
         return self.entry_price is not None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize position state to a dict."""
+        return {
+            "entry_price": self.entry_price,
+            "position_side": self.position_side,
+            "position_open": self.position_open,
+            "trailing_stop_price": self.trailing_stop_price,
+        }
+
+    def _persist(self) -> None:
+        """Save current state to disk if persister is configured."""
+        if self._persister and self.position_open:
+            self._persister.save(self.to_dict())
+
+    def restore(self) -> bool:
+        """
+        Restore position state from disk.
+
+        Returns:
+            True if state was restored, False otherwise.
+        """
+        if not self._persister:
+            return False
+        data = self._persister.load()
+        if data and data.get("position_open"):
+            self.entry_price = data.get("entry_price")
+            self.position_side = data.get("position_side")
+            self.position_open = True
+            self.trailing_stop_price = data.get("trailing_stop_price")
+            if self.logger:
+                self.logger.info(
+                    f"Position restored: {self.position_side} @ "
+                    f"${self.entry_price:.4f}"
+                )
+            return True
+        return False
