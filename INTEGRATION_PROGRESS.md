@@ -39,10 +39,16 @@
 - All 434 tests passing, ruff clean
 - Commit: 422b64a
 
-## Phase 5: PnL Dashboard v2 ⏳ NEXT
-- Переписать `pnl_dashboard.py` на чтение из SQLite
-- Rich CLI output (таблицы, цвета)
-- Win rate по рынкам/часам/дням недели
-- Equity curve (кумулятивный PnL)
+## Phase 5: PnL Dashboard v2 ✅ DONE (2026-02-14)
+- Rewrote `src/trading/pnl_dashboard.py` to read from SQLite via `TradeDatabase`
+- Rich CLI output: colored panels, tables for summary/market/hour/weekday
+- Win rate breakdowns by market, hour (UTC), weekday
+- Equity curve with text-based sparkline (cumulative PnL)
+- Legacy JSON/log fallback preserved (backward compat)
+- `async_main()` entry point, optional date filter via CLI arg
+- Added `rich` dependency
+- 23 tests in `tests/test_pnl_dashboard.py` (SQLite analytics + Rich rendering smoke tests)
+- All 448 tests passing, ruff clean
+- Commit: 565b1d0
 
-## Phase 6: OrderbookWS интеграция — PENDING
+## Phase 6: OrderbookWS интеграция ⏳ NEXT
