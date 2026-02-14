@@ -79,6 +79,7 @@ from src.trading.order_execution_manager import OrderExecutionManager
 from src.trading.position_manager import PositionManager
 from src.trading.risk_manager import RiskManager
 from src.trading.stop_loss_manager import StopLossManager
+from src.trading.dry_run_replay import EventRecorder
 
 try:
     from py_clob_client.client import ClobClient
@@ -124,6 +125,8 @@ class LastSecondTrader:
         oracle_window_s: float = 60.0,
         book_log_every_s: float = 1.0,
         book_log_every_s_final: float = 0.5,
+        replay_dir: str | None = None,
+        replay_book_throttle_s: float = 0.5,
     ):
         """
         Initialize the trader.
@@ -233,6 +236,19 @@ class LastSecondTrader:
             # Set stop-loss sell callback
             self.stop_loss_manager.set_sell_callback(self.execute_sell)
 
+            # Event recorder for dry-run replay
+            self._replay_book_throttle_s = replay_book_throttle_s
+            self._last_replay_book_ts = 0.0
+            if replay_dir is not None:
+                self.event_recorder: EventRecorder | None = EventRecorder(
+                    replay_dir=replay_dir,
+                    market_name=self.market_name,
+                    condition_id=condition_id,
+                )
+                self._log(f"[{self.market_name}] EventRecorder enabled → {self.event_recorder.filepath}")
+            else:
+                self.event_recorder = None
+
             # Log init
             mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
             self._log(
@@ -311,6 +327,15 @@ class LastSecondTrader:
         except Exception as e:
             self._log(f"[TRADER] [{self.market_name}] ERROR saving state: {e}")
             self._log(traceback.format_exc())
+
+        # Close event recorder
+        try:
+            if self.event_recorder is not None:
+                self.event_recorder.close()
+                self._log(f"[TRADER] [{self.market_name}] EventRecorder closed ({self.event_recorder.event_count} events)")
+                self.event_recorder = None
+        except Exception as e:
+            self._log(f"[TRADER] [{self.market_name}] ERROR closing EventRecorder: {e}")
 
         # Close WebSocket connection
         try:
@@ -700,6 +725,20 @@ class LastSecondTrader:
             self._update_winning_side()
             self.last_ws_update_ts = time.time()
 
+            # Record book update for replay (throttled)
+            if self.event_recorder is not None:
+                now_mono = time.time()
+                if (now_mono - self._last_replay_book_ts) >= self._replay_book_throttle_s:
+                    side = "YES" if is_yes_data else "NO"
+                    self.event_recorder.record_book_update(
+                        side=side,
+                        best_ask=self.orderbook.best_ask_yes if is_yes_data else self.orderbook.best_ask_no,
+                        best_ask_size=self.orderbook.best_ask_yes_size if is_yes_data else self.orderbook.best_ask_no_size,
+                        best_bid=self.orderbook.best_bid_yes if is_yes_data else self.orderbook.best_bid_no,
+                        best_bid_size=self.orderbook.best_bid_yes_size if is_yes_data else self.orderbook.best_bid_no_size,
+                    )
+                    self._last_replay_book_ts = now_mono
+
             time_remaining = self.get_time_remaining()
 
             now_ts = time.time()
@@ -1044,6 +1083,16 @@ class LastSecondTrader:
                 f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {trade_side} @ ${winning_ask:.4f}{oracle_note}"
             )
 
+            # Record trigger check for replay
+            if self.event_recorder is not None:
+                self.event_recorder.record_trigger_check(
+                    time_remaining=time_remaining,
+                    winning_side=trade_side,
+                    winning_ask=winning_ask,
+                    executed=True,
+                    reason="trigger",
+                )
+
             elapsed = time.monotonic() - trigger_start_mono
             if (time_remaining - elapsed) <= 0:
                 self._log(
@@ -1094,7 +1143,18 @@ class LastSecondTrader:
         side = self._planned_trade_side or self.winning_side or "YES"
         self._planned_trade_side = None
         winning_ask = self._get_ask_for_side(side)
+        was_executed_before = self.order_execution.is_executed()
         await self.order_execution.execute_order_for(side, winning_ask)
+        # Record buy trade for replay
+        if self.event_recorder is not None and not was_executed_before and self.order_execution.is_executed():
+            self.event_recorder.record_trade(
+                action="buy",
+                side=side,
+                price=winning_ask or 0.0,
+                size=self.trade_size,
+                success=True,
+                reason="trigger",
+            )
 
     async def execute_order_for(self, side: str) -> None:
         """Execute order (deprecated - use execute_order instead)."""
@@ -1107,6 +1167,16 @@ class LastSecondTrader:
         )
         current_price = self._get_ask_for_side(position_side or "")
         await self.order_execution.execute_sell(reason, current_price)
+        # Record sell trade for replay
+        if self.event_recorder is not None:
+            self.event_recorder.record_trade(
+                action="sell",
+                side=position_side or "",
+                price=current_price or 0.0,
+                size=self.trade_size,
+                success=True,
+                reason=reason,
+            )
 
     async def listen_to_market(self):
         """Listen to WebSocket and process market updates until market closes."""
@@ -1156,6 +1226,14 @@ class LastSecondTrader:
         finally:
             if self.ws:
                 await self.ws.close()
+
+            # Close event recorder if still open
+            if self.event_recorder is not None:
+                try:
+                    self.event_recorder.close()
+                except Exception:
+                    pass
+                self.event_recorder = None
 
             if self.oracle_guard.enabled:
                 self.oracle_guard.log_block_summary(self.logger)
