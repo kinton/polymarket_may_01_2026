@@ -34,6 +34,7 @@ from typing import Any, Dict, Optional
 from src.logging_config import setup_bot_loggers
 from src.healthcheck import HealthCheckServer
 from src.trading.parallel_launcher import ParallelLauncher
+from src.trading.trade_db import TradeDatabase
 
 # Import our modules
 from src.gamma_15m_finder import GammaAPI15mFinder
@@ -96,6 +97,9 @@ class TradingBotRunner:
 
         # Health check server
         self._health: Optional[HealthCheckServer] = HealthCheckServer()
+
+        # Trade database (SQLite) for dry-run recording
+        self._trade_db: Optional[TradeDatabase] = None
 
         # Setup logging
         self.setup_logging()
@@ -247,6 +251,7 @@ class TradingBotRunner:
                 oracle_window_s=self.oracle_window_s,
                 book_log_every_s=self.book_log_every_s,
                 book_log_every_s_final=self.book_log_every_s_final,
+                trade_db=self._trade_db,
             )
 
             # Track trader instance for graceful shutdown
@@ -420,6 +425,13 @@ class TradingBotRunner:
     async def run(self):
         """Main entry point."""
         try:
+            # Initialize trade database for dry-run recording
+            from pathlib import Path
+            db_path = Path("data/trades.db")
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._trade_db = await TradeDatabase.initialize(str(db_path))
+            self.finder_logger.info(f"TradeDatabase initialized: {db_path}")
+
             await self.poll_and_trade()
         except KeyboardInterrupt:
             self.finder_logger.info("\n⚠️  Interrupted by user")
@@ -428,6 +440,8 @@ class TradingBotRunner:
         except Exception as e:
             self.finder_logger.error(f"Fatal error: {e}", exc_info=True)
         finally:
+            if self._trade_db:
+                await self._trade_db.close()
             self.finder_logger.info("=" * 80)
             self.finder_logger.info("Trading Bot Runner Stopped")
             self.finder_logger.info("=" * 80)
