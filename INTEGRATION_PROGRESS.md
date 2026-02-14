@@ -19,12 +19,21 @@
 - All 406 tests passing, ruff clean
 - Commit: d9f3559
 
-## Phase 3: Активация DryRunReplay ⏳ NEXT
-- Подключить `EventRecorder` в `hft_trader.py`
-- Запись событий: book updates, trigger checks, trades, stop-loss, session start/end
-- Throttling для book updates
-- Закрытие при shutdown
+## Phase 3: Активация DryRunReplay ✅ DONE (2026-02-14)
+- Integrated `EventRecorder` into `LastSecondTrader` via `replay_dir` parameter
+- Book updates recorded with throttling (`replay_book_throttle_s`, default 0.5s)
+- Trigger checks recorded when trade is triggered (side, ask, time_remaining)
+- Buy/sell trades recorded after execution (action, side, price, reason)
+- Recorder closed on `graceful_shutdown()` and `run()` finally block
+- 11 integration tests in `tests/test_dry_run_replay_integration.py`
+- All 417 tests passing, ruff clean
+- Commit: 280ab31
 
-## Phase 4: Миграция JSON→SQLite — PENDING
+## Phase 4: Миграция JSON→SQLite ⏳ NEXT
+- `scripts/migrate_to_sqlite.py` — скрипт миграции JSON → SQLite
+- `RiskManager`: dual-read (SQLite → JSON fallback)
+- `AlertDispatcher`: write to SQLite via TradeDatabase
+- `SQLitePositionPersister` и `SQLiteEventRecorder` — новые бэкенды
+
 ## Phase 5: PnL Dashboard v2 — PENDING
 ## Phase 6: OrderbookWS интеграция — PENDING
