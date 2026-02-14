@@ -12,6 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from src.metrics import MetricsCollector
+from src.trading.circuit_breaker import CircuitBreaker, CircuitOpenError
 from src.trading.rate_limiter import RateLimiter
 from src.trading.retry import retry_api_call
 
@@ -67,6 +68,7 @@ class OrderExecutionManager:
         alert_dispatcher: AlertDispatcher | None = None,
         risk_manager: RiskManager | None = None,
         rate_limiter: RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ):
         """
         Initialize the order execution manager.
@@ -83,6 +85,7 @@ class OrderExecutionManager:
             position_manager: Position manager instance
             alert_dispatcher: Alert dispatcher instance
             risk_manager: Risk manager instance
+            circuit_breaker: Circuit breaker instance for API protection
         """
         self.client = client
         self.market_name = market_name
@@ -97,6 +100,11 @@ class OrderExecutionManager:
         self.risk_manager = risk_manager
         self.rate_limiter = rate_limiter or RateLimiter(
             max_tokens=10.0, refill_rate=2.0, name="polymarket-api"
+        )
+        self.circuit_breaker = circuit_breaker or CircuitBreaker(
+            failure_threshold=5,
+            recovery_timeout=60.0,
+            name=f"polymarket-{market_name}",
         )
 
         # Order state
@@ -229,34 +237,38 @@ class OrderExecutionManager:
             return False
 
         try:
-            order_args = MarketOrderArgs(
-                token_id=winning_token_id,
-                amount=amount,
-                price=price,
-                side="BUY",
-                nonce=self._order_nonce,
-            )
+            # Check circuit breaker before making API calls
+            async def _execute_buy() -> dict[str, Any]:
+                order_args = MarketOrderArgs(
+                    token_id=winning_token_id,
+                    amount=amount,
+                    price=price,
+                    side="BUY",
+                    nonce=self._order_nonce,
+                )
 
-            await self.rate_limiter.acquire()
-            created_order = await retry_api_call(
-                self.client.create_market_order,
-                order_args,
-                CreateOrderOptions(tick_size="0.01", neg_risk=False),
-                max_retries=3,
-                base_delay=0.5,
-                operation_name=f"{self.market_name}:create_market_order",
-            )
+                await self.rate_limiter.acquire()
+                created_order = await retry_api_call(
+                    self.client.create_market_order,
+                    order_args,
+                    CreateOrderOptions(tick_size="0.01", neg_risk=False),
+                    max_retries=3,
+                    base_delay=0.5,
+                    operation_name=f"{self.market_name}:create_market_order",
+                )
+
+                await self.rate_limiter.acquire()
+                return await retry_api_call(
+                    self.client.post_order,
+                    created_order,
+                    OrderType.FOK,
+                    max_retries=2,
+                    base_delay=0.5,
+                    operation_name=f"{self.market_name}:post_order",
+                )
 
             _t0 = time.perf_counter()
-            await self.rate_limiter.acquire()
-            response = await retry_api_call(
-                self.client.post_order,
-                created_order,
-                OrderType.FOK,
-                max_retries=2,
-                base_delay=0.5,
-                operation_name=f"{self.market_name}:post_order",
-            )
+            response = await self.circuit_breaker.call(_execute_buy)
             MetricsCollector.get().record_order_latency(
                 (time.perf_counter() - _t0) * 1000
             )
@@ -292,6 +304,13 @@ class OrderExecutionManager:
 
             self.order_executed = True
             return True
+
+        except CircuitOpenError as e:
+            self._log(
+                f"⚡ [{self.market_name}] Circuit breaker OPEN — skipping buy ({e})"
+            )
+            MetricsCollector.get().record_error("CircuitOpen")
+            return False
 
         except Exception as e:
             self._log(f"❌ [{self.market_name}] Order failed: {e}")
@@ -397,33 +416,36 @@ class OrderExecutionManager:
 
             amount = max(round(self.trade_size, 2), 1.00)
 
-            order_args = MarketOrderArgs(
-                token_id=sell_token_id,
-                amount=amount,
-                price=0.01,
-                side="SELL",
-                nonce=0,
-            )
+            async def _execute_sell() -> dict[str, Any]:
+                order_args = MarketOrderArgs(
+                    token_id=sell_token_id,
+                    amount=amount,
+                    price=0.01,
+                    side="SELL",
+                    nonce=0,
+                )
 
-            await self.rate_limiter.acquire()
-            created_order = await retry_api_call(
-                self.client.create_market_order,
-                order_args,
-                CreateOrderOptions(tick_size="0.01", neg_risk=False),
-                max_retries=3,
-                base_delay=0.5,
-                operation_name=f"{self.market_name}:create_sell_order",
-            )
+                await self.rate_limiter.acquire()
+                created_order = await retry_api_call(
+                    self.client.create_market_order,
+                    order_args,
+                    CreateOrderOptions(tick_size="0.01", neg_risk=False),
+                    max_retries=3,
+                    base_delay=0.5,
+                    operation_name=f"{self.market_name}:create_sell_order",
+                )
 
-            await self.rate_limiter.acquire()
-            response = await retry_api_call(
-                self.client.post_order,
-                created_order,
-                OrderType.FOK,
-                max_retries=2,
-                base_delay=0.5,
-                operation_name=f"{self.market_name}:post_sell_order",
-            )
+                await self.rate_limiter.acquire()
+                return await retry_api_call(
+                    self.client.post_order,
+                    created_order,
+                    OrderType.FOK,
+                    max_retries=2,
+                    base_delay=0.5,
+                    operation_name=f"{self.market_name}:post_sell_order",
+                )
+
+            response = await self.circuit_breaker.call(_execute_sell)
 
             self._log(f"✓ [{self.market_name}] Sell order posted: {response}")
 
@@ -471,6 +493,13 @@ class OrderExecutionManager:
                     self.risk_manager.track_daily_pnl(amount, pnl_amount)
 
             return True
+
+        except CircuitOpenError as e:
+            self._log(
+                f"⚡ [{self.market_name}] Circuit breaker OPEN — skipping sell ({e})"
+            )
+            MetricsCollector.get().record_error("CircuitOpen")
+            return False
 
         except Exception as e:
             self._log(f"❌ [{self.market_name}] Sell order failed: {e}")
