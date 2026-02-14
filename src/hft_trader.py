@@ -1373,6 +1373,12 @@ class LastSecondTrader:
             if self.ws:
                 await self.ws.close()
 
+            # Record final decision if no trade was executed
+            try:
+                await self._record_market_close()
+            except Exception as e:
+                self._log(f"[{self.market_name}] Error recording market close in finally: {e}")
+
             # Close event recorder if still open
             if self.event_recorder is not None:
                 try:
