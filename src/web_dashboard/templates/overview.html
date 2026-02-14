@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Overview — Polymarket Bot{% endblock %}
+
+{% block head %}
+<meta http-equiv="refresh" content="30">
+{% endblock %}
+
+{% block content %}
+<h2>Overview <small>({{ today }})</small></h2>
+
+<div class="stat-grid">
+    <div class="stat-card">
+        <small>Bot Status</small>
+        {% if bot_active %}
+        <h3><span class="badge badge-ok">RUNNING</span></h3>
+        {% else %}
+        <h3><span class="badge badge-off">IDLE</span></h3>
+        {% endif %}
+    </div>
+    <div class="stat-card">
+        <small>Daily PnL</small>
+        <h3 class="{{ 'green' if daily_pnl >= 0 else 'red' }}">{{ fmt_pnl(daily_pnl) }}</h3>
+    </div>
+    <div class="stat-card">
+        <small>Total PnL</small>
+        <h3 class="{{ 'green' if total_pnl >= 0 else 'red' }}">{{ fmt_pnl(total_pnl) }}</h3>
+    </div>
+    <div class="stat-card">
+        <small>Win Rate</small>
+        <h3>{{ "%.1f"|format(win_rate_val) }}%</h3>
+    </div>
+    <div class="stat-card">
+        <small>Trades Today</small>
+        <h3>{{ daily_trades }}</h3>
+    </div>
+    <div class="stat-card">
+        <small>W / L (total)</small>
+        <h3><span class="green">{{ total_wins }}</span> / <span class="red">{{ total_losses }}</span></h3>
+    </div>
+</div>
+
+{% if open_positions %}
+<h3>Open Positions (live)</h3>
+<table>
+    <thead><tr><th>Market</th><th>Side</th><th>Entry</th><th>Trailing Stop</th><th>Opened</th></tr></thead>
+    <tbody>
+    {% for p in open_positions %}
+    <tr>
+        <td>{{ p.market_name }}</td>
+        <td>{{ p.side }}</td>
+        <td>${{ "%.4f"|format(p.entry_price) }}</td>
+        <td>{{ "$%.4f"|format(p.trailing_stop_price) if p.trailing_stop_price else "-" }}</td>
+        <td>{{ fmt_ts(p.updated_at) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if open_dry %}
+<h3>Open Positions (dry-run) <span class="badge badge-dry">DRY</span></h3>
+<table>
+    <thead><tr><th>Market</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>Amount</th></tr></thead>
+    <tbody>
+    {% for p in open_dry %}
+    <tr>
+        <td>{{ p.market_name }}</td>
+        <td>{{ p.side }}</td>
+        <td>${{ "%.4f"|format(p.entry_price) }}</td>
+        <td>{{ "$%.4f"|format(p.stop_loss_price) if p.stop_loss_price else "-" }}</td>
+        <td>{{ "$%.4f"|format(p.take_profit_price) if p.take_profit_price else "-" }}</td>
+        <td>${{ "%.2f"|format(p.amount) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+<h3>Recent Trades</h3>
+{% if recent_trades %}
+<table>
+    <thead><tr><th>Time</th><th>Market</th><th>Action</th><th>Side</th><th>Price</th><th>Amount</th><th>PnL</th><th>Reason</th><th>Mode</th></tr></thead>
+    <tbody>
+    {% for t in recent_trades %}
+    <tr>
+        <td>{{ fmt_ts(t.timestamp_iso) }}</td>
+        <td>{{ t.market_name[:40] }}</td>
+        <td>{{ t.action }}</td>
+        <td>{{ t.side }}</td>
+        <td>${{ "%.4f"|format(t.price) }}</td>
+        <td>${{ "%.2f"|format(t.amount) }}</td>
+        <td class="{{ 'green' if (t.pnl or 0) >= 0 else 'red' }}">{{ fmt_pnl(t.pnl) }}</td>
+        <td>{{ t.reason or "-" }}</td>
+        <td>{% if t.dry_run %}<span class="badge badge-dry">DRY</span>{% else %}LIVE{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No trades yet.</p>
+{% endif %}
+{% endblock %}

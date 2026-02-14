@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Decisions — Polymarket Bot{% endblock %}
+
+{% block content %}
+<h2>Trade Decisions <small>({{ total }} total)</small></h2>
+
+<form class="filters" method="get" action="/decisions">
+    <select name="action">
+        <option value="">All</option>
+        <option value="buy" {{ 'selected' if filters.action == 'buy' }}>Buy</option>
+        <option value="skip" {{ 'selected' if filters.action == 'skip' }}>Skip</option>
+    </select>
+    <select name="reason">
+        <option value="">All reasons</option>
+        {% for r in all_reasons %}
+        <option value="{{ r }}" {{ 'selected' if filters.reason == r }}>{{ r }}</option>
+        {% endfor %}
+    </select>
+    <button type="submit">Filter</button>
+    <a href="/decisions" role="button" class="outline">Clear</a>
+</form>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem;">
+    {% if skip_reasons %}
+    <div>
+        <h4>Skip Reasons</h4>
+        <canvas id="skipChart" height="250"></canvas>
+    </div>
+    {% endif %}
+    {% if oracle_stats %}
+    <div>
+        <h4>Oracle Guard Blocks</h4>
+        <table>
+            <thead><tr><th>Reason</th><th>Count</th></tr></thead>
+            <tbody>
+            {% for r in oracle_stats %}
+            <tr><td>{{ r.reason }}</td><td>{{ r.cnt }}</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+
+{% if decisions %}
+<table>
+    <thead><tr><th>Time</th><th>Market</th><th>Action</th><th>Side</th><th>Price</th><th>Confidence</th><th>Reason</th><th>Oracle Z</th><th>Mode</th></tr></thead>
+    <tbody>
+    {% for d in decisions %}
+    <tr>
+        <td>{{ fmt_ts(d.timestamp_iso) }}</td>
+        <td>{{ d.market_name[:40] }}</td>
+        <td>{{ d.action }}</td>
+        <td>{{ d.side or "-" }}</td>
+        <td>{{ "$%.4f"|format(d.price) if d.price else "-" }}</td>
+        <td>{{ "%.2f"|format(d.confidence) if d.confidence else "-" }}</td>
+        <td>{{ d.reason }}</td>
+        <td>{{ "%.3f"|format(d.oracle_z) if d.oracle_z else "-" }}</td>
+        <td>{% if d.dry_run %}<span class="badge badge-dry">DRY</span>{% else %}LIVE{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<div class="pagination">
+    {% if current_page > 1 %}
+    <a href="?page={{ current_page - 1 }}&reason={{ filters.reason }}&action={{ filters.action }}" role="button" class="outline">← Prev</a>
+    {% endif %}
+    <span>Page {{ current_page }} / {{ total_pages }}</span>
+    {% if current_page < total_pages %}
+    <a href="?page={{ current_page + 1 }}&reason={{ filters.reason }}&action={{ filters.action }}" role="button" class="outline">Next →</a>
+    {% endif %}
+</div>
+{% else %}
+<p>No decisions found.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if skip_reasons %}
+<script>
+new Chart(document.getElementById('skipChart'), {
+    type: 'pie',
+    data: {
+        labels: {{ skip_reasons | map(attribute='reason') | list | tojson }},
+        datasets: [{
+            data: {{ skip_reasons | map(attribute='cnt') | list | tojson }},
+            backgroundColor: ['#e57373','#64b5f6','#81c784','#ffb74d','#ba68c8','#4dd0e1','#fff176','#a1887f','#90a4ae','#f06292']
+        }]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { color: '#ccc' } } } }
+});
+</script>
+{% endif %}
+{% endblock %}

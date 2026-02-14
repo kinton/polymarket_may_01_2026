@@ -7,9 +7,12 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.13.3",
     "aiosqlite>=0.22.1",
+    "fastapi>=0.129.0",
+    "jinja2>=3.1.6",
     "py-clob-client>=0.34.5",
     "python-dotenv>=1.2.1",
     "rich>=14.3.2",
+    "uvicorn[standard]>=0.40.0",
     "web3>=7.14.0",
     "websockets>=15.0.1",
 ]

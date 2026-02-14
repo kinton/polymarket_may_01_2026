@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Analytics — Polymarket Bot{% endblock %}
+
+{% block content %}
+<h2>Analytics</h2>
+
+<!-- Equity Curve -->
+{% if equity_curve %}
+<h3>📈 Equity Curve</h3>
+<canvas id="equityChart" height="120"></canvas>
+{% endif %}
+
+<!-- Win Rate by Market -->
+{% if by_market %}
+<h3>Win Rate by Market</h3>
+<canvas id="marketChart" height="150"></canvas>
+<table>
+    <thead><tr><th>Market</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>PnL</th></tr></thead>
+    <tbody>
+    {% for m in by_market %}
+    <tr>
+        <td>{{ m.market_name[:50] }}</td>
+        <td>{{ m.total }}</td>
+        <td class="green">{{ m.wins }}</td>
+        <td class="red">{{ m.losses }}</td>
+        <td>{{ "%.1f"|format(win_rate(m.wins, m.wins + m.losses)) }}%</td>
+        <td class="{{ 'green' if m.pnl >= 0 else 'red' }}">{{ fmt_pnl(m.pnl) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+<!-- Win Rate by Hour -->
+{% if by_hour %}
+<h3>Win Rate by Hour (UTC)</h3>
+<canvas id="hourChart" height="120"></canvas>
+{% endif %}
+
+<!-- Win Rate by Weekday -->
+{% if by_weekday %}
+<h3>Win Rate by Weekday</h3>
+<table>
+    <thead><tr><th>Day</th><th>Trades</th><th>Win Rate</th><th>PnL</th></tr></thead>
+    <tbody>
+    {% for d in by_weekday %}
+    <tr>
+        <td>{{ d.day_name }}</td>
+        <td>{{ d.total }}</td>
+        <td>{{ "%.1f"|format(win_rate(d.wins, d.wins + d.losses)) }}%</td>
+        <td class="{{ 'green' if d.pnl >= 0 else 'red' }}">{{ fmt_pnl(d.pnl) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+<!-- Avg PnL by Exit Type -->
+{% if by_exit %}
+<h3>Avg PnL by Exit Type</h3>
+<table>
+    <thead><tr><th>Exit Type</th><th>Count</th><th>Avg PnL</th><th>Total PnL</th></tr></thead>
+    <tbody>
+    {% for e in by_exit %}
+    <tr>
+        <td>{{ e.exit_type or "unknown" }}</td>
+        <td>{{ e.total }}</td>
+        <td class="{{ 'green' if e.avg_pnl >= 0 else 'red' }}">{{ fmt_pnl(e.avg_pnl) }}</td>
+        <td class="{{ 'green' if e.total_pnl >= 0 else 'red' }}">{{ fmt_pnl(e.total_pnl) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if not by_market and not equity_curve %}
+<p>No analytics data yet. Trades with PnL are needed.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const chartColors = { green: '#4caf50', red: '#f44336', blue: '#42a5f5', grid: '#444' };
+const defaultOpts = { responsive: true, plugins: { legend: { labels: { color: '#ccc' } } }, scales: { x: { ticks: { color: '#aaa' }, grid: { color: '#333' } }, y: { ticks: { color: '#aaa' }, grid: { color: '#333' } } } };
+
+{% if equity_curve %}
+new Chart(document.getElementById('equityChart'), {
+    type: 'line',
+    data: {
+        labels: {{ equity_curve | map(attribute='day') | list | tojson }},
+        datasets: [{ label: 'Cumulative PnL ($)', data: {{ equity_curve | map(attribute='cumulative') | list | tojson }}, borderColor: chartColors.green, fill: false, tension: 0.2 }]
+    },
+    options: defaultOpts
+});
+{% endif %}
+
+{% if by_market %}
+new Chart(document.getElementById('marketChart'), {
+    type: 'bar',
+    data: {
+        labels: {{ by_market | map(attribute='market_name') | list | tojson }},
+        datasets: [{ label: 'PnL ($)', data: {{ by_market | map(attribute='pnl') | list | tojson }}, backgroundColor: {{ by_market | map(attribute='pnl') | list | tojson }}.map(v => v >= 0 ? chartColors.green : chartColors.red) }]
+    },
+    options: { ...defaultOpts, indexAxis: 'y' }
+});
+{% endif %}
+
+{% if by_hour %}
+new Chart(document.getElementById('hourChart'), {
+    type: 'bar',
+    data: {
+        labels: {{ by_hour | map(attribute='hour') | list | tojson }}.map(h => h + ':00'),
+        datasets: [
+            { label: 'Wins', data: {{ by_hour | map(attribute='wins') | list | tojson }}, backgroundColor: chartColors.green },
+            { label: 'Losses', data: {{ by_hour | map(attribute='losses') | list | tojson }}, backgroundColor: chartColors.red }
+        ]
+    },
+    options: { ...defaultOpts, scales: { ...defaultOpts.scales, x: { ...defaultOpts.scales.x, stacked: true }, y: { ...defaultOpts.scales.y, stacked: true } } }
+});
+{% endif %}
+</script>
+{% endblock %}

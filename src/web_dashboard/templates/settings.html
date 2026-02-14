@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Settings — Polymarket Bot{% endblock %}
+
+{% block content %}
+<h2>Settings <small>(read-only)</small></h2>
+
+<h3>🔧 Trading Parameters</h3>
+<table>
+    <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+    <tbody>
+    {% for k, v in trading_params.items() %}
+    <tr><td><code>{{ k }}</code></td><td>{{ v }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h3>🛡️ Oracle Guard</h3>
+<table>
+    <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+    <tbody>
+    {% for k, v in oracle_params.items() %}
+    <tr><td><code>{{ k }}</code></td><td>{{ v }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h3>⚠️ Risk Management</h3>
+<table>
+    <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+    <tbody>
+    {% for k, v in risk_params.items() %}
+    <tr><td><code>{{ k }}</code></td><td>{{ v }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

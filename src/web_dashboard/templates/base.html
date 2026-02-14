@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Polymarket Bot{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+        :root { --pico-font-size: 15px; }
+        nav { margin-bottom: 1rem; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { padding: 1rem; border-radius: 8px; background: var(--pico-card-background-color); text-align: center; }
+        .stat-card h3 { margin: 0; font-size: 1.8rem; }
+        .stat-card small { color: var(--pico-muted-color); }
+        .green { color: #4caf50; }
+        .red { color: #f44336; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; }
+        .badge-ok { background: #2e7d32; color: #fff; }
+        .badge-off { background: #c62828; color: #fff; }
+        .badge-dry { background: #f57f17; color: #fff; }
+        table { font-size: 0.9rem; }
+        .filters { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem; }
+        .filters input, .filters select { margin-bottom: 0; max-width: 180px; }
+        .pagination { display: flex; gap: 0.5rem; justify-content: center; margin-top: 1rem; }
+        canvas { max-height: 350px; }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="container">
+        <ul>
+            <li><strong>📊 Polymarket Bot</strong></li>
+        </ul>
+        <ul>
+            <li><a href="/" {% if page == 'overview' %}aria-current="page"{% endif %}>Overview</a></li>
+            <li><a href="/trades" {% if page == 'trades' %}aria-current="page"{% endif %}>Trades</a></li>
+            <li><a href="/decisions" {% if page == 'decisions' %}aria-current="page"{% endif %}>Decisions</a></li>
+            <li><a href="/analytics" {% if page == 'analytics' %}aria-current="page"{% endif %}>Analytics</a></li>
+            <li><a href="/settings" {% if page == 'settings' %}aria-current="page"{% endif %}>Settings</a></li>
+        </ul>
+    </nav>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+    <footer class="container">
+        <small>Polymarket Trading Bot Dashboard</small>
+    </footer>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

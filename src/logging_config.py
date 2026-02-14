@@ -140,7 +140,7 @@ def setup_bot_loggers() -> tuple[logging.Logger, logging.Logger, Path]:
 
     trader_logger = setup_logger(
         "trader",
-        trader_log_file,
+        f"trades-{run_ts}.log",
         console_prefix="[TRADER]",
     )
 

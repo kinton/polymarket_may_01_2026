@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Trades — Polymarket Bot{% endblock %}
+
+{% block content %}
+<h2>All Trades <small>({{ total }} total)</small></h2>
+
+<form class="filters" method="get" action="/trades">
+    <input type="date" name="date_from" value="{{ filters.date_from }}" placeholder="From">
+    <input type="date" name="date_to" value="{{ filters.date_to }}" placeholder="To">
+    <input type="text" name="market" value="{{ filters.market }}" placeholder="Market name">
+    <select name="action">
+        <option value="">All actions</option>
+        <option value="buy" {{ 'selected' if filters.action == 'buy' }}>Buy</option>
+        <option value="sell" {{ 'selected' if filters.action == 'sell' }}>Sell</option>
+    </select>
+    <select name="dry_run">
+        <option value="">All modes</option>
+        <option value="1" {{ 'selected' if filters.dry_run == '1' }}>Dry-run</option>
+        <option value="0" {{ 'selected' if filters.dry_run == '0' }}>Live</option>
+    </select>
+    <button type="submit">Filter</button>
+    <a href="/trades" role="button" class="outline">Clear</a>
+</form>
+
+{% if trades %}
+<table>
+    <thead><tr><th>Time</th><th>Market</th><th>Action</th><th>Side</th><th>Price</th><th>Amount</th><th>PnL</th><th>PnL%</th><th>Reason</th><th>Mode</th></tr></thead>
+    <tbody>
+    {% for t in trades %}
+    <tr>
+        <td>{{ fmt_ts(t.timestamp_iso) }}</td>
+        <td>{{ t.market_name[:45] }}</td>
+        <td>{{ t.action }}</td>
+        <td>{{ t.side }}</td>
+        <td>${{ "%.4f"|format(t.price) }}</td>
+        <td>${{ "%.2f"|format(t.amount) }}</td>
+        <td class="{{ 'green' if (t.pnl or 0) >= 0 else 'red' }}">{{ fmt_pnl(t.pnl) }}</td>
+        <td>{{ fmt_pct(t.pnl_pct) }}</td>
+        <td>{{ t.reason or "-" }}</td>
+        <td>{% if t.dry_run %}<span class="badge badge-dry">DRY</span>{% else %}LIVE{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<div class="pagination">
+    {% if current_page > 1 %}
+    <a href="?page={{ current_page - 1 }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&market={{ filters.market }}&action={{ filters.action }}&dry_run={{ filters.dry_run }}" role="button" class="outline">← Prev</a>
+    {% endif %}
+    <span>Page {{ current_page }} / {{ total_pages }}</span>
+    {% if current_page < total_pages %}
+    <a href="?page={{ current_page + 1 }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&market={{ filters.market }}&action={{ filters.action }}&dry_run={{ filters.dry_run }}" role="button" class="outline">Next →</a>
+    {% endif %}
+</div>
+{% else %}
+<p>No trades found.</p>
+{% endif %}
+{% endblock %}
