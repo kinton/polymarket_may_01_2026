@@ -8,11 +8,15 @@ Supports alert levels, rate limiting, history, and daily summaries.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from src.alerts import AlertManager
+
+_logger = logging.getLogger(__name__)
 
 
 class AlertLevel(Enum):
@@ -52,10 +56,12 @@ class AlertDispatcher:
         alert_manager: AlertManager | None,
         rate_limit_seconds: float = DEFAULT_RATE_LIMIT_SECONDS,
         history_path: Path = ALERT_HISTORY_PATH,
+        trade_db: Any | None = None,
     ):
         self.alert_manager = alert_manager
         self.rate_limit_seconds = rate_limit_seconds
         self.history_path = history_path
+        self._trade_db = trade_db
         self._last_sent: dict[str, float] = {}
         self._history: list[dict] = []
         self._load_history()
@@ -79,15 +85,43 @@ class AlertDispatcher:
             pass
 
     def _record_alert(self, alert_type: str, level: AlertLevel, details: dict) -> None:
-        """Record an alert in history."""
+        """Record an alert in history (JSON + SQLite)."""
+        ts = time.time()
         entry = {
-            "timestamp": time.time(),
+            "timestamp": ts,
             "type": alert_type,
             "level": level.value,
             **details,
         }
         self._history.append(entry)
         self._save_history()
+
+        # Also write to SQLite if available
+        if self._trade_db is not None:
+            try:
+                import asyncio
+                try:
+                    asyncio.get_running_loop()
+                    # Already in event loop — can't use run_until_complete
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        pool.submit(asyncio.run, self._trade_db.insert_alert(
+                            timestamp=ts,
+                            alert_type=alert_type,
+                            level=level.value,
+                            market_name=details.get("market"),
+                            details_json=json.dumps(details) if details else None,
+                        )).result(timeout=5)
+                except RuntimeError:
+                    asyncio.run(self._trade_db.insert_alert(
+                        timestamp=ts,
+                        alert_type=alert_type,
+                        level=level.value,
+                        market_name=details.get("market"),
+                        details_json=json.dumps(details) if details else None,
+                    ))
+            except Exception as e:
+                _logger.warning("Failed to write alert to SQLite: %s", e)
 
     def _is_rate_limited(self, key: str) -> bool:
         """Check if an alert key is rate-limited."""

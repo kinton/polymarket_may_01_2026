@@ -43,6 +43,7 @@ class RiskManager:
         market_name: str,
         trade_size: float = 1.0,
         logger: logging.Logger | None = None,
+        trade_db: Any | None = None,
     ):
         """
         Initialize risk manager.
@@ -52,11 +53,13 @@ class RiskManager:
             market_name: Market name for logging
             trade_size: Default trade size in USDC
             logger: Optional logger for logging events
+            trade_db: Optional TradeDatabase for SQLite-backed daily stats
         """
         self.client: ClobClient | None = client
         self.market_name = market_name
         self.trade_size = trade_size
         self.logger: logging.Logger | None = logger
+        self._trade_db = trade_db
 
         # Dynamic sizing thresholds
         self.min_trade_usdc = max(MIN_TRADE_USDC, round(float(trade_size), 2))
@@ -185,56 +188,91 @@ class RiskManager:
             self._log(f"⚠️  [{self.market_name}] Balance check failed: {e}")
             return False
 
+    def _check_limits_from_data(
+        self, initial_balance: float | None, current_pnl: float, total_trades: int,
+    ) -> bool:
+        """Check PnL and trade count limits from parsed data."""
+        if initial_balance is not None:
+            max_daily_loss = initial_balance * -MAX_DAILY_LOSS_PCT
+            if current_pnl < max_daily_loss:
+                self._log(
+                    f"🛑 FATAL [{self.market_name}] DAILY LOSS LIMIT EXCEEDED: "
+                    + f"PnL=${current_pnl:+.2f} < Max Loss=${max_daily_loss:+.2f} "
+                    + f"({MAX_DAILY_LOSS_PCT * 100:.0f}% of ${initial_balance:.2f})",
+                )
+                return False
+
+        if total_trades >= MAX_TOTAL_TRADES_PER_DAY:
+            self._log(
+                f"🛑 [{self.market_name}] DAILY TRADE LIMIT EXCEEDED: "
+                + f"{total_trades} trades >= {MAX_TOTAL_TRADES_PER_DAY} max",
+            )
+            return False
+
+        return True
+
+    def _run_async(self, coro: Any) -> Any:
+        """Run async coroutine from sync context."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=5)
+
+    def _check_daily_limits_sqlite(self, today: str) -> bool | None:
+        """Try reading daily limits from SQLite. Returns None if unavailable."""
+        if self._trade_db is None:
+            return None
+        try:
+            data = self._run_async(
+                self._trade_db.get_or_create_daily_stats(today)
+            )
+            return self._check_limits_from_data(
+                data.get("initial_balance"),
+                data.get("current_pnl", 0.0),
+                data.get("total_trades", 0),
+            )
+        except Exception:
+            return None  # Fall back to JSON
+
     def check_daily_limits(self) -> bool:
         """
         Check if daily limits are within acceptable bounds.
+
+        Tries SQLite first (if trade_db set), falls back to JSON.
 
         Returns:
             True if daily limits are OK, False if limits exceeded
         """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        path = self._daily_limits_path
 
+        # Try SQLite first
+        result = self._check_daily_limits_sqlite(today)
+        if result is not None:
+            return result
+
+        # Fallback: JSON file
+        path = self._daily_limits_path
         try:
-            # If no tracking file exists, limits are OK
             if not os.path.exists(path):
                 return True
 
             with open(path, "r") as f:
                 data = json.load(f)
 
-            # If data is from a different day, reset and OK
             if data.get("date") != today:
                 return True
 
-            # Check daily loss limit
-            initial_balance = data.get("initial_balance")
-            current_pnl = data.get("current_pnl", 0.0)
-
-            if initial_balance is not None:
-                max_daily_loss = initial_balance * -MAX_DAILY_LOSS_PCT
-                if current_pnl < max_daily_loss:
-                    self._log(
-                        f"🛑 FATAL [{self.market_name}] DAILY LOSS LIMIT EXCEEDED: "
-                        + f"PnL=${current_pnl:+.2f} < Max Loss=${max_daily_loss:+.2f} "
-                        + f"({MAX_DAILY_LOSS_PCT * 100:.0f}% of ${initial_balance:.2f})",
-                    )
-                    return False
-
-            # Check daily trade count limit
-            total_trades = data.get("total_trades", 0)
-            if total_trades >= MAX_TOTAL_TRADES_PER_DAY:
-                self._log(
-                    f"🛑 [{self.market_name}] DAILY TRADE LIMIT EXCEEDED: "
-                    + f"{total_trades} trades >= {MAX_TOTAL_TRADES_PER_DAY} max",
-                )
-                return False
-
-            return True
+            return self._check_limits_from_data(
+                data.get("initial_balance"),
+                data.get("current_pnl", 0.0),
+                data.get("total_trades", 0),
+            )
 
         except Exception as e:
             self._log(f"⚠️  [{self.market_name}] Daily limits check failed: {e}")
-            # Fail closed on error - block trading if we can't verify limits
             return False
 
     def track_daily_pnl(self, trade_amount: float, pnl: float = 0.0) -> None:
@@ -309,3 +347,23 @@ class RiskManager:
 
         except Exception as e:
             self._log(f"⚠️  [{self.market_name}] Failed to track daily PnL: {e}")
+
+        # Also write to SQLite if available
+        self._track_daily_pnl_sqlite(today, pnl)
+
+    def _track_daily_pnl_sqlite(self, today: str, pnl: float) -> None:
+        """Write daily PnL update to SQLite (best-effort)."""
+        if self._trade_db is None:
+            return
+        try:
+            self._run_async(
+                self._trade_db.update_daily_stats(
+                    today,
+                    pnl_delta=pnl,
+                    trade_count_delta=1,
+                    winning_delta=1 if pnl > 0 else 0,
+                    losing_delta=1 if pnl < 0 else 0,
+                )
+            )
+        except Exception as e:
+            self._log(f"⚠️  [{self.market_name}] SQLite daily PnL write failed: {e}")
