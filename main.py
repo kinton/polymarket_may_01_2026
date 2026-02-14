@@ -33,6 +33,7 @@ from typing import Any, Dict, Optional
 
 from src.logging_config import setup_bot_loggers
 from src.healthcheck import HealthCheckServer
+from src.trading.parallel_launcher import ParallelLauncher
 
 # Import our modules
 from src.gamma_15m_finder import GammaAPI15mFinder
@@ -337,20 +338,32 @@ class TradingBotRunner:
                 if markets:
                     self.finder_logger.info(f"Found {len(markets)} active market(s)")
 
-                    for market in markets:
-                        condition_id = market.get("condition_id")
+                    # Filter eligible markets
+                    eligible = [m for m in markets if self.should_start_trader(m)]
 
-                        # Check if we should start a trader for this market
-                        if self.should_start_trader(market):
-                            self.finder_logger.info(
-                                f"Starting trader for market: {market.get('title')}"
-                            )
+                    if eligible:
+                        self.finder_logger.info(
+                            f"Launching {len(eligible)} trader(s) in parallel"
+                        )
 
-                            # Start trader as background task
+                        # Parallel launch: start all eligible traders concurrently
+                        launcher = ParallelLauncher(
+                            max_concurrency=self.max_traders,
+                            timeout=None,  # traders run until market close
+                        )
+
+                        async def _start_and_track(market: Dict[str, Any]) -> None:
+                            cid = market.get("condition_id")
                             task = asyncio.create_task(
                                 self.start_trader_for_market(market)
                             )
-                            self.active_traders[condition_id] = task
+                            self.active_traders[cid] = task
+
+                        batch = await launcher.launch(eligible, _start_and_track)
+                        self.finder_logger.info(
+                            f"Parallel launch: {batch.succeeded}/{batch.total} ok "
+                            f"in {batch.elapsed_ms:.0f}ms"
+                        )
                 else:
                     self.finder_logger.info("No active markets found")
 
