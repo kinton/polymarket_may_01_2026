@@ -80,6 +80,8 @@ from src.trading.position_manager import PositionManager
 from src.trading.risk_manager import RiskManager
 from src.trading.stop_loss_manager import StopLossManager
 from src.trading.dry_run_replay import EventRecorder
+from src.trading.orderbook_ws import OrderbookWS
+from src.trading.orderbook_ws_adapter import OrderbookWSAdapter
 
 try:
     from py_clob_client.client import ClobClient
@@ -127,6 +129,8 @@ class LastSecondTrader:
         book_log_every_s_final: float = 0.5,
         replay_dir: str | None = None,
         replay_book_throttle_s: float = 0.5,
+        use_orderbook_ws: bool | None = None,
+        orderbook_ws_poll_interval: float = 0.1,
     ):
         """
         Initialize the trader.
@@ -249,6 +253,22 @@ class LastSecondTrader:
             else:
                 self.event_recorder = None
 
+            # OrderbookWS adapter (optional, enabled via USE_ORDERBOOK_WS env or param)
+            if use_orderbook_ws is None:
+                use_orderbook_ws = os.getenv("USE_ORDERBOOK_WS", "").strip().lower() in ("1", "true", "yes")
+            self.use_orderbook_ws = use_orderbook_ws
+            self._orderbook_ws_adapter: OrderbookWSAdapter | None = None
+            if self.use_orderbook_ws:
+                ws_client = OrderbookWS()
+                self._orderbook_ws_adapter = OrderbookWSAdapter(
+                    ws=ws_client,
+                    orderbook=self.orderbook,
+                    token_id_yes=self.token_id_yes,
+                    token_id_no=self.token_id_no,
+                    poll_interval=orderbook_ws_poll_interval,
+                )
+                self._log(f"[{self.market_name}] OrderbookWS adapter enabled (poll={orderbook_ws_poll_interval}s)")
+
             # Log init
             mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
             self._log(
@@ -327,6 +347,14 @@ class LastSecondTrader:
         except Exception as e:
             self._log(f"[TRADER] [{self.market_name}] ERROR saving state: {e}")
             self._log(traceback.format_exc())
+
+        # Stop OrderbookWS adapter
+        try:
+            if self._orderbook_ws_adapter is not None:
+                await self._orderbook_ws_adapter.stop()
+                self._log(f"[TRADER] [{self.market_name}] OrderbookWS adapter stopped")
+        except Exception as e:
+            self._log(f"[TRADER] [{self.market_name}] ERROR stopping OrderbookWS adapter: {e}")
 
         # Close event recorder
         try:
@@ -1211,12 +1239,19 @@ class LastSecondTrader:
     async def run(self):
         """Main entry point: Connect and start trading."""
         try:
-            connected = await self.connect_websocket()
-            if not connected:
-                self._log("Failed to connect to WebSocket. Exiting.")
-                return
+            if self._orderbook_ws_adapter is not None:
+                # Use OrderbookWS adapter — it handles connect, subscribe, reconnect
+                await self._orderbook_ws_adapter.start()
+                self._log(f"[{self.market_name}] OrderbookWS connected (Level 2)")
+                tasks = [self._trigger_check_loop()]
+            else:
+                # Legacy built-in WebSocket
+                connected = await self.connect_websocket()
+                if not connected:
+                    self._log("Failed to connect to WebSocket. Exiting.")
+                    return
+                tasks = [self.listen_to_market(), self._trigger_check_loop()]
 
-            tasks = [self.listen_to_market(), self._trigger_check_loop()]
             if self.oracle_guard.enabled:
                 tasks.append(self._oracle_price_loop())
             await asyncio.gather(*tasks)
@@ -1224,6 +1259,13 @@ class LastSecondTrader:
         except KeyboardInterrupt:
             self._log("⚠️  Interrupted by user. Shutting down...")
         finally:
+            # Stop OrderbookWS adapter if active
+            if self._orderbook_ws_adapter is not None:
+                try:
+                    await self._orderbook_ws_adapter.stop()
+                except Exception:
+                    pass
+
             if self.ws:
                 await self.ws.close()
 
@@ -1466,7 +1508,13 @@ class LastSecondTrader:
                 or self.orderbook.best_ask_no is not None
             ):
                 now_ts = time.time()
-                ws_fresh = (now_ts - self.last_ws_update_ts) <= self.WS_STALE_SECONDS
+                # When using OrderbookWS adapter, use adapter's sync timestamp
+                last_update = (
+                    self._orderbook_ws_adapter.last_sync_ts
+                    if self._orderbook_ws_adapter is not None
+                    else self.last_ws_update_ts
+                )
+                ws_fresh = (now_ts - last_update) <= self.WS_STALE_SECONDS
                 if ws_fresh:
                     await self.check_trigger(time_remaining)
                 else:
