@@ -977,9 +977,22 @@ class LastSecondTrader:
                 # Check for early entry opportunity (before late window)
                 if self._check_early_entry_eligibility():
                     winning_bid = self._get_winning_bid()
+                    winning_ask = self._get_winning_ask()
+                    trade_side = self.winning_side
                     self._log(
                         f"[TRADER] [{self.market_name}] Early entry triggered: confidence={winning_bid:.4f} (≥{EARLY_ENTRY_CONFIDENCE_THRESHOLD:.2f}), time={time_remaining:.0f}s"
                     )
+                    # Record buy decision in dry-run simulator
+                    if self.dry_run_sim:
+                        await self.dry_run_sim.record_buy(
+                            side=trade_side,
+                            price=winning_ask,
+                            amount=self.trade_size,
+                            confidence=winning_bid,
+                            time_remaining=time_remaining,
+                            reason="early_entry",
+                            oracle_snap=self.oracle_guard.snapshot if self.oracle_guard.enabled else None,
+                        )
                     await self.execute_order()
                     return
                 return
@@ -1316,7 +1329,10 @@ class LastSecondTrader:
 
                 if self.get_time_remaining() <= 0:
                     self._log(f"⏰ [{self.market_name}] Market closed")
-                    await self._record_market_close()
+                    try:
+                        await self._record_market_close()
+                    except Exception as e:
+                        self._log(f"❌ [{self.market_name}] Error in _record_market_close: {e}")
                     break
 
         except websockets.exceptions.ConnectionClosed:
@@ -1586,6 +1602,7 @@ class LastSecondTrader:
 
     async def _record_market_close(self) -> None:
         """Record a final skip decision when market closes without a trade."""
+        self._log(f"[{self.market_name}] _record_market_close called (executed={self.order_execution.is_executed()}, sim={self.dry_run_sim is not None})")
         if self.order_execution.is_executed():
             return
         if not self.dry_run_sim:
