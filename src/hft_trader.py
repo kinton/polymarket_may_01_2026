@@ -188,7 +188,18 @@ class LastSecondTrader:
             )
 
             # Position, stop-loss, and risk managers
-            self.position_manager = PositionManager(logger=self.logger)
+            self.position_manager = PositionManager(
+                logger=self.logger,
+                condition_id=condition_id,
+            )
+            # Restore position from disk if crash recovery data exists
+            if self.position_manager.restore():
+                self._log(
+                    f"[{self.market_name}] ♻️ Position restored: "
+                    f"{self.position_manager.position_side} @ "
+                    f"${self.position_manager.entry_price:.4f}"
+                )
+
             self.stop_loss_manager = StopLossManager(
                 position_manager=self.position_manager,
                 logger=self.logger,
@@ -278,15 +289,16 @@ class LastSecondTrader:
 
         # Save state before shutdown
         try:
-            # Save position state
+            # Persist position state to disk for crash recovery
             if self.position_manager and self.position_manager.is_open:
+                self.position_manager._persist()
                 position_info = {
                     "side": self.position_manager.position_side,
                     "entry_price": self.position_manager.entry_price,
                     "trailing_stop": self.position_manager.trailing_stop_price,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
-                self._log(f"[TRADER] [{self.market_name}] Saving position state: {position_info}")
+                self._log(f"[TRADER] [{self.market_name}] Position state persisted: {position_info}")
 
             # Log execution state
             if self.order_execution:

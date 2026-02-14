@@ -57,7 +57,7 @@ def sample_market_data():
 
 
 @pytest.fixture
-async def integration_trader(sample_market_data, mock_clob_client):
+async def integration_trader(sample_market_data, mock_clob_client, tmp_path):
     """Create a LastSecondTrader instance for integration tests."""
     with patch("src.hft_trader.load_dotenv"):
         trader = LastSecondTrader(
@@ -72,6 +72,9 @@ async def integration_trader(sample_market_data, mock_clob_client):
             oracle_enabled=False,
             oracle_guard_enabled=False,
         )
+        # Use temp dir for position persistence to avoid test pollution
+        if trader.position_manager._persister:
+            trader.position_manager._persister.persist_dir = tmp_path
         # Use the configured mock client directly, not its return_value
         trader.client = mock_clob_client
     return trader
