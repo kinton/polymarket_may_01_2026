@@ -57,6 +57,11 @@ class DryRunSimulator:
         oracle_snap: Any | None = None,
     ) -> int:
         """Record a buy decision and open a virtual position."""
+        logger.info(
+            "[%s] DryRunSim.record_buy: side=%s price=%.4f amount=%.2f reason=%s time_remaining=%.2f",
+            self.market_name, side, price, amount, reason,
+            time_remaining if time_remaining is not None else -1,
+        )
         now = time.time()
         oracle_kwargs = _extract_oracle(oracle_snap)
 
@@ -123,6 +128,12 @@ class DryRunSimulator:
         oracle_snap: Any | None = None,
     ) -> int:
         """Record a skip (no-buy) decision."""
+        logger.info(
+            "[%s] DryRunSim.record_skip: reason=%s side=%s price=%s time_remaining=%s",
+            self.market_name, reason, side,
+            f"{price:.4f}" if price is not None else "None",
+            f"{time_remaining:.2f}" if time_remaining is not None else "None",
+        )
         oracle_kwargs = _extract_oracle(oracle_snap)
         return await self._db.insert_trade_decision(
             timestamp=time.time(),

@@ -959,6 +959,11 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] Max order attempts ({self.order_execution.get_max_attempts()}) reached"
                     )
                     self._logged_warnings.add("max_attempts")
+                    if self.dry_run_sim:
+                        await self.dry_run_sim.record_skip(
+                            reason="max_attempts",
+                            time_remaining=time_remaining,
+                        )
                 return
 
             current_time = time.time()
@@ -998,6 +1003,11 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] No trade side at {time_remaining:.3f}s"
                     )
                     self._logged_warnings.add("no_winner")
+                    if self.dry_run_sim:
+                        await self.dry_run_sim.record_skip(
+                            reason="no_winner",
+                            time_remaining=time_remaining,
+                        )
                 return
 
             winning_ask = self._get_ask_for_side(trade_side)
@@ -1007,6 +1017,12 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] No ask price for {trade_side} at {time_remaining:.3f}s"
                     )
                     self._logged_warnings.add("no_ask")
+                    if self.dry_run_sim:
+                        await self.dry_run_sim.record_skip(
+                            reason="no_ask",
+                            side=trade_side,
+                            time_remaining=time_remaining,
+                        )
                 return
 
             # Use ask for confidence check (as requested by Konstantin)
@@ -1300,6 +1316,7 @@ class LastSecondTrader:
 
                 if self.get_time_remaining() <= 0:
                     self._log(f"⏰ [{self.market_name}] Market closed")
+                    await self._record_market_close()
                     break
 
         except websockets.exceptions.ConnectionClosed:
@@ -1567,11 +1584,29 @@ class LastSecondTrader:
                 self._log(f"⚠️  [{self.market_name}] Oracle RTDS error: {e}")
                 await asyncio.sleep(2.0)
 
+    async def _record_market_close(self) -> None:
+        """Record a final skip decision when market closes without a trade."""
+        if self.order_execution.is_executed():
+            return
+        if not self.dry_run_sim:
+            return
+        winning_ask = self._get_winning_ask()
+        self._log(f"[{self.market_name}] Recording market_closed_no_trigger (no trade executed)")
+        await self.dry_run_sim.record_skip(
+            reason="market_closed_no_trigger",
+            side=self.winning_side,
+            price=winning_ask,
+            confidence=winning_ask,
+            time_remaining=0.0,
+            oracle_snap=self.oracle_guard.snapshot if self.oracle_guard.enabled else None,
+        )
+
     async def _trigger_check_loop(self):
         """Fallback loop for time-based checks without trading on stale data."""
         while True:
             time_remaining = self.get_time_remaining()
             if time_remaining <= 0:
+                await self._record_market_close()
                 break
 
             if (
