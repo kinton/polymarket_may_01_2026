@@ -7,6 +7,7 @@ Supports optional persistence to disk for crash recovery.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from src.trading.position_persist import PositionPersister
@@ -27,7 +28,7 @@ class PositionManager:
 
     def __init__(
         self,
-        logger: Any | None = None,
+        logger: logging.Logger | None = None,
         condition_id: str | None = None,
         persist_dir: str | None = None,
     ):
@@ -39,7 +40,7 @@ class PositionManager:
             condition_id: Market condition ID (enables persistence if provided)
             persist_dir: Directory for position state files
         """
-        self.logger = logger
+        self.logger: logging.Logger | None = logger
         self._persister: PositionPersister | None = None
         if condition_id:
             self._persister = PositionPersister(

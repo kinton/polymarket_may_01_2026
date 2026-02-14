@@ -4,12 +4,17 @@ Risk manager for handling balance checks, risk limits, and daily PnL tracking.
 Ensures trades respect capital allocation limits and daily loss/trade count limits.
 """
 
-import json
-import os
-from datetime import datetime, timezone
-from typing import Any
+from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from py_clob_client.client import ClobClient
 
 from src.clob_types import (
     EXCHANGE_CONTRACT,
@@ -34,10 +39,10 @@ class RiskManager:
 
     def __init__(
         self,
-        client: Any | None,
+        client: ClobClient | None,
         market_name: str,
         trade_size: float = 1.0,
-        logger: Any | None = None,
+        logger: logging.Logger | None = None,
     ):
         """
         Initialize risk manager.
@@ -48,10 +53,10 @@ class RiskManager:
             trade_size: Default trade size in USDC
             logger: Optional logger for logging events
         """
-        self.client = client
+        self.client: ClobClient | None = client
         self.market_name = market_name
         self.trade_size = trade_size
-        self.logger = logger
+        self.logger: logging.Logger | None = logger
 
         # Dynamic sizing thresholds
         self.min_trade_usdc = max(MIN_TRADE_USDC, round(float(trade_size), 2))

@@ -26,6 +26,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+import logging
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -44,7 +45,7 @@ class GammaAPI15mFinder:
         self,
         max_minutes_ahead: int = 20,
         use_wide_search: bool = False,
-        logger: Any | None = None,
+        logger: logging.Logger | None = None,
     ):
         """Initialize finder.
 

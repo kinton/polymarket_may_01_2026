@@ -6,7 +6,7 @@ guard functions to block trades when oracle data is unreliable.
 """
 
 import time
-from typing import Any
+import logging
 
 import aiohttp
 
@@ -212,7 +212,7 @@ class OracleGuardManager:
 
         return True, "", ""
 
-    async def price_loop(self, logger: Any, slug: str | None) -> None:
+    async def price_loop(self, logger: logging.Logger, slug: str | None) -> None:
         """
         Stream Chainlink oracle prices from RTDS and update tracking.
 
@@ -344,7 +344,7 @@ class OracleGuardManager:
                     logger.info(f"[{self.market_name}] ORACLE " + " | ".join(parts))
                 self._last_log_ts = time.time()
 
-    def log_block_summary(self, logger: Any) -> None:
+    def log_block_summary(self, logger: logging.Logger) -> None:
         """Log oracle guard block summary."""
         if not self.enabled or not self.guard_enabled:
             return

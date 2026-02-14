@@ -36,7 +36,11 @@ import os
 import time
 import traceback
 from datetime import datetime, timezone
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from py_clob_client.client import ClobClient
 
 import aiohttp
 import websockets
@@ -113,7 +117,7 @@ class LastSecondTrader:
         trade_size: float = 1.0,
         title: str | None = None,
         slug: str | None = None,
-        trader_logger: Any | None = None,
+        trader_logger: logging.Logger | None = None,
         oracle_enabled: bool = False,
         oracle_guard_enabled: bool = True,
         oracle_min_points: int = 4,
@@ -165,7 +169,7 @@ class LastSecondTrader:
             self.last_ws_update_ts = 0.0
             self._last_stale_log_ts = 0.0
             self._planned_trade_side: str | None = None
-            self.ws: Any = None
+            self.ws: websockets.WebSocketClientProtocol | None = None
 
             # Initialize managers
             load_dotenv()
@@ -1408,12 +1412,12 @@ class LastSecondTrader:
 
     # Backward-compatibility property for client (needed for tests that mock the client)
     @property
-    def client(self) -> Any | None:
+    def client(self) -> ClobClient | None:
         """Get/set the CLOB client, updating managers when set."""
         return self._client
 
     @client.setter
-    def client(self, value: Any | None) -> None:
+    def client(self, value: ClobClient | None) -> None:
         self._client = value
         # Update all managers that depend on the client
         if hasattr(self, "order_execution") and self.order_execution:

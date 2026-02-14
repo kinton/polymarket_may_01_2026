@@ -8,6 +8,7 @@ so the bot can recover open positions after a crash or restart.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -30,13 +31,13 @@ class PositionPersister:
         self,
         condition_id: str,
         persist_dir: str | None = None,
-        logger: Any | None = None,
+        logger: logging.Logger | None = None,
     ):
         self.condition_id = condition_id
         self.persist_dir = Path(
             persist_dir or os.environ.get("POSITION_PERSIST_DIR", DEFAULT_PERSIST_DIR)
         )
-        self.logger = logger
+        self.logger: logging.Logger | None = logger
         self.persist_dir.mkdir(parents=True, exist_ok=True)
 
     @property

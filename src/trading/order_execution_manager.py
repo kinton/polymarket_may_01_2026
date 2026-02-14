@@ -4,7 +4,10 @@ Order Execution Manager - Handles order creation and execution.
 Manages buy and sell orders with FOK (Fill-or-Kill) market orders.
 """
 
+from __future__ import annotations
+
 import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -21,11 +24,16 @@ from src.clob_types import (
 from src.market_parser import get_winning_token_id
 
 if TYPE_CHECKING:
+    from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import (
         CreateOrderOptions,
         MarketOrderArgs,
         OrderType,
     )
+
+    from src.trading.alert_dispatcher import AlertDispatcher
+    from src.trading.position_manager import PositionManager
+    from src.trading.risk_manager import RiskManager
 else:
     try:
         from py_clob_client.clob_types import (
@@ -47,17 +55,17 @@ class OrderExecutionManager:
 
     def __init__(
         self,
-        client: Any | None,
+        client: ClobClient | None,
         market_name: str,
         condition_id: str,
         token_id_yes: str,
         token_id_no: str,
         dry_run: bool = True,
         trade_size: float = 1.0,
-        logger: Any | None = None,
-        position_manager: Any | None = None,
-        alert_dispatcher: Any | None = None,
-        risk_manager: Any | None = None,
+        logger: logging.Logger | None = None,
+        position_manager: PositionManager | None = None,
+        alert_dispatcher: AlertDispatcher | None = None,
+        risk_manager: RiskManager | None = None,
         rate_limiter: RateLimiter | None = None,
     ):
         """

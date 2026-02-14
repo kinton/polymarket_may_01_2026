@@ -4,7 +4,9 @@ Stop-loss manager for handling stop-loss, take-profit, and trailing-stop logic.
 Monitors position and triggers sell orders when thresholds are breached.
 """
 
+import logging
 import time
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from src.clob_types import (
@@ -25,10 +27,13 @@ class StopLossManager:
     When thresholds are breached, executes sell orders via the provided callback.
     """
 
+    # Type alias for the async sell callback: takes a reason string, returns bool
+    SellCallback = Callable[[str], Coroutine[Any, Any, bool]]
+
     def __init__(
         self,
         position_manager: PositionManager,
-        logger: Any | None = None,
+        logger: logging.Logger | None = None,
     ):
         """
         Initialize stop-loss manager.
@@ -38,17 +43,17 @@ class StopLossManager:
             logger: Optional logger for logging events
         """
         self.position_manager = position_manager
-        self.logger = logger
+        self.logger: logging.Logger | None = logger
 
         # Throttling state
-        self._last_stop_loss_check_ts = 0.0
-        self._last_take_profit_check_ts = 0.0
-        self._last_trailing_stop_update_ts = 0.0
+        self._last_stop_loss_check_ts: float = 0.0
+        self._last_take_profit_check_ts: float = 0.0
+        self._last_trailing_stop_update_ts: float = 0.0
 
         # Callback for executing sell orders
-        self._sell_callback: Any | None = None
+        self._sell_callback: StopLossManager.SellCallback | None = None
 
-    def set_sell_callback(self, callback: Any) -> None:
+    def set_sell_callback(self, callback: SellCallback) -> None:
         """
         Set callback for executing sell orders.
 
