@@ -51,4 +51,29 @@
 - All 448 tests passing, ruff clean
 - Commit: 565b1d0
 
-## Phase 6: OrderbookWS интеграция ⏳ NEXT
+## Phase 6: OrderbookWS интеграция ✅ DONE (2026-02-14)
+- Created `src/trading/orderbook_ws_adapter.py` — OrderbookWSAdapter (Level 2 → Level 1 projection)
+- Integrated into `hft_trader.py` with `use_orderbook_ws` param + `USE_ORDERBOOK_WS` env var
+- When enabled: adapter replaces built-in WS, handles connect/subscribe/reconnect/ping
+- Sync loop projects best bid/ask from Level 2 snapshots at configurable interval (default 100ms)
+- Trigger check loop uses `adapter.last_sync_ts` for WS freshness detection
+- Graceful shutdown stops adapter cleanly
+- 15 integration tests in `tests/test_orderbook_ws_integration.py`
+- All 463 tests passing, ruff clean
+- Commit: fbb0905
+
+---
+
+## 🎉 ALL 6 PHASES COMPLETE
+
+| Phase | Description | Tests Added | Commit |
+|-------|-------------|-------------|--------|
+| 1 | TradeDatabase (SQLite, 6 tables, WAL, migrations) | 23 | 54ffea1 |
+| 2 | PositionPersist activation in hft_trader.py | 10 | d9f3559 |
+| 3 | DryRunReplay activation in hft_trader.py | 11 | 280ab31 |
+| 4 | JSON→SQLite migration + dual backends | 17 | 422b64a |
+| 5 | PnL Dashboard v2 (SQLite + Rich CLI) | 23 | 565b1d0 |
+| 6 | OrderbookWS integration (adapter + env toggle) | 15 | fbb0905 |
+
+**Total tests: 463** (was 396 before Phase 1)
+**New tests added: 99** across all 6 phases
