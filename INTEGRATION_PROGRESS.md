@@ -29,11 +29,20 @@
 - All 417 tests passing, ruff clean
 - Commit: 280ab31
 
-## Phase 4: Миграция JSON→SQLite ⏳ NEXT
-- `scripts/migrate_to_sqlite.py` — скрипт миграции JSON → SQLite
-- `RiskManager`: dual-read (SQLite → JSON fallback)
-- `AlertDispatcher`: write to SQLite via TradeDatabase
-- `SQLitePositionPersister` и `SQLiteEventRecorder` — новые бэкенды
+## Phase 4: Миграция JSON→SQLite ✅ DONE (2026-02-14)
+- `scripts/migrate_to_sqlite.py` — migrates daily_limits, alert_history, positions, replays → SQLite (.bak originals)
+- `RiskManager`: dual-read (SQLite → JSON fallback), dual-write via `_run_async`
+- `AlertDispatcher`: dual-write alerts to JSON + SQLite (trade_db param)
+- `SQLitePositionPersister` — drop-in replacement for PositionPersister (save/load/remove/exists)
+- `SQLiteEventRecorder` — drop-in replacement for EventRecorder (session_start/end, book_update, trigger, trade, price_change)
+- 17 new tests in `tests/test_migration.py`
+- All 434 tests passing, ruff clean
+- Commit: 422b64a
 
-## Phase 5: PnL Dashboard v2 — PENDING
+## Phase 5: PnL Dashboard v2 ⏳ NEXT
+- Переписать `pnl_dashboard.py` на чтение из SQLite
+- Rich CLI output (таблицы, цвета)
+- Win rate по рынкам/часам/дням недели
+- Equity curve (кумулятивный PnL)
+
 ## Phase 6: OrderbookWS интеграция — PENDING
