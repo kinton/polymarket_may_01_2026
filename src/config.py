@@ -49,8 +49,8 @@ class TradingConfig(BaseSettings):
     """All trading constants in one place, overridable via env vars."""
 
     # --- Price thresholds ---
-    max_buy_price: float = Field(default=0.99)
-    min_buy_price: float = Field(default=0.85)
+    max_buy_price: float = Field(default=0.97)
+    min_buy_price: float = Field(default=0.60)
     trigger_threshold: float = Field(default=30.0)
     price_threshold: float = Field(default=0.85)
     price_tie_eps: float = Field(default=1e-6)
