@@ -1,9 +1,14 @@
 """
 Common type definitions and constants for trading system.
+
+Constants are loaded from the unified TradingConfig (src/config.py).
+They can be overridden via environment variables.
 """
 
 from dataclasses import dataclass
 from datetime import datetime
+
+from src.config import config as _cfg
 
 
 @dataclass
@@ -38,55 +43,55 @@ class OrderBook:
             self.sum_asks = self.best_ask_yes + self.best_ask_no
 
 
-# Trading constants
-MAX_BUY_PRICE = 0.90  # Maximum price to buy — sweet spot for risk/reward
-MIN_BUY_PRICE = 0.60  # Minimum price — skip 50/50 noise below this
-TRIGGER_THRESHOLD = 30.0  # Start attempting trades when ≤ s remain (was 60s)
-PRICE_THRESHOLD = 0.85  # Legacy name, use MIN_BUY_PRICE
-PRICE_TIE_EPS = 1e-6
-MIN_CONFIDENCE = 0.85  # Only buy if winning side has ≥85% confidence (ask ≥ 0.85)
+# Trading constants — sourced from TradingConfig (env vars override defaults)
+MAX_BUY_PRICE = _cfg.max_buy_price
+MIN_BUY_PRICE = _cfg.min_buy_price
+TRIGGER_THRESHOLD = _cfg.trigger_threshold
+PRICE_THRESHOLD = _cfg.price_threshold
+PRICE_TIE_EPS = _cfg.price_tie_eps
+MIN_CONFIDENCE = _cfg.min_confidence
 
-# Trade sizing constants (dynamic sizing: min of hard constants vs 25% of balance)
-MIN_TRADE_USDC = 1.00  # Hard minimum trade size in USDC (Polymarket minimum)
-MAX_TRADE_USDC = 10.00  # Hard maximum trade size in USDC
-MAX_CAPITAL_PCT_PER_TRADE = 0.05  # Maximum 5% of capital per trade
+# Trade sizing constants
+MIN_TRADE_USDC = _cfg.min_trade_usdc
+MAX_TRADE_USDC = _cfg.max_trade_usdc
+MAX_CAPITAL_PCT_PER_TRADE = _cfg.max_capital_pct_per_trade
 
 # Liquidity filtering constants
-MIN_ORDERBOOK_SIZE_USD = 100.0  # Minimum total orderbook liquidity (bids+asks) in USDC
+MIN_ORDERBOOK_SIZE_USD = _cfg.min_orderbook_size_usd
 
-# Stop-loss constants (CRITICAL!)
-STOP_LOSS_PCT = 0.30  # Exit if price drops 30% from entry
-STOP_LOSS_ABSOLUTE = 0.80  # Exit if price drops below this absolute value (safety floor, not trigger)
-TRAILING_STOP_PCT = 0.05  # Trailing stop: move stop up 5% when price moves in favor
-STOP_LOSS_CHECK_INTERVAL_S = 1.0  # Check stop-loss every 1 second
+# Stop-loss constants
+STOP_LOSS_PCT = _cfg.stop_loss_pct
+STOP_LOSS_ABSOLUTE = _cfg.stop_loss_absolute
+TRAILING_STOP_PCT = _cfg.trailing_stop_pct
+STOP_LOSS_CHECK_INTERVAL_S = _cfg.stop_loss_check_interval_s
 
 # Take-profit constants
-TAKE_PROFIT_PCT = 0.10  # Exit if price rises 10% from entry
-TAKE_PROFIT_CHECK_INTERVAL_S = 1.0  # Check take-profit every 1 second
+TAKE_PROFIT_PCT = _cfg.take_profit_pct
+TAKE_PROFIT_CHECK_INTERVAL_S = _cfg.take_profit_check_interval_s
 
-# Risk management limits (CRITICAL!)
-MAX_DAILY_LOSS_PCT = 0.20  # Stop if lost 20% in a day (for $10 capital: $2 max loss)
-MAX_TOTAL_TRADES_PER_DAY = 100  # Limit total trades per day (increased from 20 to 100 per Konstantin request)
+# Risk management limits
+MAX_DAILY_LOSS_PCT = _cfg.max_daily_loss_pct
+MAX_TOTAL_TRADES_PER_DAY = _cfg.max_total_trades_per_day
 
 # API constants
-GAMMA_API_URL = "https://gamma-api.polymarket.com/public-search"
-CLOB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+GAMMA_API_URL = _cfg.gamma_api_url
+CLOB_WS_URL = _cfg.clob_ws_url
 
 # Exchange contract address for USDC
-EXCHANGE_CONTRACT = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+EXCHANGE_CONTRACT = _cfg.exchange_contract
 
 # Alert rate limiting
-ALERT_RATE_LIMIT_PER_MINUTE = 10  # Max alerts per minute per channel
+ALERT_RATE_LIMIT_PER_MINUTE = _cfg.alert_rate_limit_per_minute
 
 # Oracle Guard constants
-MAX_STALE_S = 20.0  # Maximum oracle data staleness in seconds
-MIN_ORACLE_POINTS = 4  # Minimum data points required for oracle tracking
-MAX_VOL_PCT = 0.002  # Maximum acceptable volatility percentage
-MIN_ABS_Z = 0.75  # Minimum absolute z-score threshold
-MAX_REVERSAL_SLOPE = 0.0  # Maximum reversal slope (disabled by default)
+MAX_STALE_S = _cfg.max_stale_s
+MIN_ORACLE_POINTS = _cfg.min_oracle_points
+MAX_VOL_PCT = _cfg.max_vol_pct
+MIN_ABS_Z = _cfg.min_abs_z
+MAX_REVERSAL_SLOPE = _cfg.max_reversal_slope
 
 # Early entry mode constants
-EARLY_ENTRY_ENABLED = False  # Disabled — vulnerable to manipulation before trigger
-EARLY_ENTRY_CONFIDENCE_THRESHOLD = 0.90  # Require 90% confidence for early entry
-EARLY_ENTRY_START_TIME_S = 600.0  # Start early entry 10 minutes before close (600s)
-EARLY_ENTRY_END_TIME_S = 60.0  # Stop early entry 60 seconds before close
+EARLY_ENTRY_ENABLED = _cfg.early_entry_enabled
+EARLY_ENTRY_CONFIDENCE_THRESHOLD = _cfg.early_entry_confidence_threshold
+EARLY_ENTRY_START_TIME_S = _cfg.early_entry_start_time_s
+EARLY_ENTRY_END_TIME_S = _cfg.early_entry_end_time_s
