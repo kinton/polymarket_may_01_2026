@@ -35,6 +35,7 @@ import json
 import os
 import time
 import traceback
+from collections import Counter
 from datetime import datetime, timezone
 import logging
 from typing import TYPE_CHECKING, Any
@@ -203,6 +204,17 @@ class LastSecondTrader:
             # Warning tracking
             self._logged_warnings = set()
             self._trigger_lock = asyncio.Lock()
+
+            # In-memory stats for market lifecycle (no DB writes)
+            self._market_stats: dict = {
+                "ticks_total": 0,
+                "ticks_in_range": 0,
+                "ticks_confident": 0,
+                "best_price": None,
+                "peak_confidence": 0.0,
+                "skip_reasons": Counter(),
+            }
+            self._recorded_skip_guards: set[str] = set()  # one-shot skip recording
             self.last_ws_update_ts = 0.0
             self._last_stale_log_ts = 0.0
             self._planned_trade_side: str | None = None
@@ -864,6 +876,33 @@ class LastSecondTrader:
             early_entry_enabled=EARLY_ENTRY_ENABLED,
         )
 
+    def _update_market_stats(self, price: float) -> None:
+        """Update in-memory market stats with a new tick price."""
+        stats = self._market_stats
+        if stats["best_price"] is None or price < stats["best_price"]:
+            stats["best_price"] = price
+        if price > stats["peak_confidence"]:
+            stats["peak_confidence"] = price
+        if self.MIN_CONFIDENCE <= price <= self.MAX_BUY_PRICE + self.PRICE_TIE_EPS:
+            stats["ticks_in_range"] += 1
+        if price >= self.MIN_CONFIDENCE:
+            stats["ticks_confident"] += 1
+
+    def _build_market_summary(self) -> str:
+        """Build a summary string from market stats for the close record."""
+        s = self._market_stats
+        parts = [
+            f"ticks={s['ticks_total']}",
+            f"in_range={s['ticks_in_range']}",
+            f"confident={s['ticks_confident']}",
+            f"best_price={s['best_price']:.4f}" if s["best_price"] is not None else "best_price=None",
+            f"peak_conf={s['peak_confidence']:.4f}",
+        ]
+        if s["skip_reasons"]:
+            top = s["skip_reasons"].most_common(3)
+            parts.append("reasons=" + ",".join(f"{k}:{v}" for k, v in top))
+        return " | ".join(parts)
+
     async def check_trigger(self, time_remaining: float):
         """
         Check if trigger conditions are met and execute trade if appropriate.
@@ -879,7 +918,8 @@ class LastSecondTrader:
                 return
 
             if not self.risk_manager.check_daily_limits():
-                if self.dry_run_sim:
+                if self.dry_run_sim and "daily_loss_limit" not in self._recorded_skip_guards:
+                    self._recorded_skip_guards.add("daily_loss_limit")
                     await self.dry_run_sim.record_skip(
                         reason="daily_loss_limit",
                         time_remaining=time_remaining,
@@ -896,7 +936,8 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] Max order attempts ({self.order_execution.get_max_attempts()}) reached"
                     )
                     self._logged_warnings.add("max_attempts")
-                    if self.dry_run_sim:
+                    if self.dry_run_sim and "max_attempts" not in self._recorded_skip_guards:
+                        self._recorded_skip_guards.add("max_attempts")
                         await self.dry_run_sim.record_skip(
                             reason="max_attempts",
                             time_remaining=time_remaining,
@@ -953,11 +994,8 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] No trade side at {time_remaining:.3f}s"
                     )
                     self._logged_warnings.add("no_winner")
-                    if self.dry_run_sim:
-                        await self.dry_run_sim.record_skip(
-                            reason="no_winner",
-                            time_remaining=time_remaining,
-                        )
+                self._market_stats["ticks_total"] += 1
+                self._market_stats["skip_reasons"]["no_winner"] += 1
                 return
 
             winning_ask = self._get_ask_for_side(trade_side)
@@ -967,32 +1005,21 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] No ask price for {trade_side} at {time_remaining:.3f}s"
                     )
                     self._logged_warnings.add("no_ask")
-                    if self.dry_run_sim:
-                        await self.dry_run_sim.record_skip(
-                            reason="no_ask",
-                            side=trade_side,
-                            time_remaining=time_remaining,
-                        )
+                self._market_stats["ticks_total"] += 1
+                self._market_stats["skip_reasons"]["no_ask"] += 1
                 return
 
-            # Use ask for confidence check (as requested by Konstantin)
             # Use ask for confidence check
+            self._market_stats["ticks_total"] += 1
+            self._update_market_stats(winning_ask)
+
             if winning_ask < self.MIN_CONFIDENCE:
                 if "low_confidence" not in self._logged_warnings:
                     self._log(
                         f"⚠️  [{self.market_name}] Low confidence: ${winning_ask:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE * 100:.0f}%)"
                     )
                 self._logged_warnings.add("low_confidence")
-                if self.dry_run_sim:
-                    await self.dry_run_sim.record_skip(
-                        reason="low_confidence",
-                        reason_detail=f"ask={winning_ask:.4f}<{self.MIN_CONFIDENCE:.2f}",
-                        side=trade_side,
-                        price=winning_ask,
-                        confidence=winning_ask,
-                        time_remaining=time_remaining,
-                        oracle_snap=self.oracle_guard.snapshot,
-                    )
+                self._market_stats["skip_reasons"]["low_confidence"] += 1
                 return
 
             if winning_ask > self.MAX_BUY_PRICE + self.PRICE_TIE_EPS:
@@ -1001,13 +1028,7 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.MAX_BUY_PRICE}"
                     )
                     self._logged_warnings.add("price_high")
-                if self.dry_run_sim:
-                    await self.dry_run_sim.record_skip(
-                        reason="price_out_of_range",
-                        reason_detail=f"ask={winning_ask:.4f}>{self.MAX_BUY_PRICE}",
-                        side=trade_side, price=winning_ask,
-                        time_remaining=time_remaining,
-                    )
+                self._market_stats["skip_reasons"]["price_out_of_range"] += 1
                 return
 
             # Check orderbook liquidity
@@ -1029,12 +1050,7 @@ class LastSecondTrader:
                         f"⚠️  [{self.market_name}] Low liquidity: ${total_size:.2f} < ${MIN_ORDERBOOK_SIZE_USD:.2f} (need ≥${MIN_ORDERBOOK_SIZE_USD:.0f})"
                     )
                     self._logged_warnings.add("low_liquidity")
-                if self.dry_run_sim:
-                    await self.dry_run_sim.record_skip(
-                        reason="low_liquidity",
-                        side=trade_side, price=winning_ask,
-                        time_remaining=time_remaining,
-                    )
+                self._market_stats["skip_reasons"]["low_liquidity"] += 1
                 return
 
             oracle_ok, oracle_reason, oracle_detail = self.oracle_guard.quality_ok(
@@ -1096,16 +1112,8 @@ class LastSecondTrader:
                         await self.alert_dispatcher.send_oracle_guard_block(
                             self.market_name, oracle_reason, oracle_detail
                         )
-                if self.dry_run_sim:
-                    await self.dry_run_sim.record_skip(
-                        reason=oracle_reason,
-                        reason_detail=oracle_detail,
-                        side=trade_side,
-                        price=winning_ask,
-                        confidence=winning_ask,
-                        time_remaining=time_remaining,
-                        oracle_snap=self.oracle_guard.snapshot,
-                    )
+                self._market_stats["skip_reasons"][f"oracle:{oracle_reason}"] += 1
+                self._market_stats["ticks_in_range"] += 1  # price was in range, oracle blocked
                 return
 
             if "balance_checked" not in self._logged_warnings:
@@ -1526,9 +1534,11 @@ class LastSecondTrader:
         if not self.dry_run_sim:
             return
         winning_ask = self._get_winning_ask()
-        self._log(f"[{self.market_name}] Recording market_closed_no_trigger (no trade executed)")
+        summary = self._build_market_summary()
+        self._log(f"[{self.market_name}] Recording market_closed_no_trigger (no trade executed) | {summary}")
         await self.dry_run_sim.record_skip(
             reason="market_closed_no_trigger",
+            reason_detail=summary,
             side=self.winning_side,
             price=winning_ask,
             confidence=winning_ask,
