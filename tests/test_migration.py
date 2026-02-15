@@ -194,12 +194,14 @@ class TestRiskManagerSQLite:
 
     def test_check_daily_limits_sqlite_exceeded(self, run, db):
         """RiskManager detects exceeded limits from SQLite."""
+        from datetime import datetime, timezone
         from src.trading.risk_manager import RiskManager
 
-        run(db.get_or_create_daily_stats("2026-02-14"))
-        run(db.update_daily_stats("2026-02-14", pnl_delta=-25.0, trade_count_delta=2))
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        run(db.get_or_create_daily_stats(today))
+        run(db.update_daily_stats(today, pnl_delta=-25.0, trade_count_delta=2))
         run(db._db.execute(
-            "UPDATE daily_stats SET initial_balance = 100.0 WHERE date = '2026-02-14'",
+            f"UPDATE daily_stats SET initial_balance = 100.0 WHERE date = '{today}'",
         ))
         run(db._db.commit())
 

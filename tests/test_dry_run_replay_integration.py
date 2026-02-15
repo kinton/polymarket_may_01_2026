@@ -111,12 +111,12 @@ class TestEventRecorderIntegration:
         trader = _make_trader(tmp_path, end_time=end_time, trigger_threshold=30.0)
 
         # Set up orderbook with winning side
-        trader.orderbook.best_ask_yes = 0.95
-        trader.orderbook.best_bid_yes = 0.94
+        trader.orderbook.best_ask_yes = 0.89
+        trader.orderbook.best_bid_yes = 0.88
         trader.orderbook.best_ask_yes_size = 100.0
         trader.orderbook.best_bid_yes_size = 100.0
-        trader.orderbook.best_ask_no = 0.05
-        trader.orderbook.best_bid_no = 0.04
+        trader.orderbook.best_ask_no = 0.11
+        trader.orderbook.best_bid_no = 0.10
         trader.orderbook.best_ask_no_size = 100.0
         trader.orderbook.best_bid_no_size = 100.0
         trader.winning_side = "YES"
@@ -135,7 +135,7 @@ class TestEventRecorderIntegration:
         assert len(trigger_events) == 1
         assert trigger_events[0]["data"]["winning_side"] == "YES"
         assert trigger_events[0]["data"]["executed"] is True
-        assert trigger_events[0]["data"]["winning_ask"] == 0.95
+        assert trigger_events[0]["data"]["winning_ask"] == 0.89
 
     @pytest.mark.asyncio
     async def test_buy_trade_recorded(self, tmp_path):

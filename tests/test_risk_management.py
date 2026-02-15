@@ -277,8 +277,8 @@ async def test_check_trigger_stops_on_daily_loss_limit(
 
     # Setup trigger conditions
     mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.98
-    mock_trader.orderbook.best_ask_no = 0.02
+    mock_trader.orderbook.best_ask_yes = 0.89
+    mock_trader.orderbook.best_ask_no = 0.11
     mock_trader.TRIGGER_THRESHOLD = 90.0
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={"balance": int(100 * 1e6), "allowances": {}}
@@ -313,8 +313,8 @@ async def test_check_trigger_stops_on_trade_count_limit(
 
     # Setup trigger conditions
     mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.98
-    mock_trader.orderbook.best_ask_no = 0.02
+    mock_trader.orderbook.best_ask_yes = 0.89
+    mock_trader.orderbook.best_ask_no = 0.11
     mock_trader.TRIGGER_THRESHOLD = 90.0
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={"balance": int(100 * 1e6), "allowances": {}}
@@ -334,8 +334,8 @@ async def test_check_trigger_stops_on_capital_limit(mock_trader, cleanup_daily_l
     """Test that check_trigger stops trading when capital % limit exceeded."""
     # Setup trigger conditions
     mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.98
-    mock_trader.orderbook.best_ask_no = 0.02
+    mock_trader.orderbook.best_ask_yes = 0.89
+    mock_trader.orderbook.best_ask_no = 0.11
     mock_trader.TRIGGER_THRESHOLD = 90.0
 
     # Mock balance that would make planned trade exceed 5% limit
@@ -371,8 +371,8 @@ async def test_check_trigger_proceeds_when_limits_ok(mock_trader, cleanup_daily_
 
     # Setup trigger conditions
     mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.98
-    mock_trader.orderbook.best_ask_no = 0.02
+    mock_trader.orderbook.best_ask_yes = 0.89
+    mock_trader.orderbook.best_ask_no = 0.11
     mock_trader.TRIGGER_THRESHOLD = 90.0
     mock_trader.client.get_balance_allowance = MagicMock(
         return_value={

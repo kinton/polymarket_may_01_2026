@@ -139,8 +139,8 @@ async def test_check_trigger_stops_on_insufficient_balance(mock_trader):
     """Test that check_trigger stops trading when balance check fails."""
     # Setup trigger conditions (all met except balance)
     mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.98
-    mock_trader.orderbook.best_ask_no = 0.02
+    mock_trader.orderbook.best_ask_yes = 0.89
+    mock_trader.orderbook.best_ask_no = 0.11
     mock_trader.TRIGGER_THRESHOLD = 90.0
 
     # Mock insufficient balance
@@ -170,8 +170,8 @@ async def test_check_trigger_proceeds_with_sufficient_balance(mock_trader):
     """Test that check_trigger executes order when balance is sufficient."""
     # Setup trigger conditions (all met including balance)
     mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.98
-    mock_trader.orderbook.best_ask_no = 0.02
+    mock_trader.orderbook.best_ask_yes = 0.89
+    mock_trader.orderbook.best_ask_no = 0.11
     mock_trader.TRIGGER_THRESHOLD = 90.0
 
     # Mock sufficient balance
@@ -197,8 +197,8 @@ async def test_balance_check_only_runs_once(mock_trader):
     """Test that balance check is only performed once per market."""
     # Setup trigger conditions
     mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.98
-    mock_trader.orderbook.best_ask_no = 0.02
+    mock_trader.orderbook.best_ask_yes = 0.89
+    mock_trader.orderbook.best_ask_no = 0.11
     mock_trader.TRIGGER_THRESHOLD = 90.0
 
     # Mock sufficient balance

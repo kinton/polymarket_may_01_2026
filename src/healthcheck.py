@@ -42,8 +42,8 @@ class HealthCheckServer:
         host: str | None = None,
         port: int | None = None,
     ) -> None:
-        self.host = host or os.getenv("HEALTH_HOST", DEFAULT_HOST)
-        self.port = port or int(os.getenv("HEALTH_PORT", str(DEFAULT_PORT)))
+        self.host = host if host is not None else os.getenv("HEALTH_HOST", DEFAULT_HOST)
+        self.port = port if port is not None else int(os.getenv("HEALTH_PORT", str(DEFAULT_PORT)))
 
         # Mutable status — updated by the bot runner
         self._started_at: float = time.time()

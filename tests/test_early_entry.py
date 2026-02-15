@@ -2,6 +2,7 @@
 
 import pytest
 from datetime import datetime, timezone, timedelta
+from unittest.mock import patch
 
 from src.clob_types import (
     EARLY_ENTRY_ENABLED,
@@ -34,6 +35,7 @@ class TestEarlyEntryMode:
         )
         return trader
 
+    @patch("src.hft_trader.EARLY_ENTRY_ENABLED", True)
     def test_early_entry_with_high_confidence(self, trader):
         """Test that early entry triggers when confidence is >= 90%."""
         # Setup: 10 minutes before close (within early entry window)
@@ -54,6 +56,7 @@ class TestEarlyEntryMode:
         # Should be eligible for early entry
         assert trader._check_early_entry_eligibility() is True
 
+    @patch("src.hft_trader.EARLY_ENTRY_ENABLED", True)
     def test_early_entry_with_low_confidence(self, trader):
         """Test that early entry does NOT trigger when confidence < 90%."""
         # Setup: 10 minutes before close (within early entry window)
@@ -74,6 +77,7 @@ class TestEarlyEntryMode:
         # Should NOT be eligible for early entry
         assert trader._check_early_entry_eligibility() is False
 
+    @patch("src.hft_trader.EARLY_ENTRY_ENABLED", True)
     def test_early_entry_time_window_start(self, trader):
         """Test early entry at exactly 10 minutes (600s) before close."""
         # Setup: Exactly 600 seconds before close
@@ -94,6 +98,7 @@ class TestEarlyEntryMode:
         # Should be eligible (at start of window)
         assert trader._check_early_entry_eligibility() is True
 
+    @patch("src.hft_trader.EARLY_ENTRY_ENABLED", True)
     def test_early_entry_time_window_end(self, trader):
         """Test early entry near 60 seconds before close (end of window)."""
         # Setup: 65 seconds before close (near end of early entry window, accounting for execution time)
@@ -114,6 +119,7 @@ class TestEarlyEntryMode:
         # Should be eligible (at end of window)
         assert trader._check_early_entry_eligibility() is True
 
+    @patch("src.hft_trader.EARLY_ENTRY_ENABLED", True)
     def test_early_entry_before_time_window(self, trader):
         """Test that early entry does NOT trigger > 10 minutes before close."""
         # Setup: 15 minutes before close (before early entry window)
@@ -134,6 +140,7 @@ class TestEarlyEntryMode:
         # Should NOT be eligible (too early)
         assert trader._check_early_entry_eligibility() is False
 
+    @patch("src.hft_trader.EARLY_ENTRY_ENABLED", True)
     def test_early_entry_after_time_window(self, trader):
         """Test that early entry does NOT trigger < 60 seconds before close."""
         # Setup: 30 seconds before close (after early entry window)
@@ -154,6 +161,7 @@ class TestEarlyEntryMode:
         # Should NOT be eligible (too late - falls into late window)
         assert trader._check_early_entry_eligibility() is False
 
+    @patch("src.hft_trader.EARLY_ENTRY_ENABLED", True)
     def test_early_entry_requires_sufficient_liquidity(self, trader):
         """Test that early entry requires sufficient orderbook liquidity."""
         # Setup: 10 minutes before close
@@ -176,6 +184,7 @@ class TestEarlyEntryMode:
         # Should NOT be eligible (insufficient liquidity)
         assert trader._check_early_entry_eligibility() is False
 
+    @patch("src.hft_trader.EARLY_ENTRY_ENABLED", True)
     def test_early_entry_with_sufficient_liquidity(self, trader):
         """Test that early entry works with sufficient liquidity."""
         # Setup: 10 minutes before close
@@ -198,6 +207,7 @@ class TestEarlyEntryMode:
         # Should be eligible (all conditions met)
         assert trader._check_early_entry_eligibility() is True
 
+    @patch("src.hft_trader.EARLY_ENTRY_ENABLED", True)
     def test_early_entry_with_no_winning_side(self, trader):
         """Test that early entry requires a winning side."""
         # Setup: 10 minutes before close
@@ -217,7 +227,7 @@ class TestEarlyEntryMode:
         assert isinstance(EARLY_ENTRY_START_TIME_S, float)
         assert isinstance(EARLY_ENTRY_END_TIME_S, float)
 
-        assert EARLY_ENTRY_ENABLED is True
+        assert EARLY_ENTRY_ENABLED is False
         assert EARLY_ENTRY_CONFIDENCE_THRESHOLD == 0.90
         assert EARLY_ENTRY_START_TIME_S == 600.0
         assert EARLY_ENTRY_END_TIME_S == 60.0

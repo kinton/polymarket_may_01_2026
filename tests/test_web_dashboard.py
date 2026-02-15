@@ -176,9 +176,11 @@ def _seed_db_sync(db_path: str) -> None:
         )
 
     # Daily stats
+    from datetime import datetime, timezone as tz
+    today = datetime.now(tz.utc).strftime("%Y-%m-%d")
     c.execute(
         "INSERT INTO daily_stats (date, current_pnl, total_trades, winning_trades, losing_trades) "
-        "VALUES ('2026-02-14', 0.05, 15, 10, 5)"
+        "VALUES (?, 0.05, 15, 10, 5)", (today,)
     )
 
     # Trade decisions
