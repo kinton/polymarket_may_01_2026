@@ -268,7 +268,7 @@ class DryRunSimulator:
 
         Args:
             condition_id: Market condition ID
-            outcome: "YES" or "NO" - which side won
+            outcome: Outcome string (e.g. "YES", "NO", or token outcome name)
             winning_side: The side that resolved to $1.00
 
         Returns:
@@ -340,14 +340,86 @@ class DryRunSimulator:
 
         return resolved
 
+    async def void_positions(self, condition_id: str, reason: str = "voided") -> list[dict]:
+        """
+        Void (annul) positions for a market — e.g. dispute resulted in 50-50 refund.
+
+        All positions closed with PnL = 0 (full refund of entry).
+
+        Args:
+            condition_id: Market condition ID
+            reason: Reason string for the void
+
+        Returns:
+            List of voided position dicts
+        """
+        positions = await self._db.get_open_dry_run_positions()
+        voided: list[dict] = []
+        now = time.time()
+
+        for pos in positions:
+            if pos["condition_id"] != condition_id:
+                continue
+
+            entry = pos["entry_price"]
+            amount = pos["amount"]
+
+            await self._db.close_dry_run_position(
+                pos["id"],
+                exit_price=entry,  # refund at entry price
+                status="voided",
+                close_reason=f"voided: {reason}",
+                pnl=0.0,
+                pnl_pct=0.0,
+                closed_at=now,
+            )
+
+            await self._db.insert_trade(
+                timestamp=now,
+                timestamp_iso=_now_iso(),
+                market_name=pos["market_name"],
+                condition_id=pos["condition_id"],
+                action="sell",
+                side=pos["side"],
+                price=entry,
+                amount=amount,
+                pnl=0.0,
+                pnl_pct=0.0,
+                reason="voided",
+                dry_run=True,
+            )
+
+            voided.append({
+                "id": pos["id"],
+                "side": pos["side"],
+                "entry_price": entry,
+                "exit_price": entry,
+                "amount": amount,
+                "pnl": 0.0,
+                "pnl_pct": 0.0,
+                "status": "voided",
+            })
+
+            logger.info(
+                "[%s] Voided position #%d: side=%s entry=%.4f (refund)",
+                pos["market_name"], pos["id"], pos["side"], entry,
+            )
+
+        return voided
+
     async def resolve_all_markets(self, clob_client) -> list[dict]:
         """Check all open positions, query market resolution via API, resolve settled ones.
+
+        Handles three outcomes:
+        1. Normal resolution — tokens[].winner=True → resolve win/loss
+        2. 50-50 / voided — is_50_50_outcome=True or no winner found → void (refund)
+        3. Not yet resolved / disputed — skip (closed=False or accepting_orders=True)
 
         Args:
             clob_client: py_clob_client.client.ClobClient instance
 
         Returns:
-            List of all resolved position dicts
+            List of all resolved/voided position dicts
         """
         import asyncio as _asyncio
         from collections import defaultdict
@@ -375,25 +447,45 @@ class DryRunSimulator:
                 continue
 
             closed = market_info.get("closed", False)
-            outcome = market_info.get("outcome")
+            accepting_orders = market_info.get("accepting_orders", True)
 
-            if not closed or outcome is None:
-                logger.debug("Market %s not yet resolved (closed=%s, outcome=%s)", cid, closed, outcome)
+            # Skip markets that are still active or accepting orders (possibly disputed)
+            if not closed or accepting_orders:
+                logger.debug(
+                    "Market %s not finalized (closed=%s, accepting_orders=%s)",
+                    cid, closed, accepting_orders,
+                )
                 continue
 
-            # Map outcome to winning side
-            # Polymarket: outcome "0" = first token (YES), "1" = second token (NO)
-            outcome_str = str(outcome)
             tokens = market_info.get("tokens", [])
-            if tokens and len(tokens) > int(outcome_str):
-                winning_side = tokens[int(outcome_str)].get("outcome", "YES")
-            else:
-                winning_side = "YES" if outcome_str == "0" else "NO"
+            is_50_50 = market_info.get("is_50_50_outcome", False)
 
-            resolved = await self.resolve_position(cid, winning_side, winning_side)
+            # Find the winning token using tokens[].winner field (most reliable)
+            winning_token = None
+            for tok in tokens:
+                if tok.get("winner") is True:
+                    winning_token = tok
+                    break
+
+            # Case 1: 50-50 outcome or no winner → voided market (refund)
+            if is_50_50 or (closed and winning_token is None):
+                reason = "50-50 resolution" if is_50_50 else "no winner determined (possible dispute/void)"
+                logger.info("Market %s voided: %s", cid, reason)
+                voided = await self.void_positions(cid, reason)
+                all_resolved.extend(voided)
+                continue
+
+            # Case 2: Normal resolution with a clear winner
+            winning_side = winning_token.get("outcome", "YES")
+            outcome_str = winning_side
+
+            resolved = await self.resolve_position(cid, outcome_str, winning_side)
             all_resolved.extend(resolved)
 
-        logger.info("Resolved %d positions across %d markets", len(all_resolved), len(by_condition))
+        logger.info(
+            "Resolved/voided %d positions across %d markets",
+            len(all_resolved), len(by_condition),
+        )
         return all_resolved
 
 

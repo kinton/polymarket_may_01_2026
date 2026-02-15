@@ -108,28 +108,54 @@ class TestResolvePosition:
         _run(run())
 
 
+class TestVoidPositions:
+    def test_void_positions(self, sim, db):
+        """Voided market → PnL = 0, exit = entry (refund)."""
+        async def run():
+            await _open_position(db, side="YES", entry_price=0.75, amount=10.0)
+            voided = await sim.void_positions("cond_1", "50-50 resolution")
+            assert len(voided) == 1
+            v = voided[0]
+            assert v["status"] == "voided"
+            assert v["pnl"] == 0.0
+            assert v["exit_price"] == 0.75  # refund at entry
+            # Position should be closed
+            open_pos = await db.get_open_dry_run_positions()
+            assert len(open_pos) == 0
+        _run(run())
+
+    def test_void_no_positions(self, sim, db):
+        """Nothing to void."""
+        async def run():
+            voided = await sim.void_positions("cond_1", "test")
+            assert voided == []
+        _run(run())
+
+
 class TestResolveAllMarkets:
     def test_resolve_all_markets_mixed(self, db):
         """Some markets resolved, some pending."""
         async def run():
             sim = DryRunSimulator(db=db, market_name="resolver", condition_id="resolver", dry_run=True)
 
-            # Open positions in two markets
             await _open_position(db, condition_id="resolved_market", side="YES", entry_price=0.50, amount=5.0)
             await _open_position(db, condition_id="pending_market", side="NO", entry_price=0.30, amount=8.0)
 
-            # Mock CLOB client
             mock_client = MagicMock()
 
             def get_market(cid):
                 if cid == "resolved_market":
                     return {
                         "closed": True,
-                        "outcome": "0",
-                        "tokens": [{"outcome": "YES"}, {"outcome": "NO"}],
+                        "accepting_orders": False,
+                        "is_50_50_outcome": False,
+                        "tokens": [
+                            {"outcome": "YES", "winner": True},
+                            {"outcome": "NO", "winner": False},
+                        ],
                     }
                 else:
-                    return {"closed": False, "outcome": None}
+                    return {"closed": False, "accepting_orders": True}
 
             mock_client.get_market = get_market
 
@@ -139,10 +165,65 @@ class TestResolveAllMarkets:
             assert resolved[0]["status"] == "resolved_win"
             assert abs(resolved[0]["pnl"] - 2.5) < 0.001  # (1.0 - 0.5) * 5
 
-            # pending_market position should still be open
             open_pos = await db.get_open_dry_run_positions()
             assert len(open_pos) == 1
             assert open_pos[0]["condition_id"] == "pending_market"
+
+        _run(run())
+
+    def test_resolve_all_voided_market(self, db):
+        """50-50 outcome → positions voided with PnL=0."""
+        async def run():
+            sim = DryRunSimulator(db=db, market_name="resolver", condition_id="resolver", dry_run=True)
+
+            await _open_position(db, condition_id="voided_market", side="YES", entry_price=0.60, amount=5.0)
+
+            mock_client = MagicMock()
+
+            def get_market(cid):
+                return {
+                    "closed": True,
+                    "accepting_orders": False,
+                    "is_50_50_outcome": True,
+                    "tokens": [
+                        {"outcome": "YES", "winner": False},
+                        {"outcome": "NO", "winner": False},
+                    ],
+                }
+
+            mock_client.get_market = get_market
+
+            resolved = await sim.resolve_all_markets(mock_client)
+            assert len(resolved) == 1
+            assert resolved[0]["status"] == "voided"
+            assert resolved[0]["pnl"] == 0.0
+
+        _run(run())
+
+    def test_resolve_all_disputed_skipped(self, db):
+        """Market closed but still accepting_orders (disputed) → skip."""
+        async def run():
+            sim = DryRunSimulator(db=db, market_name="resolver", condition_id="resolver", dry_run=True)
+
+            await _open_position(db, condition_id="disputed_market", side="YES", entry_price=0.70, amount=5.0)
+
+            mock_client = MagicMock()
+
+            def get_market(cid):
+                return {
+                    "closed": True,
+                    "accepting_orders": True,  # disputed — still accepting
+                    "tokens": [],
+                }
+
+            mock_client.get_market = get_market
+
+            resolved = await sim.resolve_all_markets(mock_client)
+            assert resolved == []
+
+            # Position should still be open
+            open_pos = await db.get_open_dry_run_positions()
+            assert len(open_pos) == 1
 
         _run(run())
 
