@@ -39,8 +39,8 @@ class OrderBook:
 
 
 # Trading constants
-MAX_BUY_PRICE = 0.92  # Maximum price to buy — lower = more profit potential
-MIN_BUY_PRICE = 0.55  # Minimum price — skip 50/50 noise below this
+MAX_BUY_PRICE = 0.90  # Maximum price to buy — sweet spot for risk/reward
+MIN_BUY_PRICE = 0.60  # Minimum price — skip 50/50 noise below this
 TRIGGER_THRESHOLD = 30.0  # Start attempting trades when ≤ s remain (was 60s)
 PRICE_THRESHOLD = 0.85  # Legacy name, use MIN_BUY_PRICE
 PRICE_TIE_EPS = 1e-6
