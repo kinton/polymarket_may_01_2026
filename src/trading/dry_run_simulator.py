@@ -254,6 +254,149 @@ class DryRunSimulator:
         return closed
 
 
+    # -- market resolution ---------------------------------------------------
+
+    async def resolve_position(
+        self, condition_id: str, outcome: str, winning_side: str
+    ) -> list[dict]:
+        """
+        Resolve open dry-run positions after market settles.
+
+        For binary Polymarket markets:
+        - If we bought the winning side → PnL = ($1.00 - entry_price) * amount
+        - If we bought the losing side → PnL = -entry_price * amount
+
+        Args:
+            condition_id: Market condition ID
+            outcome: "YES" or "NO" - which side won
+            winning_side: The side that resolved to $1.00
+
+        Returns:
+            List of resolved position dicts with PnL
+        """
+        positions = await self._db.get_open_dry_run_positions()
+        resolved: list[dict] = []
+        now = time.time()
+
+        for pos in positions:
+            if pos["condition_id"] != condition_id:
+                continue
+
+            entry = pos["entry_price"]
+            amount = pos["amount"]
+            side = pos["side"]
+
+            if side.upper() == winning_side.upper():
+                exit_price = 1.0
+                pnl = (1.0 - entry) * amount
+                pnl_pct = (1.0 - entry) / entry * 100 if entry > 0 else 0
+                status = "resolved_win"
+            else:
+                exit_price = 0.0
+                pnl = -entry * amount
+                pnl_pct = -100.0
+                status = "resolved_loss"
+
+            await self._db.close_dry_run_position(
+                pos["id"],
+                exit_price=exit_price,
+                status=status,
+                close_reason=f"{status}: market resolved {outcome}, winning_side={winning_side}",
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                closed_at=now,
+            )
+
+            await self._db.insert_trade(
+                timestamp=now,
+                timestamp_iso=_now_iso(),
+                market_name=pos["market_name"],
+                condition_id=pos["condition_id"],
+                action="sell",
+                side=pos["side"],
+                price=exit_price,
+                amount=amount,
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                reason=status,
+                dry_run=True,
+            )
+
+            resolved.append({
+                "id": pos["id"],
+                "side": side,
+                "entry_price": entry,
+                "exit_price": exit_price,
+                "amount": amount,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "status": status,
+            })
+
+            logger.info(
+                "[%s] Resolved position #%d: %s side=%s entry=%.4f pnl=%.4f",
+                pos["market_name"], pos["id"], status, side, entry, pnl,
+            )
+
+        return resolved
+
+    async def resolve_all_markets(self, clob_client) -> list[dict]:
+        """Check all open positions, query market resolution via API, resolve settled ones.
+
+        Args:
+            clob_client: py_clob_client.client.ClobClient instance
+
+        Returns:
+            List of all resolved position dicts
+        """
+        import asyncio as _asyncio
+        from collections import defaultdict
+
+        positions = await self._db.get_open_dry_run_positions()
+        if not positions:
+            logger.info("No open dry-run positions to resolve")
+            return []
+
+        # Group by condition_id
+        by_condition: dict[str, list[dict]] = defaultdict(list)
+        for pos in positions:
+            by_condition[pos["condition_id"]].append(pos)
+
+        all_resolved: list[dict] = []
+
+        for cid in by_condition:
+            try:
+                market_info = await _asyncio.to_thread(clob_client.get_market, cid)
+            except Exception as e:
+                logger.warning("Failed to fetch market %s: %s", cid, e)
+                continue
+
+            if not market_info:
+                continue
+
+            closed = market_info.get("closed", False)
+            outcome = market_info.get("outcome")
+
+            if not closed or outcome is None:
+                logger.debug("Market %s not yet resolved (closed=%s, outcome=%s)", cid, closed, outcome)
+                continue
+
+            # Map outcome to winning side
+            # Polymarket: outcome "0" = first token (YES), "1" = second token (NO)
+            outcome_str = str(outcome)
+            tokens = market_info.get("tokens", [])
+            if tokens and len(tokens) > int(outcome_str):
+                winning_side = tokens[int(outcome_str)].get("outcome", "YES")
+            else:
+                winning_side = "YES" if outcome_str == "0" else "NO"
+
+            resolved = await self.resolve_position(cid, winning_side, winning_side)
+            all_resolved.extend(resolved)
+
+        logger.info("Resolved %d positions across %d markets", len(all_resolved), len(by_condition))
+        return all_resolved
+
+
 def _extract_oracle(snap: Any | None) -> dict[str, Any]:
     """Extract oracle fields from an OracleSnapshot for DB insertion."""
     if snap is None:

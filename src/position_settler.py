@@ -566,6 +566,47 @@ class PositionSettler:
             f"Summary: Processed {processed} position(s) - Sold: {sold}, Held: {held}"
         )
 
+        # Also check dry-run position resolution
+        await self._check_dryrun_resolution()
+
+    async def _check_dryrun_resolution(self):
+        """Check and resolve any settled dry-run positions."""
+        try:
+            from src.trading.trade_db import TradeDatabase
+            from src.trading.dry_run_simulator import DryRunSimulator
+
+            db = await TradeDatabase.initialize("data/trades.db")
+            try:
+                open_positions = await db.get_open_dry_run_positions()
+                if not open_positions:
+                    return
+
+                condition_ids = {p["condition_id"] for p in open_positions}
+                self.logger.info(
+                    f"Checking resolution for {len(open_positions)} dry-run positions "
+                    f"across {len(condition_ids)} markets"
+                )
+
+                for cid in condition_ids:
+                    outcome = await self.check_market_resolution(cid)
+                    if outcome is None:
+                        continue
+
+                    winning_side = "YES" if str(outcome) == "0" else "NO"
+                    sim = DryRunSimulator(
+                        db=db, market_name="resolver",
+                        condition_id=cid, dry_run=True,
+                    )
+                    resolved = await sim.resolve_position(cid, winning_side, winning_side)
+                    for r in resolved:
+                        self.logger.info(
+                            f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
+                        )
+            finally:
+                await db.close()
+        except Exception as e:
+            self.logger.error(f"Error checking dry-run resolution: {e}", exc_info=True)
+
     async def run(self, interval: int = 300):
         """
         Main entry point for position settler.
@@ -627,6 +668,12 @@ async def main():
         help="Check interval in seconds (default: 300 = 5 minutes)",
     )
 
+    parser.add_argument(
+        "--resolve-dryrun",
+        action="store_true",
+        help="Resolve all open dry-run positions against market outcomes and exit",
+    )
+
     args = parser.parse_args()
 
     # Safety warning for live mode
@@ -643,10 +690,67 @@ async def main():
     settler = PositionSettler(dry_run=not args.live)
 
     # Run mode
-    if args.once:
+    if args.resolve_dryrun:
+        await resolve_dryrun_positions(settler)
+    elif args.once:
         await settler.run_once()
     else:
         await settler.run(interval=args.interval)
+
+
+async def resolve_dryrun_positions(settler: PositionSettler):
+    """Resolve all open dry-run positions against market outcomes."""
+    from src.trading.trade_db import TradeDatabase
+    from src.trading.dry_run_simulator import DryRunSimulator
+
+    settler.logger.info("Starting dry-run position resolution...")
+
+    db = await TradeDatabase.initialize("data/trades.db")
+    try:
+        positions = await db.get_open_dry_run_positions()
+        if not positions:
+            settler.logger.info("No open dry-run positions to resolve")
+            return
+
+        # Group by condition_id
+        condition_ids = {pos["condition_id"] for pos in positions}
+        settler.logger.info(
+            "Found %d open positions across %d markets",
+            len(positions), len(condition_ids),
+        )
+
+        if settler.client is None:
+            settler.logger.info("No CLOB client (dry-run mode) — checking via API requires --live")
+            # Still try to resolve using a DryRunSimulator with resolve_all_markets
+            # but we need a client. Without one, just report.
+            for cid in condition_ids:
+                cid_positions = [p for p in positions if p["condition_id"] == cid]
+                settler.logger.info(
+                    "  Market %s: %d open positions", cid, len(cid_positions)
+                )
+            return
+
+        # Use resolve_all_markets with the live client
+        sim = DryRunSimulator(
+            db=db,
+            market_name="resolver",
+            condition_id="resolver",
+            dry_run=True,
+        )
+        resolved = await sim.resolve_all_markets(settler.client)
+
+        if resolved:
+            total_pnl = sum(r["pnl"] for r in resolved)
+            wins = sum(1 for r in resolved if r["status"] == "resolved_win")
+            losses = sum(1 for r in resolved if r["status"] == "resolved_loss")
+            settler.logger.info(
+                "Resolved %d positions: %d wins, %d losses, total PnL: $%.4f",
+                len(resolved), wins, losses, total_pnl,
+            )
+        else:
+            settler.logger.info("No positions were resolved (markets may still be open)")
+    finally:
+        await db.close()
 
 
 if __name__ == "__main__":
