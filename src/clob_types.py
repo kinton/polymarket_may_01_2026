@@ -39,8 +39,8 @@ class OrderBook:
 
 
 # Trading constants
-MAX_BUY_PRICE = 0.99  # Maximum price to buy (upper limit)
-MIN_BUY_PRICE = 0.85  # Minimum price to buy (lower threshold)
+MAX_BUY_PRICE = 0.92  # Maximum price to buy — lower = more profit potential
+MIN_BUY_PRICE = 0.55  # Minimum price — skip 50/50 noise below this
 TRIGGER_THRESHOLD = 30.0  # Start attempting trades when ≤ s remain (was 60s)
 PRICE_THRESHOLD = 0.85  # Legacy name, use MIN_BUY_PRICE
 PRICE_TIE_EPS = 1e-6
@@ -86,7 +86,7 @@ MIN_ABS_Z = 0.75  # Minimum absolute z-score threshold
 MAX_REVERSAL_SLOPE = 0.0  # Maximum reversal slope (disabled by default)
 
 # Early entry mode constants
-EARLY_ENTRY_ENABLED = True  # Enable early entry mode
+EARLY_ENTRY_ENABLED = False  # Disabled — vulnerable to manipulation before trigger
 EARLY_ENTRY_CONFIDENCE_THRESHOLD = 0.90  # Require 90% confidence for early entry
 EARLY_ENTRY_START_TIME_S = 600.0  # Start early entry 10 minutes before close (600s)
 EARLY_ENTRY_END_TIME_S = 60.0  # Stop early entry 60 seconds before close
