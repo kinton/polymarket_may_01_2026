@@ -1,128 +1,90 @@
 # Polymarket Trading Bot
 
-High-frequency trading bot for Polymarket's 5/15-minute binary markets.
+High-frequency trading bot for Polymarket's 5/15-minute binary "Up or Down" markets.
 
-## Features
+## Architecture
 
-- **High-Frequency Trading**: Automated trading in the final 2-minute window before market close
-- **Multi-Market Support**: BTC, ETH, SOL 5-minute and 15-minute markets
-- **Risk Management**: Stop-loss and take-profit triggers
-- **Oracle Guard**: Chainlink oracle integration to prevent low-probability trades
-- **Dry Run Mode**: Safe testing mode (default)
-- **Daily Reports**: Automated daily trading summaries
-
-## Quick Start
-
-```bash
-# Clone and setup
-git clone https://github.com/kinton/polymarket_may_01_2026.git
-cd polymarket_may_01_2026
-uv sync
-
-# Run in dry run mode (safe, no real trades)
-uv run python main.py
-
-# Run live trading (DANGER!)
-uv run python main.py --live
+```
+polymarket_may_01_2026/
+├── main.py                     # Bot entry point & orchestrator
+├── src/
+│   ├── config.py               # Centralized config (Pydantic BaseSettings)
+│   ├── gamma_15m_finder.py     # Market discovery via Gamma API
+│   ├── hft_trader.py           # Last-second HFT trader
+│   ├── oracle_tracker.py       # Chainlink oracle integration
+│   ├── position_settler.py     # Position settlement
+│   ├── healthcheck.py          # HTTP health check server
+│   ├── metrics.py              # Prometheus-style metrics
+│   ├── alerts.py               # Alert system
+│   ├── trading/                # Trading subsystem
+│   │   ├── dry_run_simulator.py
+│   │   ├── parallel_launcher.py
+│   │   ├── risk_manager.py
+│   │   ├── circuit_breaker.py
+│   │   ├── oracle_guard_manager.py
+│   │   ├── trade_db.py         # SQLite trade database
+│   │   ├── position_manager.py
+│   │   ├── stop_loss_manager.py
+│   │   ├── orderbook_ws.py     # WebSocket order book
+│   │   └── ...
+│   └── web_dashboard/          # FastAPI dashboard
+├── scripts/
+│   ├── approve.py              # Approve USDC allowance
+│   ├── check_balance.py        # Check USDC balance
+│   ├── daily_report.py         # Generate daily reports
+│   └── migrate_to_sqlite.py    # Migrate JSON → SQLite
+├── tests/                      # Test suite
+└── docs/                       # Historical docs & plans
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure:
+All settings are managed via **Pydantic BaseSettings** in `src/config.py`. Configure via `.env` file or environment variables:
 
 ```bash
-PRIVATE_KEY=your_private_key_here
-CLOB_HOST=https://clob.polymarket.com
-CLOB_API_KEY=your_api_key
-CLOB_SECRET=your_secret
-CLOB_PASSPHRASE=your_passphrase
+cp .env.example .env
+# Edit .env with your credentials
 ```
 
-## Daily Reports
+Key settings: `PRIVATE_KEY`, `CLOB_HOST`, `CLOB_API_KEY`, `CLOB_SECRET`, `CLOB_PASSPHRASE`.
 
-Generate daily trading summaries:
+## Usage
 
 ```bash
-# Generate report for a specific date
+# Install dependencies
+uv sync
+
+# Dry run (default, no real trades)
+uv run python main.py
+
+# Live trading
+uv run python main.py --live
+
+# Custom polling interval
+uv run python main.py --poll-interval 30
+
+# Web dashboard
+uv run python -m src.web_dashboard
+
+# Daily report
 uv run python scripts/daily_report.py --date 2026-02-10
 
-# Generate in different formats
-uv run python scripts/daily_report.py --date 2026-02-10 --format json
-uv run python scripts/daily_report.py --date 2026-02-10 --format csv
-
-# Custom output path
-uv run python scripts/daily_report.py --date 2026-02-10 --output reports/my-report.md
-```
-
-Reports are saved to `daily-summary/YYYY-MM-DD.md` by default.
-
-### Cron Integration
-
-Add to crontab for automatic daily reports:
-
-```bash
-# Daily report at 23:00 UTC
-0 23 * * * cd /path/to/polymarket && uv run python scripts/daily_report.py
+# Run tests
+uv run pytest tests/ -q
 ```
 
 ## Trading Strategy
 
-The bot implements a "last-second" strategy:
+1. **Discover** 5/15-min markets ending soon via Gamma API
+2. **Monitor** real-time order book via WebSocket
+3. **Execute** when time ≤ 30s remaining and winning side ≤ $0.99
+4. **Exit** on stop-loss (−30%), take-profit (+10%), or trailing stop
 
-1. **Market Discovery**: Find 5/15-minute markets ending in the next 15 minutes
-2. **Monitoring**: Stream real-time order book data via WebSocket
-3. **Trigger**: Execute when time remaining ≤ 30 seconds AND winning side ≤ $0.99
-4. **Exit**: Sell on stop-loss (-30%), take-profit (+10%), or trailing stop
+## Safety
 
-## Safety Features
-
-- **Dry Run Mode**: Simulate trades without real execution (default)
-- **Oracle Guard**: Block trades when oracle signals are unreliable
-- **Stop-Loss**: Automatic exit at -30% (or $0.80 absolute floor)
-- **Take-Profit**: Automatic exit at +10%
-- **Trailing Stop**: Move stop up 5% when price moves in favor
-- **Minimum Confidence**: Only trade when winning side ≥ 85%
-- **Balance Checks**: Verify sufficient funds before trading
-- **Daily Loss Limit**: Stop trading if daily PnL drops below -10%
-- **Max Trades Per Day**: Limit to 100 trades per day
-- **Max Capital Per Trade**: Maximum 5% of capital per trade
-
-## Risk Warning
-
-⚠️ **This bot trades with real money in live mode.**
-
-- Start with small amounts (e.g., $1-$10)
-- Always test in dry run mode first
-- Monitor position closely
-- Understand the markets you're trading
-- Never trade more than you can afford to lose
-
-## Project Structure
-
-```
-polymarket_may_01_2026/
-├── main.py                 # Bot entry point
-├── src/                    # Core modules
-│   ├── hft_trader.py      # High-frequency trader
-│   ├── gamma_15m_finder.py # Market discovery
-│   ├── oracle_tracker.py   # Chainlink oracle integration
-│   └── ...
-├── scripts/
-│   └── daily_report.py     # Daily report generator
-├── log/                    # Log files
-├── daily-summary/          # Daily reports
-└── docs/                   # Documentation
-```
-
-## Logs
-
-- `log/finder.log` - Market discovery and general activity
-- `log/trades-YYYYMMDD-*.log` - Trading logs per day
-
-## Support
-
-- **Issues**: https://github.com/kinton/polymarket_may_01_2026/issues
-- **Documentation**: See `docs/` directory
+- **Dry run by default** — no real trades unless `--live`
+- Oracle guard, circuit breaker, daily loss limits, max capital per trade
+- See `docs/TRADING_GUIDE.md` for full risk details
 
 ## License
 
