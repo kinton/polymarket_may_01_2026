@@ -39,6 +39,7 @@ from src.trading.trade_db import TradeDatabase
 # Import our modules
 from src.gamma_15m_finder import GammaAPI15mFinder
 from src.hft_trader import LastSecondTrader
+from src.trading.dry_run_simulator import DryRunSimulator
 
 
 class TradingBotRunner:
@@ -100,6 +101,10 @@ class TradingBotRunner:
 
         # Trade database (SQLite) for dry-run recording
         self._trade_db: Optional[TradeDatabase] = None
+
+        # Periodic resolution counter (resolve every N poll cycles)
+        self._poll_cycle = 0
+        self.RESOLVE_EVERY_N_CYCLES = 10  # ~15 min at 90s poll interval
 
         # Setup logging
         self.setup_logging()
@@ -305,6 +310,45 @@ class TradingBotRunner:
                     self.finder_logger.error(f"Error during trader shutdown: {result}")
         self.finder_logger.info("All traders shut down")
 
+    async def _maybe_resolve_positions(self) -> None:
+        """Periodically resolve dry-run positions (every N poll cycles)."""
+        self._poll_cycle += 1
+        if self._poll_cycle % self.RESOLVE_EVERY_N_CYCLES != 0:
+            return
+        if self._trade_db is None:
+            return
+        try:
+            open_positions = await self._trade_db.get_open_dry_run_positions()
+            if not open_positions:
+                return
+            self.finder_logger.info(
+                f"Periodic resolution check: {len(open_positions)} open dry-run position(s)"
+            )
+            sim = DryRunSimulator(
+                db=self._trade_db,
+                market_name="resolver",
+                condition_id="resolver",
+                dry_run=True,
+            )
+            # resolve_all_markets needs a CLOB client; in dry-run mode we don't have one,
+            # so we create a lightweight one just for market queries
+            from src.position_settler import _create_clob_client
+            try:
+                client = _create_clob_client(self.finder_logger)
+            except (SystemExit, Exception):
+                self.finder_logger.debug("No CLOB client available for resolution check")
+                return
+            resolved = await sim.resolve_all_markets(client)
+            if resolved:
+                wins = sum(1 for r in resolved if r["status"] == "resolved_win")
+                losses = sum(1 for r in resolved if r["status"] == "resolved_loss")
+                total_pnl = sum(r["pnl"] for r in resolved)
+                self.finder_logger.info(
+                    f"Resolved {len(resolved)} positions: {wins} wins, {losses} losses, PnL=${total_pnl:.4f}"
+                )
+        except Exception as e:
+            self.finder_logger.error(f"Error in periodic resolution: {e}", exc_info=True)
+
     async def poll_and_trade(self):
         """
         Main loop: continuously poll for markets and start traders as needed.
@@ -371,6 +415,9 @@ class TradingBotRunner:
                         )
                 else:
                     self.finder_logger.info("No active markets found")
+
+                # Periodic dry-run position resolution
+                await self._maybe_resolve_positions()
 
                 # Log active traders
                 if self.active_traders:

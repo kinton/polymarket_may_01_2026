@@ -7,7 +7,7 @@ This module handles:
 - Redeeming winning tokens for USDC
 - Logging P&L to CSV
 
-Usage:
+Usage (standalone):
     # Run once and exit
     uv run python -m src.position_settler --once
 
@@ -16,6 +16,9 @@ Usage:
 
     # Custom check interval (seconds)
     uv run python -m src.position_settler --daemon --interval 300
+
+    # Resolve dry-run positions
+    uv run python -m src.position_settler --resolve-dryrun --live
 """
 
 import argparse
@@ -26,9 +29,8 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import (
     AssetType,
@@ -39,8 +41,49 @@ from py_clob_client.clob_types import (
 )
 from py_clob_client.order_builder.constants import SELL
 
-# Load environment variables
-load_dotenv()
+
+def _create_clob_client(logger: logging.Logger) -> ClobClient:
+    """Create and configure a CLOB client from environment variables.
+
+    Raises SystemExit if PRIVATE_KEY is missing.
+    """
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    private_key = os.getenv("PRIVATE_KEY")
+    chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
+    host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
+    funder = os.getenv("POLYMARKET_PROXY_ADDRESS")
+
+    if not private_key:
+        logger.error("Missing PRIVATE_KEY in .env")
+        sys.exit(1)
+
+    if "clob.polymarket.com" not in host:
+        logger.warning(
+            "CLOB_HOST should be https://clob.polymarket.com (overriding)"
+        )
+        host = "https://clob.polymarket.com"
+
+    signature_type = 2 if funder else 0
+
+    client = ClobClient(
+        host=host,
+        key=private_key,
+        chain_id=chain_id,
+        signature_type=signature_type,
+        funder=funder or "",
+    )
+
+    api_creds = client.create_or_derive_api_creds()
+    client.set_api_creds(api_creds)
+
+    logger.info(f"CLOB client initialized ({host})")
+    if funder:
+        logger.info(f"  Proxy wallet: {funder}")
+
+    return client
 
 
 class PositionSettler:
@@ -54,98 +97,52 @@ class PositionSettler:
     - Log P&L to CSV
     """
 
-    def __init__(self, dry_run: bool = True):
+    def __init__(
+        self,
+        dry_run: bool = True,
+        *,
+        logger: Optional[logging.Logger] = None,
+        client: Optional[ClobClient] = None,
+        trade_db: Optional[Any] = None,
+    ):
         """
         Initialize position settler.
 
         Args:
             dry_run: If True, don't execute redeem operations (default: True)
+            logger: Pre-configured logger. If None, creates one via logging_config.
+            client: Pre-configured ClobClient. If None and not dry_run, creates one.
+            trade_db: TradeDatabase instance for dry-run position lookups. If None,
+                      creates a temporary one when needed.
         """
         self.dry_run = dry_run
-        self.setup_logging()
-        self.setup_clob_client()
+        self._trade_db = trade_db
+
+        # Logger: use provided or create via centralized config
+        if logger is not None:
+            self.logger = logger
+        else:
+            from src.logging_config import setup_logger
+            self.logger = setup_logger("settler", "settler.log", console_prefix="[SETTLER]")
+
+        # Client: use provided or create (skip in dry-run)
+        if client is not None:
+            self.client = client
+        elif not dry_run:
+            try:
+                self.client = _create_clob_client(self.logger)
+            except Exception as e:
+                self.logger.error(f"Failed to initialize CLOB client: {e}", exc_info=True)
+                sys.exit(1)
+        else:
+            self.logger.info("Dry run mode: Skipping CLOB client initialization")
+            self.client = None
 
         self.logger.info("=" * 80)
         self.logger.info("Position Settler Initialized")
         self.logger.info("=" * 80)
         self.logger.info(f"Mode: {'DRY RUN' if self.dry_run else '🔴 LIVE 🔴'}")
         self.logger.info("=" * 80)
-
-    def setup_logging(self):
-        """Setup logger for position settler."""
-        log_dir = Path("log")
-        log_dir.mkdir(exist_ok=True)
-
-        self.logger = logging.getLogger("settler")
-        self.logger.setLevel(logging.INFO)
-
-        # Clear existing handlers to avoid duplicates
-        if self.logger.hasHandlers():
-            self.logger.handlers.clear()
-
-        # Console handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
-        console_formatter = logging.Formatter(
-            "%(asctime)s - [SETTLER] - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        console_handler.setFormatter(console_formatter)
-        self.logger.addHandler(console_handler)
-
-        # File handler
-        file_handler = logging.FileHandler(log_dir / "settler.log")
-        file_handler.setLevel(logging.INFO)
-        file_formatter = logging.Formatter(
-            "%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        file_handler.setFormatter(file_formatter)
-        self.logger.addHandler(file_handler)
-
-    def setup_clob_client(self):
-        """Initialize CLOB API client using private key (same as hft_trader)."""
-        if self.dry_run:
-            self.logger.info("Dry run mode: Skipping CLOB client initialization")
-            self.client = None
-            return
-
-        try:
-            private_key = os.getenv("PRIVATE_KEY")
-            chain_id = int(os.getenv("POLYGON_CHAIN_ID", "137"))
-            host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
-            funder = os.getenv("POLYMARKET_PROXY_ADDRESS")
-
-            if not private_key:
-                self.logger.error("Missing PRIVATE_KEY in .env")
-                sys.exit(1)
-
-            if "clob.polymarket.com" not in host:
-                self.logger.warning(
-                    "CLOB_HOST should be https://clob.polymarket.com (overriding)"
-                )
-                host = "https://clob.polymarket.com"
-
-            signature_type = 2 if funder else 0
-
-            # Initialize client with private key (same as hft_trader)
-            self.client = ClobClient(
-                host=host,
-                key=private_key,
-                chain_id=chain_id,
-                signature_type=signature_type,  # POLY_PROXY when funder is set
-                funder=funder or "",
-            )
-
-            # Derive API credentials from private key
-            api_creds = self.client.create_or_derive_api_creds()
-            self.client.set_api_creds(api_creds)
-
-            self.logger.info(f"CLOB client initialized ({host})")
-            if funder:
-                self.logger.info(f"  Proxy wallet: {funder}")
-
-        except Exception as e:
-            self.logger.error(f"Failed to initialize CLOB client: {e}", exc_info=True)
-            sys.exit(1)
 
     async def get_open_positions(self) -> list[dict[str, Any]]:
         """
@@ -183,7 +180,6 @@ class PositionSettler:
             # Step 2: Extract unique token_ids from trades (only BUY orders)
             token_ids = set()
             for trade in trades:
-                # Only track tokens we bought
                 if trade.get("side") == "BUY":
                     token_id = trade.get("asset_id")
                     if token_id:
@@ -205,9 +201,7 @@ class PositionSettler:
 
                     balance = float(balance_info.get("balance", 0))
 
-                    # Only include tokens with non-zero balance
-                    if balance > 0.01:  # Minimum 0.01 tokens to avoid dust
-                        # Get current market price (BUY side = what we can sell for)
+                    if balance > 0.01:
                         try:
                             price_info_raw = await asyncio.to_thread(
                                 self.client.get_price, token_id, "BUY"
@@ -260,7 +254,6 @@ class PositionSettler:
         balance = position["balance"]
         current_price = position["current_price"]
 
-        # Sell threshold: 0.999 or higher (99.9% = almost guaranteed win)
         SELL_THRESHOLD = 0.999
 
         if current_price < SELL_THRESHOLD:
@@ -286,9 +279,9 @@ class PositionSettler:
 
             order_args = MarketOrderArgs(
                 token_id=token_id,
-                amount=balance,  # Sell all tokens
+                amount=balance,
                 side=SELL,
-                order_type=OrderType.FOK,  # type: ignore  # Fill-or-Kill
+                order_type=OrderType.FOK,  # type: ignore
             )
 
             signed_order = await asyncio.to_thread(
@@ -334,7 +327,6 @@ class PositionSettler:
             Winning outcome index ("0" or "1") if resolved, None if pending
         """
         try:
-            # Get market info from CLOB API
             if self.client is None:
                 self.logger.error("Client not initialized")
                 return None
@@ -348,7 +340,6 @@ class PositionSettler:
                 self.logger.warning(f"Market {condition_id} not found")
                 return None
 
-            # Check if market is closed and resolved
             closed = market_info.get("closed", False)
             outcome = market_info.get("outcome")
 
@@ -392,7 +383,6 @@ class PositionSettler:
                 self.logger.error("Client not initialized")
                 return None
 
-            # Call CLOB API to redeem position
             result = await asyncio.to_thread(self.client.redeem_position, token_id)  # type: ignore
 
             if result:
@@ -458,7 +448,6 @@ class PositionSettler:
         log_dir.mkdir(exist_ok=True)
         csv_path = log_dir / "pnl.csv"
 
-        # Check if file exists to determine if we need to write headers
         file_exists = csv_path.exists()
 
         try:
@@ -514,7 +503,6 @@ class PositionSettler:
         """
         self.logger.info("Starting position processing...")
 
-        # Get all open positions (with balances and prices)
         positions = await self.get_open_positions()
 
         if not positions:
@@ -541,7 +529,6 @@ class PositionSettler:
                     f"Position {processed + 1}/{len(positions)}: {balance:.2f} tokens @ ${current_price:.4f}"
                 )
 
-                # Strategy 1: Try to sell if price >= 0.999 (99.9% chance of winning)
                 sell_result = await self.sell_position_if_profitable(position)
 
                 if sell_result:
@@ -552,9 +539,6 @@ class PositionSettler:
                     self.logger.info(
                         f"📊 Holding position (price ${current_price:.4f} < $0.999 threshold)"
                     )
-
-                    # Market resolved: claim mechanism will be implemented in future version
-                    # For now, we just track positions that might be claimable later
 
                 processed += 1
 
@@ -567,17 +551,30 @@ class PositionSettler:
         )
 
         # Also check dry-run position resolution
-        await self._check_dryrun_resolution()
+        await self.check_dryrun_resolution()
 
-    async def _check_dryrun_resolution(self):
-        """Check and resolve any settled dry-run positions."""
+    async def check_dryrun_resolution(self, db: Optional[Any] = None):
+        """Check and resolve any settled dry-run positions.
+
+        Args:
+            db: TradeDatabase instance. Uses self._trade_db if not provided,
+                or creates a temporary one as last resort.
+        """
+        owns_db = False
         try:
             from src.trading.trade_db import TradeDatabase
             from src.trading.dry_run_simulator import DryRunSimulator
 
-            db = await TradeDatabase.initialize("data/trades.db")
+            if db is not None:
+                _db = db
+            elif self._trade_db is not None:
+                _db = self._trade_db
+            else:
+                _db = await TradeDatabase.initialize("data/trades.db")
+                owns_db = True
+
             try:
-                open_positions = await db.get_open_dry_run_positions()
+                open_positions = await _db.get_open_dry_run_positions()
                 if not open_positions:
                     return
 
@@ -587,29 +584,45 @@ class PositionSettler:
                     f"across {len(condition_ids)} markets"
                 )
 
-                for cid in condition_ids:
-                    outcome = await self.check_market_resolution(cid)
-                    if outcome is None:
-                        continue
-
-                    winning_side = "YES" if str(outcome) == "0" else "NO"
+                # If we have a CLOB client, use resolve_all_markets for best results
+                if self.client is not None:
                     sim = DryRunSimulator(
-                        db=db, market_name="resolver",
-                        condition_id=cid, dry_run=True,
+                        db=_db,
+                        market_name="resolver",
+                        condition_id="resolver",
+                        dry_run=True,
                     )
-                    resolved = await sim.resolve_position(cid, winning_side, winning_side)
+                    resolved = await sim.resolve_all_markets(self.client)
                     for r in resolved:
                         self.logger.info(
                             f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
                         )
+                else:
+                    # Without client, check each market individually (limited)
+                    for cid in condition_ids:
+                        outcome = await self.check_market_resolution(cid)
+                        if outcome is None:
+                            continue
+
+                        winning_side = "YES" if str(outcome) == "0" else "NO"
+                        sim = DryRunSimulator(
+                            db=_db, market_name="resolver",
+                            condition_id=cid, dry_run=True,
+                        )
+                        resolved = await sim.resolve_position(cid, winning_side, winning_side)
+                        for r in resolved:
+                            self.logger.info(
+                                f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
+                            )
             finally:
-                await db.close()
+                if owns_db:
+                    await _db.close()
         except Exception as e:
             self.logger.error(f"Error checking dry-run resolution: {e}", exc_info=True)
 
     async def run(self, interval: int = 300):
         """
-        Main entry point for position settler.
+        Run settler in daemon mode.
 
         Args:
             interval: Check interval in seconds (default: 300 = 5 minutes)
@@ -635,6 +648,63 @@ class PositionSettler:
         self.logger.info("Running position settler once...")
         await self.process_positions()
         self.logger.info("Position settler finished (run-once mode)")
+
+
+async def resolve_dryrun_positions(settler: PositionSettler):
+    """Resolve all open dry-run positions against market outcomes."""
+    from src.trading.trade_db import TradeDatabase
+    from src.trading.dry_run_simulator import DryRunSimulator
+
+    settler.logger.info("Starting dry-run position resolution...")
+
+    db = settler._trade_db
+    owns_db = False
+    if db is None:
+        db = await TradeDatabase.initialize("data/trades.db")
+        owns_db = True
+
+    try:
+        positions = await db.get_open_dry_run_positions()
+        if not positions:
+            settler.logger.info("No open dry-run positions to resolve")
+            return
+
+        condition_ids = {pos["condition_id"] for pos in positions}
+        settler.logger.info(
+            "Found %d open positions across %d markets",
+            len(positions), len(condition_ids),
+        )
+
+        if settler.client is None:
+            settler.logger.info("No CLOB client (dry-run mode) — checking via API requires --live")
+            for cid in condition_ids:
+                cid_positions = [p for p in positions if p["condition_id"] == cid]
+                settler.logger.info(
+                    "  Market %s: %d open positions", cid, len(cid_positions)
+                )
+            return
+
+        sim = DryRunSimulator(
+            db=db,
+            market_name="resolver",
+            condition_id="resolver",
+            dry_run=True,
+        )
+        resolved = await sim.resolve_all_markets(settler.client)
+
+        if resolved:
+            total_pnl = sum(r["pnl"] for r in resolved)
+            wins = sum(1 for r in resolved if r["status"] == "resolved_win")
+            losses = sum(1 for r in resolved if r["status"] == "resolved_loss")
+            settler.logger.info(
+                "Resolved %d positions: %d wins, %d losses, total PnL: $%.4f",
+                len(resolved), wins, losses, total_pnl,
+            )
+        else:
+            settler.logger.info("No positions were resolved (markets may still be open)")
+    finally:
+        if owns_db:
+            await db.close()
 
 
 async def main():
@@ -686,7 +756,7 @@ async def main():
         print("=" * 80 + "\n")
         await asyncio.sleep(5)
 
-    # Create settler instance
+    # Create settler instance (standalone mode — no injected dependencies)
     settler = PositionSettler(dry_run=not args.live)
 
     # Run mode
@@ -696,61 +766,6 @@ async def main():
         await settler.run_once()
     else:
         await settler.run(interval=args.interval)
-
-
-async def resolve_dryrun_positions(settler: PositionSettler):
-    """Resolve all open dry-run positions against market outcomes."""
-    from src.trading.trade_db import TradeDatabase
-    from src.trading.dry_run_simulator import DryRunSimulator
-
-    settler.logger.info("Starting dry-run position resolution...")
-
-    db = await TradeDatabase.initialize("data/trades.db")
-    try:
-        positions = await db.get_open_dry_run_positions()
-        if not positions:
-            settler.logger.info("No open dry-run positions to resolve")
-            return
-
-        # Group by condition_id
-        condition_ids = {pos["condition_id"] for pos in positions}
-        settler.logger.info(
-            "Found %d open positions across %d markets",
-            len(positions), len(condition_ids),
-        )
-
-        if settler.client is None:
-            settler.logger.info("No CLOB client (dry-run mode) — checking via API requires --live")
-            # Still try to resolve using a DryRunSimulator with resolve_all_markets
-            # but we need a client. Without one, just report.
-            for cid in condition_ids:
-                cid_positions = [p for p in positions if p["condition_id"] == cid]
-                settler.logger.info(
-                    "  Market %s: %d open positions", cid, len(cid_positions)
-                )
-            return
-
-        # Use resolve_all_markets with the live client
-        sim = DryRunSimulator(
-            db=db,
-            market_name="resolver",
-            condition_id="resolver",
-            dry_run=True,
-        )
-        resolved = await sim.resolve_all_markets(settler.client)
-
-        if resolved:
-            total_pnl = sum(r["pnl"] for r in resolved)
-            wins = sum(1 for r in resolved if r["status"] == "resolved_win")
-            losses = sum(1 for r in resolved if r["status"] == "resolved_loss")
-            settler.logger.info(
-                "Resolved %d positions: %d wins, %d losses, total PnL: $%.4f",
-                len(resolved), wins, losses, total_pnl,
-            )
-        else:
-            settler.logger.info("No positions were resolved (markets may still be open)")
-    finally:
-        await db.close()
 
 
 if __name__ == "__main__":
