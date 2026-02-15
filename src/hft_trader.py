@@ -83,6 +83,9 @@ from src.trading.dry_run_replay import EventRecorder
 from src.trading.dry_run_simulator import DryRunSimulator
 from src.trading.orderbook_ws import OrderbookWS
 from src.trading.orderbook_ws_adapter import OrderbookWSAdapter
+from src.trading.websocket_client import WebSocketClient
+from src.trading.orderbook_tracker import OrderbookTracker
+from src.trading.trade_strategy import TradeStrategy
 
 try:
     from py_clob_client.client import ClobClient
@@ -162,6 +165,31 @@ class LastSecondTrader:
             # Market state
             self.orderbook = OrderBook()
             self.winning_side: str | None = None
+
+            # Modular components
+            self._ob_tracker = OrderbookTracker(
+                orderbook=self.orderbook,
+                token_id_yes=token_id_yes,
+                token_id_no=token_id_no,
+                tie_epsilon=self.PRICE_TIE_EPS,
+            )
+            self._ws_client = WebSocketClient(
+                token_id_yes=token_id_yes,
+                token_id_no=token_id_no,
+                market_name=self.market_name,
+                logger=trader_logger,
+            )
+            self._trade_strategy = TradeStrategy(
+                orderbook_tracker=self._ob_tracker,
+                market_name=self.market_name,
+                trigger_threshold=self.TRIGGER_THRESHOLD,
+                max_buy_price=self.MAX_BUY_PRICE,
+                min_buy_price=self.MIN_BUY_PRICE,
+                min_confidence=self.MIN_CONFIDENCE,
+                price_tie_eps=self.PRICE_TIE_EPS,
+                end_time=end_time,
+                logger=trader_logger,
+            )
 
             # Shutdown flag
             self._shutting_down = False
@@ -449,50 +477,17 @@ class LastSecondTrader:
             return title.split()[0][:8].upper()
 
     def _get_ask_for_side(self, side: str) -> float | None:
-        if side == "YES":
-            return self.orderbook.best_ask_yes
-        if side == "NO":
-            return self.orderbook.best_ask_no
-        return None
+        self._ob_tracker.orderbook = self.orderbook
+        return self._ob_tracker.get_ask_for_side(side)
 
     def _get_bid_for_side(self, side: str) -> float | None:
-        if side == "YES":
-            return self.orderbook.best_bid_yes
-        if side == "NO":
-            return self.orderbook.best_bid_no
-        return None
+        self._ob_tracker.orderbook = self.orderbook
+        return self._ob_tracker.get_bid_for_side(side)
 
     def check_orderbook_liquidity(self) -> bool:
-        """
-        Check if orderbook has sufficient liquidity.
-
-        Returns True if total liquidity (bids + asks on both sides) >= MIN_ORDERBOOK_SIZE_USD.
-        Returns True (allows trading) if orderbook is completely empty (no liquidity data available yet).
-        """
-        total_size = 0.0
-        has_data = False
-
-        # Add YES liquidity
-        if self.orderbook.best_bid_yes_size is not None:
-            total_size += self.orderbook.best_bid_yes_size
-            has_data = True
-        if self.orderbook.best_ask_yes_size is not None:
-            total_size += self.orderbook.best_ask_yes_size
-            has_data = True
-
-        # Add NO liquidity
-        if self.orderbook.best_bid_no_size is not None:
-            total_size += self.orderbook.best_bid_no_size
-            has_data = True
-        if self.orderbook.best_ask_no_size is not None:
-            total_size += self.orderbook.best_ask_no_size
-            has_data = True
-
-        # If no liquidity data available, allow trade (data may arrive later)
-        if not has_data:
-            return True
-
-        return total_size >= MIN_ORDERBOOK_SIZE_USD
+        """Check if orderbook has sufficient liquidity. Delegates to OrderbookTracker."""
+        self._ob_tracker.orderbook = self.orderbook
+        return self._ob_tracker.check_liquidity()
 
     def _log(self, message: str) -> None:
         """Log message to both console and file logger."""
@@ -618,27 +613,9 @@ class LastSecondTrader:
 
     async def connect_websocket(self):
         """Connect to Polymarket WebSocket and subscribe to both YES and NO tokens."""
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                self.ws = await websockets.connect(
-                    self.WS_URL, ping_interval=20, ping_timeout=10
-                )
-                subscribe_msg = {
-                    "assets_ids": [self.token_id_yes, self.token_id_no],
-                    "type": "MARKET",
-                }
-                await self.ws.send(json.dumps(subscribe_msg))
-
-                self._log("✓ WebSocket connected, subscribed to YES+NO tokens")
-                return True
-
-            except Exception as e:
-                self._log(f"❌ WebSocket connection failed: {e}")
-                if attempt < (max_attempts - 1):
-                    await asyncio.sleep(2**attempt)
-                else:
-                    return False
+        result = await self._ws_client.connect()
+        self.ws = self._ws_client.ws
+        return result
 
     async def process_market_update(self, data: dict[str, Any]):
         """
@@ -856,76 +833,36 @@ class LastSecondTrader:
             self._log(f"Error processing market update: {e}")
 
     def _update_winning_side(self) -> None:
-        """Update winning side based on current orderbook state."""
-        self.winning_side = determine_winning_side(
-            best_bid_yes=self.orderbook.best_bid_yes,
-            best_bid_no=self.orderbook.best_bid_no,
-            best_ask_yes=self.orderbook.best_ask_yes,
-            best_ask_no=self.orderbook.best_ask_no,
-            tie_epsilon=self.PRICE_TIE_EPS,
-        )
+        """Update winning side based on current orderbook state. Delegates to OrderbookTracker."""
+        self._ob_tracker.orderbook = self.orderbook
+        self._ob_tracker.update_winning_side()
+        self.winning_side = self._ob_tracker.winning_side
 
     def _get_winning_token_id(self) -> str | None:
         """Get token ID for the winning side."""
-        if self.winning_side is None:
-            return None
-        return get_winning_token_id(
-            self.winning_side, self.token_id_yes, self.token_id_no
-        )
+        self._ob_tracker.winning_side = self.winning_side
+        return self._ob_tracker.get_winning_token_id()
 
     def _get_winning_ask(self) -> float | None:
         """Get best ask price for winning side."""
-        if self.winning_side == "YES":
-            if self.orderbook.best_ask_yes is not None:
-                return self.orderbook.best_ask_yes
-            return None
-        elif self.winning_side == "NO":
-            if self.orderbook.best_ask_no is not None:
-                return self.orderbook.best_ask_no
-            return None
-        return None
+        self._ob_tracker.orderbook = self.orderbook
+        self._ob_tracker.winning_side = self.winning_side
+        return self._ob_tracker.get_winning_ask()
 
     def _get_winning_bid(self) -> float | None:
-        """Get best bid price for winning side (what buyers are willing to pay)."""
-        if self.winning_side == "YES":
-            return self.orderbook.best_bid_yes
-        elif self.winning_side == "NO":
-            return self.orderbook.best_bid_no
-        return None
+        """Get best bid price for winning side."""
+        self._ob_tracker.orderbook = self.orderbook
+        self._ob_tracker.winning_side = self.winning_side
+        return self._ob_tracker.get_winning_bid()
 
     def _check_early_entry_eligibility(self) -> bool:
-        """
-        Check if early entry conditions are met.
-
-        Returns True if:
-        - Early entry is enabled
-        - Time remaining is between EARLY_ENTRY_END_TIME_S and EARLY_ENTRY_START_TIME_S
-        - Winning side confidence >= EARLY_ENTRY_CONFIDENCE_THRESHOLD
-        - Orderbook has sufficient liquidity
-        """
-        if not EARLY_ENTRY_ENABLED:
-            return False
-
-        # Calculate time remaining
-        time_remaining = (self.end_time - datetime.now(timezone.utc)).total_seconds()
-
-        # Check time window (must be between 60s and 600s before close)
-        if not (EARLY_ENTRY_END_TIME_S <= time_remaining <= EARLY_ENTRY_START_TIME_S):
-            return False
-
-        # Check confidence threshold (must have >= 90% confidence)
-        if self.winning_side is None:
-            return False
-
-        winning_bid = self._get_winning_bid()
-        if winning_bid is None or winning_bid < EARLY_ENTRY_CONFIDENCE_THRESHOLD:
-            return False
-
-        # Check liquidity requirement
-        if not self.check_orderbook_liquidity():
-            return False
-
-        return True
+        """Check if early entry conditions are met. Delegates to TradeStrategy."""
+        self._ob_tracker.orderbook = self.orderbook
+        self._ob_tracker.winning_side = self.winning_side
+        self._trade_strategy.end_time = self.end_time
+        return self._trade_strategy.check_early_entry_eligibility(
+            early_entry_enabled=EARLY_ENTRY_ENABLED,
+        )
 
     async def check_trigger(self, time_remaining: float):
         """
@@ -1308,37 +1245,12 @@ class LastSecondTrader:
 
     async def listen_to_market(self):
         """Listen to WebSocket and process market updates until market closes."""
-        if self.ws is None:
-            self._log("❌ WebSocket not initialized")
-            return
-        try:
-            async for message in self.ws:
-                try:
-                    data = json.loads(message)
-                except json.JSONDecodeError:
-                    continue
-
-                if not data or (isinstance(data, list) and len(data) == 0):
-                    continue
-
-                if isinstance(data, list):
-                    for update in data:
-                        await self.process_market_update(update)
-                else:
-                    await self.process_market_update(data)
-
-                if self.get_time_remaining() <= 0:
-                    self._log(f"⏰ [{self.market_name}] Market closed")
-                    try:
-                        await self._record_market_close()
-                    except Exception as e:
-                        self._log(f"❌ [{self.market_name}] Error in _record_market_close: {e}")
-                    break
-
-        except websockets.exceptions.ConnectionClosed:
-            self._log(f"⚠️  [{self.market_name}] WebSocket connection closed")
-        except Exception as e:
-            self._log(f"❌ [{self.market_name}] Error in market listener: {e}")
+        self._ws_client.ws = self.ws  # sync ws reference
+        await self._ws_client.listen(
+            on_update=self.process_market_update,
+            should_stop=lambda: self.get_time_remaining() <= 0,
+            on_close=self._record_market_close,
+        )
 
     async def run(self):
         """Main entry point: Connect and start trading."""
