@@ -2,11 +2,15 @@
 Alert senders for Telegram and Slack notifications.
 
 Provides real-time notifications for key trading events via Telegram and Slack.
+This is the canonical alert module — AlertLevel, AlertManager, and all senders
+live here. AlertDispatcher (src.trading.alert_dispatcher) adds higher-level
+features (rate-limiting by key, history, SQLite logging) on top.
 """
 
 import asyncio
 import logging
 import time
+from enum import Enum
 from typing import Any
 
 import aiohttp
@@ -14,6 +18,14 @@ import aiohttp
 from src.clob_types import ALERT_RATE_LIMIT_PER_MINUTE
 
 logger = logging.getLogger(__name__)
+
+
+class AlertLevel(Enum):
+    """Alert severity levels."""
+
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
 
 
 class RateLimiter:

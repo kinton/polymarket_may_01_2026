@@ -1,8 +1,10 @@
 """
 Alert dispatcher for sending trading alerts.
 
-Provides a simple interface for sending alerts through AlertManager.
-Supports alert levels, rate limiting, history, and daily summaries.
+Wraps AlertManager (from src.alerts) with higher-level features:
+rate-limiting by key, alert history (JSON + SQLite), and daily summaries.
+
+Canonical types (AlertLevel, AlertManager, senders) live in src.alerts.
 """
 
 from __future__ import annotations
@@ -10,21 +12,12 @@ from __future__ import annotations
 import json
 import logging
 import time
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from src.alerts import AlertManager
+from src.alerts import AlertLevel, AlertManager
 
 _logger = logging.getLogger(__name__)
-
-
-class AlertLevel(Enum):
-    """Alert severity levels."""
-
-    INFO = "INFO"
-    WARNING = "WARNING"
-    CRITICAL = "CRITICAL"
 
 
 LEVEL_EMOJI = {
