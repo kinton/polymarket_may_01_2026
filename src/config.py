@@ -88,11 +88,29 @@ class TradingConfig(BaseSettings):
     min_abs_z: float = Field(default=0.75)
     max_reversal_slope: float = Field(default=0.0)
 
+    # --- Convergence strategy ---
+    convergence_enabled: bool = Field(default=True)
+    convergence_threshold_pct: float = Field(default=0.0005)  # 5 basis points
+    convergence_min_skew: float = Field(default=0.80)  # expensive side >= 80¢
+    convergence_max_cheap_price: float = Field(default=0.40)  # max price for cheap side
+    convergence_window_start_s: float = Field(default=60.0)  # start at 60s before expiry
+    convergence_window_end_s: float = Field(default=20.0)  # stop at 20s before expiry
+    convergence_disable_stop_loss: bool = Field(default=True)  # hold until resolution
+
     # --- Early entry ---
     early_entry_enabled: bool = Field(default=False)
     early_entry_confidence_threshold: float = Field(default=0.90)
     early_entry_start_time_s: float = Field(default=600.0)
     early_entry_end_time_s: float = Field(default=60.0)
+
+    # --- Convergence strategy ---
+    convergence_enabled: bool = Field(default=True)
+    convergence_threshold_pct: float = Field(default=0.0005)  # 5 basis points
+    convergence_min_skew: float = Field(default=0.80)  # expensive side >= 80¢
+    convergence_max_cheap_price: float = Field(default=0.40)  # don't buy cheap side above 40¢
+    convergence_window_start_s: float = Field(default=60.0)  # start checking at 60s
+    convergence_window_end_s: float = Field(default=20.0)  # stop at 20s
+    convergence_disable_stop_loss: bool = Field(default=True)  # no stop-loss for convergence
 
     # --- API URLs ---
     gamma_api_url: str = Field(default="https://gamma-api.polymarket.com/public-search")

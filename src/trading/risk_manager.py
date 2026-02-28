@@ -111,33 +111,20 @@ class RiskManager:
             # Get balance and allowance for USDC
             from py_clob_client.clob_types import BalanceAllowanceParams
 
-            self._log(
-                f"DEBUG: client type={type(self.client)}, has_method={hasattr(self.client, 'get_balance_allowance')}"
-            )
             params = BalanceAllowanceParams(asset_type="COLLATERAL")  # type: ignore[arg-type]
             balance_data_raw = await asyncio.to_thread(
                 self.client.get_balance_allowance, params
             )
             balance_data: dict[str, Any] = balance_data_raw
 
-            self._log(f"DEBUG: balance_data_raw={balance_data_raw}")
-
             # Extract USDC balance (API returns in 6-decimal units, divide by 1e6 to get dollars)
             usdc_balance = float(balance_data.get("balance", 0)) / 1e6
-
-            self._log(
-                f"DEBUG: usdc_balance={usdc_balance:.2f}, required_amount_will_be_calculated_below"
-            )
 
             # API returns 'allowances' (dict of contract -> allowance), not 'allowance'
             allowances_dict = balance_data.get("allowances", {})
 
             # Allowance is also in 6-decimal units (micro-USDC), convert to dollars
             usdc_allowance = float(allowances_dict.get(EXCHANGE_CONTRACT, 0)) / 1e6
-
-            self._log(
-                f"DEBUG: usdc_allowance={usdc_allowance:.2f}, exchange_contract={EXCHANGE_CONTRACT}"
-            )
 
             # Calculate trade size: MAXIMUM of three values
             # 1. trade_size parameter (e.g., $1.1 from --size flag)
@@ -154,13 +141,6 @@ class RiskManager:
             required_amount = min(required_amount, MAX_TRADE_USDC)
 
             self._planned_trade_amount = required_amount
-            self._log(
-                f"DEBUG: trade_size=${trade_size_param:.2f}, 5%_balance=${balance_5_pct:.2f}, MIN=${MIN_TRADE_USDC:.2f} → required=${required_amount:.2f}"
-            )
-
-            self._log(
-                f"DEBUG: required_amount={required_amount:.2f}, usdc_balance={usdc_balance:.2f}, usdc_allowance={usdc_allowance:.2f}"
-            )
 
             # Check both balance and allowance
             if usdc_balance < required_amount:

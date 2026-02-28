@@ -56,6 +56,7 @@ from src.clob_types import (
     MAX_BUY_PRICE,
     MIN_BUY_PRICE,
     CLOB_WS_URL,
+    CONVERGENCE_ENABLED,
     MIN_CONFIDENCE,
     MIN_ORDERBOOK_SIZE_USD,
     MIN_TRADE_USDC,
@@ -86,6 +87,8 @@ from src.trading.orderbook_ws import OrderbookWS
 from src.trading.orderbook_ws_adapter import OrderbookWSAdapter
 from src.trading.websocket_client import WebSocketClient
 from src.trading.orderbook_tracker import OrderbookTracker
+from src.trading.convergence_strategy import ConvergenceStrategy
+from src.trading.convergence_strategy import ConvergenceStrategy
 from src.trading.trade_strategy import TradeStrategy
 
 try:
@@ -137,6 +140,7 @@ class LastSecondTrader:
         use_orderbook_ws: bool | None = None,
         orderbook_ws_poll_interval: float = 0.1,
         trade_db: Any | None = None,
+        convergence_enabled: bool | None = None,
     ):
         """
         Initialize the trader.
@@ -191,6 +195,32 @@ class LastSecondTrader:
                 end_time=end_time,
                 logger=trader_logger,
             )
+
+            # Convergence strategy
+            from src.clob_types import (
+                CONVERGENCE_ENABLED,
+                CONVERGENCE_THRESHOLD_PCT,
+                CONVERGENCE_MIN_SKEW,
+                CONVERGENCE_MAX_CHEAP_PRICE,
+                CONVERGENCE_WINDOW_START_S,
+                CONVERGENCE_WINDOW_END_S,
+                CONVERGENCE_DISABLE_STOP_LOSS,
+            )
+            _conv_enabled = convergence_enabled if convergence_enabled is not None else CONVERGENCE_ENABLED
+            if _conv_enabled and oracle_enabled:
+                self.convergence_strategy: ConvergenceStrategy | None = ConvergenceStrategy(
+                    threshold_pct=CONVERGENCE_THRESHOLD_PCT,
+                    min_skew=CONVERGENCE_MIN_SKEW,
+                    max_cheap_price=CONVERGENCE_MAX_CHEAP_PRICE,
+                    window_start_s=CONVERGENCE_WINDOW_START_S,
+                    window_end_s=CONVERGENCE_WINDOW_END_S,
+                    logger=trader_logger,
+                )
+                self._convergence_disable_stop_loss = CONVERGENCE_DISABLE_STOP_LOSS
+            else:
+                self.convergence_strategy = None
+                self._convergence_disable_stop_loss = False
+            self._convergence_trade = False  # flag: current position is from convergence
 
             # Shutdown flag
             self._shutting_down = False
@@ -828,7 +858,7 @@ class LastSecondTrader:
 
             await self.check_trigger(time_remaining)
 
-            if self.position_manager.is_open:
+            if self.position_manager.is_open and not self._convergence_trade:
                 current_price = self._get_ask_for_side(
                     self.position_manager.position_side or ""
                 )
@@ -951,6 +981,45 @@ class LastSecondTrader:
             ):
                 return
 
+            # Priority 1: Convergence strategy (buy cheap side when oracle ≈ price_to_beat)
+            if (
+                self.convergence_strategy is not None
+                and self.oracle_guard.enabled
+                and self.convergence_strategy.should_enter(
+                    time_remaining, self.oracle_guard.snapshot, self.orderbook
+                )
+            ):
+                cheap_side, cheap_price = self.convergence_strategy.get_cheap_side(
+                    self.orderbook
+                )
+                snap = self.oracle_guard.snapshot
+                delta_pct_str = (
+                    f"{snap.delta_pct * 100:.4f}%" if snap and snap.delta_pct is not None else "-"
+                )
+                self._log(
+                    f"🎯 [{self.market_name}] CONVERGENCE TRIGGER! "
+                    f"{cheap_side} @ ${cheap_price:.4f} | "
+                    f"delta_pct={delta_pct_str} | "
+                    f"t={time_remaining:.1f}s"
+                )
+
+                if self.dry_run_sim:
+                    await self.dry_run_sim.record_buy(
+                        side=cheap_side,
+                        price=cheap_price,
+                        amount=self.trade_size,
+                        confidence=cheap_price,
+                        time_remaining=time_remaining,
+                        reason="convergence",
+                        oracle_snap=self.oracle_guard.snapshot,
+                    )
+
+                self._planned_trade_side = cheap_side
+                self._convergence_trade = True
+                await self.execute_order()
+                return
+
+            # Priority 2: Existing strategies
             if time_remaining > self.TRIGGER_THRESHOLD:
                 # Check for early entry opportunity (before late window)
                 if self._check_early_entry_eligibility():
@@ -1214,6 +1283,7 @@ class LastSecondTrader:
 
     async def execute_order(self) -> None:
         side = self._planned_trade_side or self.winning_side or "YES"
+        is_convergence = self._convergence_trade
         self._planned_trade_side = None
         winning_ask = self._get_ask_for_side(side)
         was_executed_before = self.order_execution.is_executed()
@@ -1226,7 +1296,7 @@ class LastSecondTrader:
                 price=winning_ask or 0.0,
                 size=self.trade_size,
                 success=True,
-                reason="trigger",
+                reason="convergence" if is_convergence else "trigger",
             )
 
     async def execute_order_for(self, side: str) -> None:
@@ -1240,6 +1310,7 @@ class LastSecondTrader:
         )
         current_price = self._get_ask_for_side(position_side or "")
         await self.order_execution.execute_sell(reason, current_price)
+        self._convergence_trade = False  # Reset convergence flag on sell
         # Record sell trade for replay
         if self.event_recorder is not None:
             self.event_recorder.record_trade(
