@@ -15,6 +15,9 @@ wheels/
 # Log files
 log/
 
+# Backtest cache (large JSON files)
+data/backtest_cache/
+
 # AI config / tasks
 ai/Tasks.md
 ai/Done.md
