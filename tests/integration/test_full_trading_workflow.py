@@ -1,103 +1,150 @@
 """
-Test full trading workflow: market discovery → trade execution → position tracking.
+Test full trading workflow with convergence strategy.
 
-This test mocks:
-- Gamma API (market search)
-- CLOB WebSocket (orderbook)
-- RTDS WebSocket (oracle)
+Verifies:
+- Convergence trigger fires when oracle converges and market is skewed
+- No trade when convergence conditions not met
 """
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.clob_types import OrderBook
+from src.oracle_tracker import OracleSnapshot
+
+
+def _make_oracle_snapshot(
+    price: float = 100.0,
+    price_to_beat: float = 100.0,
+    delta_pct: float = 0.0001,
+) -> OracleSnapshot:
+    delta = price - price_to_beat
+    return OracleSnapshot(
+        ts_ms=1000000,
+        price=price,
+        n_points=10,
+        price_to_beat=price_to_beat,
+        delta=delta,
+        delta_pct=delta_pct,
+        vol_pct=0.001,
+        slope_usd_per_s=0.01,
+        zscore=0.5,
+    )
 
 
 @pytest.mark.asyncio
-async def test_full_trading_workflow(
-    integration_trader, mock_websocket, sample_market_data
-):
+async def test_convergence_trigger(integration_trader):
     """
-    Test complete trading workflow from market discovery to position tracking.
-
-    Verifies:
-    - Correct market is selected
-    - Trade is executed
-    - Position is opened and tracked
+    Test convergence trigger fires when:
+    - Oracle converged (delta_pct < 5bp)
+    - Market skewed (one side >= 0.80)
+    - Cheap side <= 0.40
+    - Time in window (20-60s)
     """
-    # Simulate market discovery
+    from src.trading.convergence_strategy import ConvergenceStrategy
 
-    # Simulate orderbook data with winning side = YES
-    initial_orderbook = OrderBook()
-    initial_orderbook.best_ask_yes = 0.90  # Winning side price (>= 85%)
-    initial_orderbook.best_bid_yes = 0.89
-    initial_orderbook.best_ask_no = 0.10  # Losing side
-    initial_orderbook.best_bid_no = 0.09
-    initial_orderbook.update()
+    integration_trader.convergence_strategy = ConvergenceStrategy(
+        threshold_pct=0.0005,
+        min_skew=0.80,
+        max_cheap_price=0.40,
+        window_start_s=60.0,
+        window_end_s=20.0,
+    )
+    integration_trader.oracle_guard.enabled = True
+    integration_trader.oracle_guard.snapshot = _make_oracle_snapshot(
+        price=100.05, price_to_beat=100.0, delta_pct=0.0003,
+    )
 
-    # Set orderbook to simulate market conditions
-    integration_trader.orderbook = initial_orderbook
+    # Skewed orderbook: YES expensive, NO cheap
+    ob = OrderBook()
+    ob.best_ask_yes = 0.85
+    ob.best_bid_yes = 0.84
+    ob.best_ask_no = 0.15
+    ob.best_bid_no = 0.14
+    ob.update()
+    integration_trader.orderbook = ob
     integration_trader._update_winning_side()
 
-    # Mock order_execution.execute_order_for to verify trade execution
-    async def mock_execute_order_for(side, winning_ask):
-        # Simulate opening position
-        integration_trader.order_execution.order_executed = True
-        integration_trader.position_manager.open_position(
-            entry_price=winning_ask or 0.90,
-            side=side,
-            trailing_stop_price=0.78,
-        )
-        return True
+    # Mock execute_order
+    integration_trader.execute_order = AsyncMock()
 
-    integration_trader.order_execution.execute_order_for = AsyncMock(side_effect=mock_execute_order_for)
+    await integration_trader.check_trigger(time_remaining=40.0)
 
-    # Execute the trade
-    time_remaining = 30.0  # Within trigger threshold
-    await integration_trader.check_trigger(time_remaining)
-
-    # Verify trade was executed
-    integration_trader.order_execution.execute_order_for.assert_called_once()
-    assert integration_trader.order_executed is True
-    assert integration_trader.position_open is True
-    assert integration_trader.position_side == "YES"
-    assert integration_trader.entry_price == 0.90  # Entry price from winning ask
-
-    # Verify position is tracked
-    assert integration_trader.position_open is True
-    assert integration_trader.winning_side == "YES"
+    integration_trader.execute_order.assert_called_once()
+    assert integration_trader._convergence_trade is True
 
 
 @pytest.mark.asyncio
-async def test_full_workflow_with_market_selection(
-    integration_trader, mock_websocket, sample_market_data
-):
+async def test_no_trigger_without_convergence(integration_trader):
     """
-    Test workflow with explicit market selection criteria.
-
-    Verifies:
-    - Market selection meets criteria (winning side ≤ $0.99)
-    - Trade is not executed if price too high
+    Without convergence conditions, no trade should fire.
     """
-    # Set orderbook with winning side price too high
-    expensive_orderbook = OrderBook()
-    expensive_orderbook.best_ask_yes = 0.999  # Just over $0.99 threshold
-    expensive_orderbook.best_bid_yes = 0.998
-    expensive_orderbook.best_ask_no = 0.001
-    expensive_orderbook.best_bid_no = 0.001
-    expensive_orderbook.update()
+    from src.trading.convergence_strategy import ConvergenceStrategy
 
-    integration_trader.orderbook = expensive_orderbook
+    integration_trader.convergence_strategy = ConvergenceStrategy(
+        threshold_pct=0.0005,
+        min_skew=0.80,
+        max_cheap_price=0.40,
+        window_start_s=60.0,
+        window_end_s=20.0,
+    )
+    integration_trader.oracle_guard.enabled = True
+    # Oracle NOT converged (delta too high)
+    integration_trader.oracle_guard.snapshot = _make_oracle_snapshot(
+        price=105.0, price_to_beat=100.0, delta_pct=0.05,
+    )
+
+    ob = OrderBook()
+    ob.best_ask_yes = 0.85
+    ob.best_bid_yes = 0.84
+    ob.best_ask_no = 0.15
+    ob.best_bid_no = 0.14
+    ob.update()
+    integration_trader.orderbook = ob
     integration_trader._update_winning_side()
 
-    # Mock order_execution.execute_order_for
-    integration_trader.order_execution.execute_order_for = AsyncMock()
+    integration_trader.execute_order = AsyncMock()
 
-    # Execute the trade
-    time_remaining = 30.0
-    await integration_trader.check_trigger(time_remaining)
+    await integration_trader.check_trigger(time_remaining=40.0)
 
-    # Verify trade was NOT executed (price too high)
-    integration_trader.order_execution.execute_order_for.assert_not_called()
-    assert integration_trader.order_executed is False
-    assert integration_trader.position_open is False
+    integration_trader.execute_order.assert_not_called()
+    assert integration_trader._convergence_trade is False
+
+
+@pytest.mark.asyncio
+async def test_no_trigger_outside_time_window(integration_trader):
+    """
+    Even with convergence, no trade outside the time window.
+    """
+    from src.trading.convergence_strategy import ConvergenceStrategy
+
+    integration_trader.convergence_strategy = ConvergenceStrategy(
+        threshold_pct=0.0005,
+        min_skew=0.80,
+        max_cheap_price=0.40,
+        window_start_s=60.0,
+        window_end_s=20.0,
+    )
+    integration_trader.oracle_guard.enabled = True
+    integration_trader.oracle_guard.snapshot = _make_oracle_snapshot(
+        price=100.05, price_to_beat=100.0, delta_pct=0.0003,
+    )
+
+    ob = OrderBook()
+    ob.best_ask_yes = 0.85
+    ob.best_bid_yes = 0.84
+    ob.best_ask_no = 0.15
+    ob.best_bid_no = 0.14
+    ob.update()
+    integration_trader.orderbook = ob
+    integration_trader._update_winning_side()
+
+    integration_trader.execute_order = AsyncMock()
+
+    # Too early (120s > 60s window)
+    await integration_trader.check_trigger(time_remaining=120.0)
+    integration_trader.execute_order.assert_not_called()
+
+    # Too late (10s < 20s window)
+    await integration_trader.check_trigger(time_remaining=10.0)
+    integration_trader.execute_order.assert_not_called()

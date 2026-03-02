@@ -53,19 +53,12 @@ from src.alerts import (
     TelegramAlertSender,
 )
 from src.clob_types import (
-    MAX_BUY_PRICE,
-    MIN_BUY_PRICE,
     CLOB_WS_URL,
     CONVERGENCE_ENABLED,
-    MIN_CONFIDENCE,
     MIN_ORDERBOOK_SIZE_USD,
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
     TRIGGER_THRESHOLD,
-    EARLY_ENTRY_ENABLED,
-    EARLY_ENTRY_CONFIDENCE_THRESHOLD,
-    EARLY_ENTRY_START_TIME_S,
-    EARLY_ENTRY_END_TIME_S,
     OrderBook,
 )
 from src.market_parser import (
@@ -88,8 +81,6 @@ from src.trading.orderbook_ws_adapter import OrderbookWSAdapter
 from src.trading.websocket_client import WebSocketClient
 from src.trading.orderbook_tracker import OrderbookTracker
 from src.trading.convergence_strategy import ConvergenceStrategy
-from src.trading.convergence_strategy import ConvergenceStrategy
-from src.trading.trade_strategy import TradeStrategy
 
 try:
     from py_clob_client.client import ClobClient
@@ -109,10 +100,7 @@ class LastSecondTrader:
     TRADE_SIZE = 1  # Default trade size in dollars
     TRIGGER_THRESHOLD = TRIGGER_THRESHOLD
     PRICE_THRESHOLD = 0.50  # Winning side threshold
-    MAX_BUY_PRICE = MAX_BUY_PRICE
-    MIN_BUY_PRICE = MIN_BUY_PRICE
     PRICE_TIE_EPS = PRICE_TIE_EPS
-    MIN_CONFIDENCE = MIN_CONFIDENCE  # Minimum confidence to buy (e.g. 0.75 = 75%)
 
     WS_URL = CLOB_WS_URL
     WS_STALE_SECONDS = 2.0  # Require fresh WS data for trigger checks
@@ -184,17 +172,6 @@ class LastSecondTrader:
                 market_name=self.market_name,
                 logger=trader_logger,
             )
-            self._trade_strategy = TradeStrategy(
-                orderbook_tracker=self._ob_tracker,
-                market_name=self.market_name,
-                trigger_threshold=self.TRIGGER_THRESHOLD,
-                max_buy_price=self.MAX_BUY_PRICE,
-                min_buy_price=self.MIN_BUY_PRICE,
-                min_confidence=self.MIN_CONFIDENCE,
-                price_tie_eps=self.PRICE_TIE_EPS,
-                end_time=end_time,
-                logger=trader_logger,
-            )
 
             # Convergence strategy
             from src.clob_types import (
@@ -238,10 +215,6 @@ class LastSecondTrader:
             # In-memory stats for market lifecycle (no DB writes)
             self._market_stats: dict = {
                 "ticks_total": 0,
-                "ticks_in_range": 0,
-                "ticks_confident": 0,
-                "best_price": None,
-                "peak_confidence": 0.0,
                 "skip_reasons": Counter(),
             }
             self._recorded_skip_guards: set[str] = set()  # one-shot skip recording
@@ -357,8 +330,7 @@ class LastSecondTrader:
             # Log init
             mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
             self._log(
-                f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} @ ${self.MAX_BUY_PRICE} | "
-                + f"Min confidence: {self.MIN_CONFIDENCE * 100:.0f}%"
+                f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} | convergence={'on' if self.convergence_strategy else 'off'}"
             )
             if self.oracle_guard.enabled:
                 sym = self.oracle_guard.symbol or "unknown"
@@ -897,36 +869,11 @@ class LastSecondTrader:
         self._ob_tracker.winning_side = self.winning_side
         return self._ob_tracker.get_winning_bid()
 
-    def _check_early_entry_eligibility(self) -> bool:
-        """Check if early entry conditions are met. Delegates to TradeStrategy."""
-        self._ob_tracker.orderbook = self.orderbook
-        self._ob_tracker.winning_side = self.winning_side
-        self._trade_strategy.end_time = self.end_time
-        return self._trade_strategy.check_early_entry_eligibility(
-            early_entry_enabled=EARLY_ENTRY_ENABLED,
-        )
-
-    def _update_market_stats(self, price: float) -> None:
-        """Update in-memory market stats with a new tick price."""
-        stats = self._market_stats
-        if stats["best_price"] is None or price < stats["best_price"]:
-            stats["best_price"] = price
-        if price > stats["peak_confidence"]:
-            stats["peak_confidence"] = price
-        if self.MIN_CONFIDENCE <= price <= self.MAX_BUY_PRICE + self.PRICE_TIE_EPS:
-            stats["ticks_in_range"] += 1
-        if price >= self.MIN_CONFIDENCE:
-            stats["ticks_confident"] += 1
-
     def _build_market_summary(self) -> str:
         """Build a summary string from market stats for the close record."""
         s = self._market_stats
         parts = [
             f"ticks={s['ticks_total']}",
-            f"in_range={s['ticks_in_range']}",
-            f"confident={s['ticks_confident']}",
-            f"best_price={s['best_price']:.4f}" if s["best_price"] is not None else "best_price=None",
-            f"peak_conf={s['peak_confidence']:.4f}",
         ]
         if s["skip_reasons"]:
             top = s["skip_reasons"].most_common(3)
@@ -1019,232 +966,10 @@ class LastSecondTrader:
                 await self.execute_order()
                 return
 
-            # Priority 2: Existing strategies
-            if time_remaining > self.TRIGGER_THRESHOLD:
-                # Check for early entry opportunity (before late window)
-                if self._check_early_entry_eligibility():
-                    winning_bid = self._get_winning_bid()
-                    winning_ask = self._get_winning_ask()
-                    trade_side = self.winning_side
-                    self._log(
-                        f"[TRADER] [{self.market_name}] Early entry triggered: confidence={winning_bid:.4f} (≥{EARLY_ENTRY_CONFIDENCE_THRESHOLD:.2f}), time={time_remaining:.0f}s"
-                    )
-                    # Record buy decision in dry-run simulator
-                    if self.dry_run_sim:
-                        await self.dry_run_sim.record_buy(
-                            side=trade_side,
-                            price=winning_ask,
-                            amount=self.trade_size,
-                            confidence=winning_bid,
-                            time_remaining=time_remaining,
-                            reason="early_entry",
-                            oracle_snap=self.oracle_guard.snapshot if self.oracle_guard.enabled else None,
-                        )
-                    await self.execute_order()
-                    return
-                return
-
-            trade_side = self.winning_side
-            oracle_side = self.oracle_guard.recommended_side()
-            if self.oracle_guard.enabled and self.oracle_guard.decide_side:
-                if oracle_side:
-                    trade_side = oracle_side
-                elif self.oracle_guard.require_side:
-                    if "oracle_side_missing" not in self._logged_warnings:
-                        self._log(
-                            f"⚠️  [{self.market_name}] Oracle side required but unavailable (missing price_to_beat or mapping)"
-                        )
-                        self._logged_warnings.add("oracle_side_missing")
-                    return
-
-            if trade_side is None:
-                if "no_winner" not in self._logged_warnings:
-                    self._log(
-                        f"⚠️  [{self.market_name}] No trade side at {time_remaining:.3f}s"
-                    )
-                    self._logged_warnings.add("no_winner")
-                self._market_stats["ticks_total"] += 1
-                self._market_stats["skip_reasons"]["no_winner"] += 1
-                return
-
-            winning_ask = self._get_ask_for_side(trade_side)
-            if winning_ask is None:
-                if "no_ask" not in self._logged_warnings:
-                    self._log(
-                        f"⚠️  [{self.market_name}] No ask price for {trade_side} at {time_remaining:.3f}s"
-                    )
-                    self._logged_warnings.add("no_ask")
-                self._market_stats["ticks_total"] += 1
-                self._market_stats["skip_reasons"]["no_ask"] += 1
-                return
-
-            # Use ask for confidence check
+            # Convergence is the only entry strategy.
+            # If it did not trigger, wait for next tick.
             self._market_stats["ticks_total"] += 1
-            self._update_market_stats(winning_ask)
 
-            if winning_ask < self.MIN_CONFIDENCE:
-                if "low_confidence" not in self._logged_warnings:
-                    self._log(
-                        f"⚠️  [{self.market_name}] Low confidence: ${winning_ask:.2f} < ${self.MIN_CONFIDENCE:.2f} (need ≥{self.MIN_CONFIDENCE * 100:.0f}%)"
-                    )
-                self._logged_warnings.add("low_confidence")
-                self._market_stats["skip_reasons"]["low_confidence"] += 1
-                return
-
-            if winning_ask > self.MAX_BUY_PRICE + self.PRICE_TIE_EPS:
-                if "price_high" not in self._logged_warnings:
-                    self._log(
-                        f"⚠️  [{self.market_name}] Ask ${winning_ask:.4f} > ${self.MAX_BUY_PRICE}"
-                    )
-                    self._logged_warnings.add("price_high")
-                self._market_stats["skip_reasons"]["price_out_of_range"] += 1
-                return
-
-            # Check orderbook liquidity
-            liquidity_ok = self.check_orderbook_liquidity()
-            if not liquidity_ok:
-                if "low_liquidity" not in self._logged_warnings:
-                    # Calculate total liquidity for logging
-                    total_size = 0.0
-                    if self.orderbook.best_bid_yes_size is not None:
-                        total_size += self.orderbook.best_bid_yes_size
-                    if self.orderbook.best_ask_yes_size is not None:
-                        total_size += self.orderbook.best_ask_yes_size
-                    if self.orderbook.best_bid_no_size is not None:
-                        total_size += self.orderbook.best_bid_no_size
-                    if self.orderbook.best_ask_no_size is not None:
-                        total_size += self.orderbook.best_ask_no_size
-
-                    self._log(
-                        f"⚠️  [{self.market_name}] Low liquidity: ${total_size:.2f} < ${MIN_ORDERBOOK_SIZE_USD:.2f} (need ≥${MIN_ORDERBOOK_SIZE_USD:.0f})"
-                    )
-                    self._logged_warnings.add("low_liquidity")
-                self._market_stats["skip_reasons"]["low_liquidity"] += 1
-                return
-
-            oracle_ok, oracle_reason, oracle_detail = self.oracle_guard.quality_ok(
-                trade_side=trade_side, time_remaining=time_remaining
-            )
-            if not oracle_ok:
-                self.oracle_guard.block_count += 1
-                self.oracle_guard.reason_counts[oracle_reason] = (
-                    self.oracle_guard.reason_counts.get(oracle_reason, 0) + 1
-                )
-
-                now = time.time()
-                should_log = (
-                    oracle_reason != self.oracle_guard.last_reason
-                    or (now - self.oracle_guard.last_log_ts)
-                    >= self.oracle_guard.log_every_s
-                )
-                if should_log:
-                    snap = self.oracle_guard.snapshot
-
-                    def _fmt_money(v: float | None) -> str:
-                        return f"{v:,.2f}" if v is not None else "-"
-
-                    if snap is not None:
-                        z = f"{snap.zscore:.2f}" if snap.zscore is not None else "-"
-                        vol = (
-                            f"{snap.vol_pct * 100:.4f}%"
-                            if snap.vol_pct is not None
-                            else "-"
-                        )
-                        slope = (
-                            f"{snap.slope_usd_per_s:.2f}"
-                            if snap.slope_usd_per_s is not None
-                            else "-"
-                        )
-                        extra = (
-                            f" | oracle={_fmt_money(snap.price)}"
-                            + f" beat={_fmt_money(snap.price_to_beat)}"
-                            + f" Δ={_fmt_money(snap.delta)}"
-                            + f" vol={vol}"
-                            + f" slope={slope}$/s"
-                            + f" z={z}"
-                            + f" n={snap.n_points}"
-                        )
-                    else:
-                        z = "-"
-                        vol = "-"
-                        slope = "-"
-                        extra = ""
-
-                    detail = f" ({oracle_detail})" if oracle_detail else ""
-                    self._log(
-                        f"🛑 [{self.market_name}] SKIP (oracle_guard): {oracle_reason}{detail} | t={time_remaining:.3f}s | side={trade_side} | ask=${winning_ask:.4f}{extra}"
-                    )
-                    self.oracle_guard.last_reason = oracle_reason
-                    self.oracle_guard.last_log_ts = now
-
-                    if self.alert_dispatcher.is_enabled() and should_log:
-                        await self.alert_dispatcher.send_oracle_guard_block(
-                            self.market_name, oracle_reason, oracle_detail
-                        )
-                self._market_stats["skip_reasons"][f"oracle:{oracle_reason}"] += 1
-                self._market_stats["ticks_in_range"] += 1  # price was in range, oracle blocked
-                return
-
-            if "balance_checked" not in self._logged_warnings:
-                balance_ok = await self.risk_manager.check_balance()
-                self._logged_warnings.add("balance_checked")
-
-                if not balance_ok:
-                    self._log(
-                        f"❌ [{self.market_name}] FATAL: Insufficient funds. Stopping trader."
-                    )
-                    self.order_execution.mark_executed()
-                    return
-
-            oracle_note = ""
-            if (
-                self.oracle_guard.enabled
-                and self.oracle_guard.decide_side
-                and oracle_side
-            ):
-                snap = self.oracle_guard.snapshot
-                if snap is not None and snap.price_to_beat is not None:
-                    oracle_note = (
-                        f" | oracle={snap.price:,.2f} beat={snap.price_to_beat:,.2f} "
-                        f"Δ={snap.delta:,.2f}"
-                    )
-
-            self._log(
-                f"🎯 [{self.market_name}] TRIGGER at {time_remaining:.3f}s! {trade_side} @ ${winning_ask:.4f}{oracle_note}"
-            )
-
-            # Record buy decision in dry-run simulator
-            if self.dry_run_sim:
-                await self.dry_run_sim.record_buy(
-                    side=trade_side,
-                    price=winning_ask,
-                    amount=self.trade_size,
-                    confidence=winning_ask,
-                    time_remaining=time_remaining,
-                    reason="trigger",
-                    oracle_snap=self.oracle_guard.snapshot,
-                )
-
-            # Record trigger check for replay
-            if self.event_recorder is not None:
-                self.event_recorder.record_trigger_check(
-                    time_remaining=time_remaining,
-                    winning_side=trade_side,
-                    winning_ask=winning_ask,
-                    executed=True,
-                    reason="trigger",
-                )
-
-            elapsed = time.monotonic() - trigger_start_mono
-            if (time_remaining - elapsed) <= 0:
-                self._log(
-                    f"⏰ [{self.market_name}] Market closed before order submission. Skipping."
-                )
-                self.order_execution.mark_executed()
-                return
-
-            self._planned_trade_side = trade_side
-            await self.execute_order()
 
     async def verify_order(self, order_id: str) -> bool:
         """Verify order status after submission by querying the API."""

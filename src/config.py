@@ -49,12 +49,9 @@ class TradingConfig(BaseSettings):
     """All trading constants in one place, overridable via env vars."""
 
     # --- Price thresholds ---
-    max_buy_price: float = Field(default=0.97)
-    min_buy_price: float = Field(default=0.60)
     trigger_threshold: float = Field(default=30.0)
-    price_threshold: float = Field(default=0.85)
+    price_threshold: float = Field(default=0.50)  # Winning side threshold (bid > this = winning)
     price_tie_eps: float = Field(default=1e-6)
-    min_confidence: float = Field(default=0.85)
 
     # --- Trade sizing ---
     min_trade_usdc: float = Field(default=1.00)
@@ -97,20 +94,7 @@ class TradingConfig(BaseSettings):
     convergence_window_end_s: float = Field(default=20.0)  # stop at 20s before expiry
     convergence_disable_stop_loss: bool = Field(default=True)  # hold until resolution
 
-    # --- Early entry ---
-    early_entry_enabled: bool = Field(default=False)
-    early_entry_confidence_threshold: float = Field(default=0.90)
-    early_entry_start_time_s: float = Field(default=600.0)
-    early_entry_end_time_s: float = Field(default=60.0)
-
-    # --- Convergence strategy ---
-    convergence_enabled: bool = Field(default=True)
-    convergence_threshold_pct: float = Field(default=0.0005)  # 5 basis points
-    convergence_min_skew: float = Field(default=0.80)  # expensive side >= 80¢
-    convergence_max_cheap_price: float = Field(default=0.40)  # don't buy cheap side above 40¢
-    convergence_window_start_s: float = Field(default=60.0)  # start checking at 60s
-    convergence_window_end_s: float = Field(default=20.0)  # stop at 20s
-    convergence_disable_stop_loss: bool = Field(default=True)  # no stop-loss for convergence
+    # --- Early entry (removed — legacy strategy) ---
 
     # --- API URLs ---
     gamma_api_url: str = Field(default="https://gamma-api.polymarket.com/public-search")

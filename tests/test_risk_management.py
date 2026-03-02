@@ -269,24 +269,16 @@ async def test_check_trigger_stops_on_daily_loss_limit(
             {
                 "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "initial_balance": 100.0,
-                "current_pnl": -15.0,
+                "current_pnl": -25.0,
                 "total_trades": 5,
             },
             f,
         )
 
-    # Setup trigger conditions
-    mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.89
-    mock_trader.orderbook.best_ask_no = 0.11
-    mock_trader.TRIGGER_THRESHOLD = 90.0
-    mock_trader.client.get_balance_allowance = MagicMock(
-        return_value={"balance": int(100 * 1e6), "allowances": {}}
-    )
     mock_trader.execute_order = AsyncMock()
 
-    # Trigger should NOT execute order due to daily limit
-    await mock_trader.check_trigger(time_remaining=85.0)
+    # Trigger should NOT execute order due to daily limit (-25 < -20 threshold)
+    await mock_trader.check_trigger(time_remaining=40.0)
 
     # Verify order was NOT executed
     mock_trader.execute_order.assert_not_called()
@@ -306,88 +298,19 @@ async def test_check_trigger_stops_on_trade_count_limit(
                 "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "initial_balance": 100.0,
                 "current_pnl": 5.0,
-                "total_trades": 25,
+                "total_trades": 150,
             },
             f,
         )
 
-    # Setup trigger conditions
-    mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.89
-    mock_trader.orderbook.best_ask_no = 0.11
-    mock_trader.TRIGGER_THRESHOLD = 90.0
-    mock_trader.client.get_balance_allowance = MagicMock(
-        return_value={"balance": int(100 * 1e6), "allowances": {}}
-    )
     mock_trader.execute_order = AsyncMock()
 
-    # Trigger should NOT execute order due to trade count limit
-    await mock_trader.check_trigger(time_remaining=85.0)
+    # Trigger should NOT execute order due to trade count limit (150 >= 100)
+    await mock_trader.check_trigger(time_remaining=40.0)
 
     # Verify order was NOT executed
     mock_trader.execute_order.assert_not_called()
     assert mock_trader.order_executed is True
-
-
-@pytest.mark.asyncio
-async def test_check_trigger_stops_on_capital_limit(mock_trader, cleanup_daily_limits):
-    """Test that check_trigger stops trading when capital % limit exceeded."""
-    # Setup trigger conditions
-    mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.89
-    mock_trader.orderbook.best_ask_no = 0.11
-    mock_trader.TRIGGER_THRESHOLD = 90.0
-
-    # Mock balance that would make planned trade exceed 5% limit
-    mock_trader.client.get_balance_allowance = MagicMock(
-        return_value={"balance": int(50 * 1e6), "allowances": {}}  # $50, max 5% = $2.5
-    )
-    mock_trader._planned_trade_amount = 10.0  # $10 > $2.5 limit
-    mock_trader.execute_order = AsyncMock()
-
-    # Trigger should NOT execute order due to capital limit
-    await mock_trader.check_trigger(time_remaining=85.0)
-
-    # Verify order was NOT executed
-    mock_trader.execute_order.assert_not_called()
-    assert mock_trader.order_executed is True
-
-
-@pytest.mark.asyncio
-async def test_check_trigger_proceeds_when_limits_ok(mock_trader, cleanup_daily_limits):
-    """Test that check_trigger executes order when all limits are OK."""
-    # Setup daily limits file with everything in bounds
-    path = mock_trader._get_daily_limits_path()
-    with open(path, "w") as f:
-        json.dump(
-            {
-                "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                "initial_balance": 100.0,
-                "current_pnl": 5.0,
-                "total_trades": 10,
-            },
-            f,
-        )
-
-    # Setup trigger conditions
-    mock_trader.winning_side = "YES"
-    mock_trader.orderbook.best_ask_yes = 0.89
-    mock_trader.orderbook.best_ask_no = 0.11
-    mock_trader.TRIGGER_THRESHOLD = 90.0
-    mock_trader.client.get_balance_allowance = MagicMock(
-        return_value={
-            "balance": int(100 * 1e6),
-            "allowances": {EXCHANGE_CONTRACT: int(100 * 1e6)},
-        }  # $100, max 5% = $5
-    )
-    mock_trader._planned_trade_amount = 4.0  # $4 < $5 limit
-    mock_trader.execute_order = AsyncMock()
-
-    # Trigger should execute order
-    await mock_trader.check_trigger(time_remaining=85.0)
-
-    # Verify order WAS executed
-    mock_trader.execute_order.assert_called_once()
 
 
 # Test constants

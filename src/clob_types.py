@@ -44,12 +44,11 @@ class OrderBook:
 
 
 # Trading constants — sourced from TradingConfig (env vars override defaults)
-MAX_BUY_PRICE = _cfg.max_buy_price
-MIN_BUY_PRICE = _cfg.min_buy_price
+# MAX_BUY_PRICE / MIN_BUY_PRICE removed — convergence uses its own thresholds
 TRIGGER_THRESHOLD = _cfg.trigger_threshold
 PRICE_THRESHOLD = _cfg.price_threshold
 PRICE_TIE_EPS = _cfg.price_tie_eps
-MIN_CONFIDENCE = _cfg.min_confidence
+# MIN_CONFIDENCE removed — legacy strategy cleaned up
 
 # Trade sizing constants
 MIN_TRADE_USDC = _cfg.min_trade_usdc
@@ -100,7 +99,4 @@ CONVERGENCE_WINDOW_END_S = _cfg.convergence_window_end_s
 CONVERGENCE_DISABLE_STOP_LOSS = _cfg.convergence_disable_stop_loss
 
 # Early entry mode constants
-EARLY_ENTRY_ENABLED = _cfg.early_entry_enabled
-EARLY_ENTRY_CONFIDENCE_THRESHOLD = _cfg.early_entry_confidence_threshold
-EARLY_ENTRY_START_TIME_S = _cfg.early_entry_start_time_s
-EARLY_ENTRY_END_TIME_S = _cfg.early_entry_end_time_s
+# Early entry constants removed — legacy strategy cleaned up

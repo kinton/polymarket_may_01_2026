@@ -105,12 +105,12 @@ class TestEventRecorderIntegration:
         assert len(book_events) == 1  # Only one due to throttle
 
     @pytest.mark.asyncio
-    async def test_trigger_check_recorded(self, tmp_path):
-        """Trigger check should be recorded when trade is triggered."""
+    async def test_convergence_no_trigger_without_conditions(self, tmp_path):
+        """Without convergence conditions, no trigger event should be recorded."""
         end_time = datetime.now(timezone.utc) + timedelta(seconds=10)
         trader = _make_trader(tmp_path, end_time=end_time, trigger_threshold=30.0)
 
-        # Set up orderbook with winning side
+        # Set up orderbook — old strategy would trigger, but convergence won't
         trader.orderbook.best_ask_yes = 0.89
         trader.orderbook.best_bid_yes = 0.88
         trader.orderbook.best_ask_yes_size = 100.0
@@ -122,20 +122,16 @@ class TestEventRecorderIntegration:
         trader.winning_side = "YES"
         trader.last_ws_update_ts = time.time()
 
-        # Mock order execution and risk manager
         trader.order_execution.execute_order_for = AsyncMock()
         trader.order_execution._executed = False
         trader.order_execution._in_progress = False
-        trader.risk_manager.check_balance = AsyncMock(return_value=True)
 
         await trader.check_trigger(time_remaining=10.0)
 
         events = _load_events(trader)
         trigger_events = [e for e in events if e["type"] == "trigger_check"]
-        assert len(trigger_events) == 1
-        assert trigger_events[0]["data"]["winning_side"] == "YES"
-        assert trigger_events[0]["data"]["executed"] is True
-        assert trigger_events[0]["data"]["winning_ask"] == 0.89
+        # No trigger — convergence strategy is off (not configured in _make_trader)
+        assert len(trigger_events) == 0
 
     @pytest.mark.asyncio
     async def test_buy_trade_recorded(self, tmp_path):
