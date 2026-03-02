@@ -94,7 +94,13 @@ class TradingConfig(BaseSettings):
     convergence_window_end_s: float = Field(default=20.0)  # stop at 20s before expiry
     convergence_disable_stop_loss: bool = Field(default=True)  # hold until resolution
 
-    # --- Early entry (removed — legacy strategy) ---
+    # --- Oracle Signal strategy ---
+    oracle_signal_enabled: bool = Field(default=True)
+    oracle_signal_min_delta_pct: float = Field(default=0.0010)  # 10bp minimum oracle divergence
+    oracle_signal_max_entry_price: float = Field(default=0.55)  # don't buy above 55¢
+    oracle_signal_min_edge_pct: float = Field(default=0.10)     # require ≥10% estimated edge
+    oracle_signal_window_start_s: float = Field(default=60.0)   # start at 60s before expiry
+    oracle_signal_window_end_s: float = Field(default=5.0)      # stop at 5s before expiry
 
     # --- API URLs ---
     gamma_api_url: str = Field(default="https://gamma-api.polymarket.com/public-search")

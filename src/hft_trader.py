@@ -81,6 +81,7 @@ from src.trading.orderbook_ws_adapter import OrderbookWSAdapter
 from src.trading.websocket_client import WebSocketClient
 from src.trading.orderbook_tracker import OrderbookTracker
 from src.trading.convergence_strategy import ConvergenceStrategy
+from src.trading.oracle_signal_strategy import OracleSignalStrategy
 
 try:
     from py_clob_client.client import ClobClient
@@ -198,6 +199,27 @@ class LastSecondTrader:
                 self.convergence_strategy = None
                 self._convergence_disable_stop_loss = False
             self._convergence_trade = False  # flag: current position is from convergence
+
+            # Oracle Signal strategy
+            from src.clob_types import (
+                ORACLE_SIGNAL_ENABLED,
+                ORACLE_SIGNAL_MIN_DELTA_PCT,
+                ORACLE_SIGNAL_MAX_ENTRY_PRICE,
+                ORACLE_SIGNAL_MIN_EDGE_PCT,
+                ORACLE_SIGNAL_WINDOW_START_S,
+                ORACLE_SIGNAL_WINDOW_END_S,
+            )
+            if ORACLE_SIGNAL_ENABLED and oracle_enabled:
+                self.oracle_signal_strategy: OracleSignalStrategy | None = OracleSignalStrategy(
+                    min_delta_pct=ORACLE_SIGNAL_MIN_DELTA_PCT,
+                    max_entry_price=ORACLE_SIGNAL_MAX_ENTRY_PRICE,
+                    min_edge_pct=ORACLE_SIGNAL_MIN_EDGE_PCT,
+                    window_start_s=ORACLE_SIGNAL_WINDOW_START_S,
+                    window_end_s=ORACLE_SIGNAL_WINDOW_END_S,
+                    logger=trader_logger,
+                )
+            else:
+                self.oracle_signal_strategy = None
 
             # Shutdown flag
             self._shutting_down = False
@@ -330,7 +352,9 @@ class LastSecondTrader:
             # Log init
             mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
             self._log(
-                f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} | convergence={'on' if self.convergence_strategy else 'off'}"
+                f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} | "
+                f"convergence={'on' if self.convergence_strategy else 'off'} | "
+                f"oracle_signal={'on' if self.oracle_signal_strategy else 'off'}"
             )
             if self.oracle_guard.enabled:
                 sym = self.oracle_guard.symbol or "unknown"
@@ -966,8 +990,45 @@ class LastSecondTrader:
                 await self.execute_order()
                 return
 
-            # Convergence is the only entry strategy.
-            # If it did not trigger, wait for next tick.
+            # Priority 2: Oracle Signal strategy (buy oracle-favored side when market lags)
+            if (
+                self.oracle_signal_strategy is not None
+                and self.oracle_guard.enabled
+            ):
+                signal = self.oracle_signal_strategy.get_signal(
+                    time_remaining,
+                    self.oracle_guard.snapshot,
+                    self.orderbook,
+                    up_side=self.oracle_guard.up_side,
+                    down_side=self.oracle_guard.down_side,
+                )
+                if signal is not None:
+                    self._log(
+                        f"📡 [{self.market_name}] ORACLE SIGNAL! "
+                        f"{signal.side} ({signal.side_label}) @ ${signal.price:.4f} | "
+                        f"delta={signal.delta_pct * 100:+.4f}% | "
+                        f"fair={signal.estimated_fair_value:.2f} | "
+                        f"edge={signal.edge_pct * 100:.1f}% | "
+                        f"t={time_remaining:.1f}s"
+                    )
+
+                    if self.dry_run_sim:
+                        await self.dry_run_sim.record_buy(
+                            side=signal.side,
+                            price=signal.price,
+                            amount=self.trade_size,
+                            confidence=signal.estimated_fair_value,
+                            time_remaining=time_remaining,
+                            reason=f"oracle_signal_{signal.side_label.lower()}",
+                            oracle_snap=self.oracle_guard.snapshot,
+                        )
+
+                    self._planned_trade_side = signal.side
+                    self._convergence_trade = False  # not a convergence trade
+                    await self.execute_order()
+                    return
+
+            # No strategy triggered, wait for next tick.
             self._market_stats["ticks_total"] += 1
 
 
@@ -1292,6 +1353,50 @@ class LastSecondTrader:
                     self.oracle_guard.snapshot = self.oracle_guard.tracker.update(
                         ts_ms=tick.ts_ms, price=tick.price
                     )
+
+                    # Fallback: if beat still missing 30s after start, try HTML
+                    if (
+                        self.oracle_guard.tracker.price_to_beat is None
+                        and not self.oracle_guard.html_beat_attempted
+                        and self.slug
+                        and start_ms is not None
+                        and (tick.ts_ms - start_ms) > 30_000
+                    ):
+                        self.oracle_guard.html_beat_attempted = True
+                        self._log(
+                            f"⚠️  [{self.market_name}] price_to_beat still missing after 30s, trying HTML fallback..."
+                        )
+                        try:
+                            asset = self.market_name
+                            cadence = "fifteen"
+                            if start_ms is not None and end_ms is not None:
+                                dur_ms = end_ms - start_ms
+                                if abs(dur_ms - 300_000) <= 15_000:
+                                    cadence = "five"
+                            async with aiohttp.ClientSession() as session:
+                                event_page = EventPageClient(session)
+                                open_price, _ = await event_page.fetch_past_results(
+                                    eslug=self.slug, asset=asset, cadence=cadence,
+                                    start_time_iso_z=self.oracle_guard.window.start_iso_z if self.oracle_guard.window else None,
+                                )
+                            if open_price is not None:
+                                self.oracle_guard.tracker.price_to_beat = float(open_price)
+                                self._log(f"✓ [{self.market_name}] price_to_beat from HTML fallback: {open_price:,.2f}")
+                            else:
+                                # Last resort: use first oracle tick as approximate beat
+                                if self.oracle_guard.tracker._points:
+                                    first_price = self.oracle_guard.tracker._points[0][1]
+                                    self.oracle_guard.tracker.price_to_beat = first_price
+                                    self._log(f"⚠️  [{self.market_name}] price_to_beat from first oracle tick (approx): {first_price:,.2f}")
+                                else:
+                                    self._log(f"⚠️  [{self.market_name}] HTML fallback failed and no oracle ticks available")
+                        except Exception as e:
+                            self._log(f"⚠️  [{self.market_name}] HTML fallback failed: {e}")
+                            # Last resort: first oracle tick
+                            if self.oracle_guard.tracker._points and self.oracle_guard.tracker.price_to_beat is None:
+                                first_price = self.oracle_guard.tracker._points[0][1]
+                                self.oracle_guard.tracker.price_to_beat = first_price
+                                self._log(f"⚠️  [{self.market_name}] price_to_beat from first oracle tick (approx): {first_price:,.2f}")
 
                     now_ts = time.time()
                     if (now_ts - self.oracle_guard._last_log_ts) >= 1.0:

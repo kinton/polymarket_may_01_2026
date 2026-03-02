@@ -99,4 +99,10 @@ CONVERGENCE_WINDOW_END_S = _cfg.convergence_window_end_s
 CONVERGENCE_DISABLE_STOP_LOSS = _cfg.convergence_disable_stop_loss
 
 # Early entry mode constants
-# Early entry constants removed — legacy strategy cleaned up
+# Oracle Signal strategy constants
+ORACLE_SIGNAL_ENABLED = _cfg.oracle_signal_enabled
+ORACLE_SIGNAL_MIN_DELTA_PCT = _cfg.oracle_signal_min_delta_pct
+ORACLE_SIGNAL_MAX_ENTRY_PRICE = _cfg.oracle_signal_max_entry_price
+ORACLE_SIGNAL_MIN_EDGE_PCT = _cfg.oracle_signal_min_edge_pct
+ORACLE_SIGNAL_WINDOW_START_S = _cfg.oracle_signal_window_start_s
+ORACLE_SIGNAL_WINDOW_END_S = _cfg.oracle_signal_window_end_s
