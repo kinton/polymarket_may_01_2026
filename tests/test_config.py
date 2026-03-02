@@ -56,7 +56,7 @@ class TestTradingConfig:
         assert cfg.max_total_trades_per_day == 100
         assert cfg.convergence_enabled is True
         assert cfg.convergence_threshold_pct == 0.0005
-        assert cfg.convergence_max_cheap_price == 0.40
+        assert cfg.convergence_max_cheap_price == 0.45
 
     def test_env_override(self):
         env = {
