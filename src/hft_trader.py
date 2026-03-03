@@ -1350,13 +1350,13 @@ class LastSecondTrader:
                         ts_ms=tick.ts_ms, price=tick.price
                     )
 
-                    # Fallback: if beat still missing 30s after start, try HTML
+                    # Fallback: if beat still missing 10s after start, try HTML
                     if (
                         self.oracle_guard.tracker.price_to_beat is None
                         and not self.oracle_guard.html_beat_attempted
                         and self.slug
                         and start_ms is not None
-                        and (tick.ts_ms - start_ms) > 30_000
+                        and (tick.ts_ms - start_ms) > 10_000
                     ):
                         self.oracle_guard.html_beat_attempted = True
                         self._log(

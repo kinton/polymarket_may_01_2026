@@ -43,11 +43,15 @@ class ConvergenceStrategy:
     oracle is at the beat (50/50 odds) but market still shows skew.
     """
 
+    # If oracle is MORE than this against the cheap side, skip
+    DEFAULT_MAX_AGAINST_BP = 0.0001  # 1bp
+
     def __init__(
         self,
         threshold_pct: float = 0.0003,    # 3bp convergence
         min_skew: float = 0.75,            # expensive side >= 75¢
         max_cheap_price: float = 0.35,     # only buy at 35¢ or less
+        max_against_pct: float = DEFAULT_MAX_AGAINST_BP,  # max oracle delta AGAINST cheap side
         window_start_s: float = 60.0,
         window_end_s: float = 20.0,
         logger: logging.Logger | None = None,
@@ -55,6 +59,7 @@ class ConvergenceStrategy:
         self.threshold_pct = threshold_pct
         self.min_skew = min_skew
         self.max_cheap_price = max_cheap_price
+        self.max_against_pct = max_against_pct
         self.window_start_s = window_start_s
         self.window_end_s = window_end_s
         self.logger = logger
@@ -120,6 +125,17 @@ class ConvergenceStrategy:
         if buy_price > self.max_cheap_price:
             return None
         if expensive_price < self.min_skew:
+            return None
+
+        # 7. Oracle "not against" filter
+        # If cheap side is NO (DOWN), oracle delta should not be too positive (UP)
+        # If cheap side is YES (UP), oracle delta should not be too negative (DOWN)
+        delta = oracle_snapshot.delta_pct
+        if buy_side == "NO" and delta > self.max_against_pct:
+            # Oracle says UP but we want to buy DOWN — skip
+            return None
+        if buy_side == "YES" and delta < -self.max_against_pct:
+            # Oracle says DOWN but we want to buy UP — skip
             return None
 
         return ConvergenceSignal(

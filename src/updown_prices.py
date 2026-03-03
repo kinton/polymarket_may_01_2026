@@ -93,26 +93,43 @@ class MarketWindow:
 def parse_market_window(question: str, end_date_iso: str | None) -> MarketWindow:
     """
     Parse titles like:
-      "Bitcoin Up or Down - February 4, 5:00AM-5:15AM ET"
+      "Bitcoin Up or Down - February 4, 5:00AM-5:15AM ET"   (range)
+      "Bitcoin Up or Down - February 4, 5AM ET"              (hourly, no range)
     and return the window start/end timestamps.
     """
+    end_ms = _end_ms_from_iso(end_date_iso)
+
+    # Pattern 1: Range format "5:00AM-5:15AM ET"
     match = re.search(
         r"-\s*([A-Za-z]+)\s+(\d{1,2}),\s*(\d{1,2}:\d{2})(AM|PM)-(\d{1,2}:\d{2})(AM|PM)\s*ET",
         question,
     )
-    if not match:
-        return MarketWindow(start_ms=None, end_ms=_end_ms_from_iso(end_date_iso))
+    if match:
+        month, day, start_time, start_ampm, _end_time, _end_ampm = match.groups()
+        year = _year_from_end_iso(end_date_iso)
+        if year is None:
+            year = datetime.now(tz=ET_TZ).year
+        start_ms = _parse_et_timestamp_ms(
+            dt_str=f"{month} {day} {year} {start_time}{start_ampm}"
+        )
+        return MarketWindow(start_ms=start_ms, end_ms=end_ms)
 
-    month, day, start_time, start_ampm, _end_time, _end_ampm = match.groups()
-    year = _year_from_end_iso(end_date_iso)
-    if year is None:
-        year = datetime.now(tz=ET_TZ).year
-
-    start_ms = _parse_et_timestamp_ms(
-        dt_str=f"{month} {day} {year} {start_time}{start_ampm}"
+    # Pattern 2: Hourly format "9AM ET" or "12PM ET" (no minutes, no range)
+    match_hourly = re.search(
+        r"-\s*([A-Za-z]+)\s+(\d{1,2}),\s*(\d{1,2})(AM|PM)\s*ET",
+        question,
     )
-    end_ms = _end_ms_from_iso(end_date_iso)
-    return MarketWindow(start_ms=start_ms, end_ms=end_ms)
+    if match_hourly:
+        month, day, hour, ampm = match_hourly.groups()
+        year = _year_from_end_iso(end_date_iso)
+        if year is None:
+            year = datetime.now(tz=ET_TZ).year
+        start_ms = _parse_et_timestamp_ms(
+            dt_str=f"{month} {day} {year} {hour}:00{ampm}"
+        )
+        return MarketWindow(start_ms=start_ms, end_ms=end_ms)
+
+    return MarketWindow(start_ms=None, end_ms=end_ms)
 
 
 def _year_from_end_iso(end_date_iso: str | None) -> int | None:

@@ -85,7 +85,7 @@ class OracleGuardManager:
         self.require_agreement = True
         self.require_beat = False
         self.max_reversal_slope = MAX_REVERSAL_SLOPE
-        self.beat_max_lag_ms = 10_000
+        self.beat_max_lag_ms = 120_000  # 120s — bot often connects 60-90s late
 
         # Outcome mapping (YES/NO for Up/Down)
         self.up_side: str | None = None
