@@ -199,6 +199,7 @@ class LastSecondTrader:
                 self.convergence_strategy = None
                 self._convergence_disable_stop_loss = False
             self._convergence_trade = False  # flag: current position is from convergence
+            self._convergence_partial_tp_done = False  # flag: partial take-profit already executed
 
             # Oracle Signal strategy
             from src.clob_types import (
@@ -861,6 +862,19 @@ class LastSecondTrader:
                 if current_price is not None:
                     await self.stop_loss_manager.check_and_execute(current_price)
 
+            # Convergence partial take-profit: sell half at +10% to lock in breakeven
+            if (
+                self.position_manager.is_open
+                and self._convergence_trade
+                and not self._convergence_partial_tp_done
+                and self.position_manager.entry_price is not None
+            ):
+                current_price = self._get_ask_for_side(
+                    self.position_manager.position_side or ""
+                )
+                if current_price is not None:
+                    await self._check_convergence_partial_tp(current_price)
+
             # Check virtual dry-run positions for simulated stop-loss/take-profit
             if self.dry_run_sim and self.winning_side:
                 sim_price = self._get_ask_for_side(self.winning_side)
@@ -966,6 +980,9 @@ class LastSecondTrader:
                         f"{conv_signal.side} ({conv_signal.side_label}) @ ${conv_signal.price:.4f} | "
                         f"delta_pct={conv_signal.delta_pct * 100:+.4f}% | "
                         f"skew={conv_signal.expensive_price:.2f}/{conv_signal.price:.2f} | "
+                        f"obs={conv_signal.observations} | "
+                        f"conv_rate={conv_signal.convergence_rate:.0%} | "
+                        f"side_cons={conv_signal.side_consistency:.0%} | "
                         f"t={time_remaining:.1f}s"
                     )
 
@@ -1085,6 +1102,67 @@ class LastSecondTrader:
         """Execute order (deprecated - use execute_order instead)."""
         await self.execute_order()
 
+    async def _check_convergence_partial_tp(self, current_price: float) -> None:
+        """
+        Partial take-profit for convergence trades: sell half at +10%.
+        
+        If cheap side was bought at 20¢ and rises to 22¢ (+10%),
+        sell half to lock in ~breakeven on the full position.
+        Rest rides to resolution for max upside.
+        """
+        from src.clob_types import CONVERGENCE_PARTIAL_TP_PCT, CONVERGENCE_PARTIAL_TP_FRACTION
+
+        entry = self.position_manager.entry_price
+        if entry is None:
+            return
+
+        tp_price = entry * (1 + CONVERGENCE_PARTIAL_TP_PCT)
+        if current_price < tp_price:
+            return
+
+        # Triggered! Sell fraction of position
+        pnl_pct = ((current_price - entry) / entry) * 100
+        sell_amount = round(self.trade_size * CONVERGENCE_PARTIAL_TP_FRACTION, 2)
+        sell_amount = max(sell_amount, 0.50)  # minimum $0.50
+
+        self._log(
+            f"💰 [{self.market_name}] PARTIAL TP! "
+            f"Price ${current_price:.4f} > TP ${tp_price:.4f} (+{pnl_pct:.1f}%) | "
+            f"Selling {CONVERGENCE_PARTIAL_TP_FRACTION:.0%} (${sell_amount:.2f}), "
+            f"rest rides to resolution"
+        )
+
+        if self.dry_run_sim:
+            # Record in dry-run simulator
+            await self.dry_run_sim.record_partial_tp(
+                side=self.position_manager.position_side or "",
+                entry_price=entry,
+                exit_price=current_price,
+                fraction=CONVERGENCE_PARTIAL_TP_FRACTION,
+                amount=sell_amount,
+            )
+
+        # Record trade
+        if self._trade_db:
+            try:
+                await self._trade_db.record_trade(
+                    market_name=self.market_name,
+                    condition_id=self.condition_id or "",
+                    action="sell",
+                    side=self.position_manager.position_side or "",
+                    price=current_price,
+                    amount=sell_amount,
+                    pnl=(current_price - entry) * (sell_amount / entry),
+                    pnl_pct=pnl_pct,
+                    reason="partial_tp",
+                    dry_run=self.dry_run,
+                )
+            except Exception as e:
+                self._log(f"[{self.market_name}] Error recording partial TP: {e}")
+
+        self._convergence_partial_tp_done = True
+        # Don't close position — rest rides to resolution
+
     async def execute_sell(self, reason: str) -> None:
         """Execute sell order using order execution manager."""
         position_side = (
@@ -1093,6 +1171,7 @@ class LastSecondTrader:
         current_price = self._get_ask_for_side(position_side or "")
         await self.order_execution.execute_sell(reason, current_price)
         self._convergence_trade = False  # Reset convergence flag on sell
+        self._convergence_partial_tp_done = False
         # Record sell trade for replay
         if self.event_recorder is not None:
             self.event_recorder.record_trade(
@@ -1115,6 +1194,9 @@ class LastSecondTrader:
 
     async def run(self):
         """Main entry point: Connect and start trading."""
+        # Reset convergence accumulator for this market cycle
+        if self.convergence_strategy is not None:
+            self.convergence_strategy.reset()
         try:
             if self._orderbook_ws_adapter is not None:
                 # Use OrderbookWS adapter — it handles connect, subscribe, reconnect

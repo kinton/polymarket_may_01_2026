@@ -93,6 +93,8 @@ class TradingConfig(BaseSettings):
     convergence_window_start_s: float = Field(default=60.0)  # start at 60s before expiry
     convergence_window_end_s: float = Field(default=20.0)  # stop at 20s before expiry
     convergence_disable_stop_loss: bool = Field(default=True)  # hold until resolution
+    convergence_partial_tp_pct: float = Field(default=0.10)  # partial TP at +10%
+    convergence_partial_tp_fraction: float = Field(default=0.50)  # sell 50% of position
 
     # --- Oracle Signal strategy ---
     oracle_signal_enabled: bool = Field(default=True)

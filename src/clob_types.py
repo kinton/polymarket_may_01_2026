@@ -97,6 +97,8 @@ CONVERGENCE_MAX_CHEAP_PRICE = _cfg.convergence_max_cheap_price
 CONVERGENCE_WINDOW_START_S = _cfg.convergence_window_start_s
 CONVERGENCE_WINDOW_END_S = _cfg.convergence_window_end_s
 CONVERGENCE_DISABLE_STOP_LOSS = _cfg.convergence_disable_stop_loss
+CONVERGENCE_PARTIAL_TP_PCT = _cfg.convergence_partial_tp_pct
+CONVERGENCE_PARTIAL_TP_FRACTION = _cfg.convergence_partial_tp_fraction
 
 # Early entry mode constants
 # Oracle Signal strategy constants
