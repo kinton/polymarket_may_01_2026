@@ -5,21 +5,23 @@ Core idea: When the oracle price converges with price_to_beat (within threshold)
 the real odds are ~50/50. But the market may still show a skew — one side
 priced high, one side cheap. We buy the CHEAP side because it's undervalued.
 
-V2 — Accumulate-then-decide:
-Instead of buying on the first convergence tick, we OBSERVE the entire
-window (60s→10s) and make ONE decision at t=8s before expiry.
+V2 — Accumulate-and-trigger:
+Instead of buying on the first convergence tick, we accumulate evidence
+and buy AS SOON AS accumulated data meets ALL quality thresholds.
 
-Observation phase (60s → 10s):
+Observation window (180s → 20s before expiry):
   - Collect oracle snapshots + orderbook snapshots every tick
   - Track: delta_pct, cheap side, cheap price, expensive price
 
-Decision phase (≤ 10s):
-  - Need minimum N observations with convergence (|delta| < threshold)
-  - Cheap side must be CONSISTENT (≥70% of observations agree)
-  - Median cheap price must be ≤ max_cheap_price
-  - Oracle must not be strongly against cheap side on average
+Trigger (any tick after min_observations reached):
+  - Need minimum N observations
+  - ≥30% of ticks show convergence (|delta| < threshold)
+  - ≥70% of observations agree on cheap side (consistency)
+  - Median cheap price ≤ max_cheap_price
+  - Oracle not strongly against cheap side (on median)
 
-This eliminates noise-triggered entries. One decision, not forty lottery tickets.
+Buys early when evidence is clear, waits longer when noisy.
+No arbitrary fixed decision time.
 """
 
 from __future__ import annotations
@@ -96,7 +98,7 @@ class ConvergenceStrategy:
         min_observations: int = MIN_OBSERVATIONS,
         min_convergence_rate: float = MIN_CONVERGENCE_RATE,
         min_side_consistency: float = MIN_SIDE_CONSISTENCY,
-        decision_time_s: float = 55.0,     # decide at t=55s — buy early while uncertain
+        decision_time_s: float | None = None,  # deprecated, kept for compat
         logger: logging.Logger | None = None,
     ):
         self.threshold_pct = threshold_pct
@@ -108,7 +110,7 @@ class ConvergenceStrategy:
         self.min_observations = min_observations
         self.min_convergence_rate = min_convergence_rate
         self.min_side_consistency = min_side_consistency
-        self.decision_time_s = decision_time_s
+        self.decision_time_s = decision_time_s  # if set, forces fixed decision point
         self.logger = logger
 
         # Accumulation state (reset per market cycle)
@@ -177,12 +179,16 @@ class ConvergenceStrategy:
         ))
 
     def should_decide(self, time_remaining: float) -> bool:
-        """Check if it's time to make the decision."""
-        return (
-            not self._decided
-            and time_remaining <= self.decision_time_s
-            and len(self._observations) > 0
-        )
+        """Check if we have enough data to attempt a decision."""
+        if self._decided:
+            return False
+        if len(self._observations) < self.min_observations:
+            return False
+        # If fixed decision time set, wait for it
+        if self.decision_time_s is not None:
+            return time_remaining <= self.decision_time_s
+        # Otherwise: ready to evaluate as soon as we have enough observations
+        return True
 
     def decide(
         self,
@@ -191,21 +197,18 @@ class ConvergenceStrategy:
         orderbook: OrderBook,
     ) -> ConvergenceSignal | None:
         """
-        Called ONCE at decision time. Analyzes accumulated observations
-        and returns a signal (or None to skip).
+        Evaluate accumulated observations. Returns signal if all thresholds met.
+        
+        Can be called multiple times — only marks _decided=True on success.
+        Failed checks allow re-evaluation with more data on next tick.
         """
         if self._decided:
             return None
-        self._decided = True
 
         obs = self._observations
         total_ticks = max(self._total_ticks, 1)
 
         if len(obs) < self.min_observations:
-            self._log(
-                f"CONVERGENCE SKIP: only {len(obs)} observations "
-                f"(need {self.min_observations}), total_ticks={total_ticks}"
-            )
             return None
 
         # 1. Convergence rate: how many observations had |delta| < threshold?
@@ -213,10 +216,6 @@ class ConvergenceStrategy:
         convergence_rate = len(converging) / total_ticks
 
         if convergence_rate < self.min_convergence_rate:
-            self._log(
-                f"CONVERGENCE SKIP: convergence_rate={convergence_rate:.1%} "
-                f"({len(converging)}/{total_ticks} ticks) < {self.min_convergence_rate:.0%}"
-            )
             return None
 
         # 2. Side consistency: which side was cheap most often?
@@ -232,10 +231,6 @@ class ConvergenceStrategy:
             side_consistency = no_count / len(obs)
 
         if side_consistency < self.min_side_consistency:
-            self._log(
-                f"CONVERGENCE SKIP: side_consistency={side_consistency:.1%} "
-                f"(YES={yes_count}, NO={no_count}) < {self.min_side_consistency:.0%}"
-            )
             return None
 
         # 3. Use only observations matching dominant side for price analysis
@@ -248,36 +243,19 @@ class ConvergenceStrategy:
 
         # 4. Price filters
         if median_cheap > self.max_cheap_price:
-            self._log(
-                f"CONVERGENCE SKIP: median_cheap={median_cheap:.2f} "
-                f"> {self.max_cheap_price:.2f}"
-            )
             return None
 
         if median_expensive < self.min_skew:
-            self._log(
-                f"CONVERGENCE SKIP: median_expensive={median_expensive:.2f} "
-                f"< {self.min_skew:.2f}"
-            )
             return None
 
         # 5. Oracle "not against" filter (on median delta)
         if dominant_side == "NO" and median_delta > self.max_against_pct:
-            self._log(
-                f"CONVERGENCE SKIP: oracle against NO (median_delta={median_delta*100:+.4f}% > "
-                f"+{self.max_against_pct*100:.4f}%)"
-            )
             return None
         if dominant_side == "YES" and median_delta < -self.max_against_pct:
-            self._log(
-                f"CONVERGENCE SKIP: oracle against YES (median_delta={median_delta*100:+.4f}% < "
-                f"-{self.max_against_pct*100:.4f}%)"
-            )
             return None
 
         # 6. Use CURRENT orderbook for actual execution price
         if orderbook.best_ask_yes is None or orderbook.best_ask_no is None:
-            self._log("CONVERGENCE SKIP: no current orderbook at decision time")
             return None
 
         if dominant_side == "YES":
@@ -289,24 +267,24 @@ class ConvergenceStrategy:
 
         # Re-check current price (might have changed since observation)
         if buy_price > self.max_cheap_price:
-            self._log(
-                f"CONVERGENCE SKIP: current buy_price={buy_price:.2f} "
-                f"> {self.max_cheap_price:.2f}"
-            )
             return None
 
         oracle_price = oracle_snapshot.price if oracle_snapshot else side_obs[-1].oracle_price
         price_to_beat = oracle_snapshot.price_to_beat if oracle_snapshot and oracle_snapshot.price_to_beat else side_obs[-1].price_to_beat
         current_delta = oracle_snapshot.delta_pct if oracle_snapshot and oracle_snapshot.delta_pct is not None else median_delta
 
+        # All checks passed — commit to this decision
+        self._decided = True
+
         self._log(
-            f"CONVERGENCE DECIDE: {dominant_side} ({dominant_label}) | "
+            f"CONVERGENCE TRIGGER: {dominant_side} ({dominant_label}) | "
             f"obs={len(obs)}/{total_ticks} ticks | "
             f"conv_rate={convergence_rate:.0%} | "
             f"side_consistency={side_consistency:.0%} | "
             f"median_cheap={median_cheap:.2f} | "
             f"median_delta={median_delta*100:+.4f}% | "
-            f"buy_price={buy_price:.2f}"
+            f"buy_price={buy_price:.2f} | "
+            f"t={time_remaining:.1f}s"
         )
 
         return ConvergenceSignal(
@@ -333,17 +311,21 @@ class ConvergenceStrategy:
         orderbook: OrderBook,
     ) -> ConvergenceSignal | None:
         """
-        Legacy interface — now routes through accumulate-then-decide.
+        Main interface — observe and evaluate on every tick.
 
-        During observation window: accumulates data, returns None.
-        At decision time: analyzes and returns signal (or None).
+        Each tick:
+        1. Accumulate observation (if in window)
+        2. If enough evidence accumulated → evaluate and potentially trigger
+
+        Returns signal when ready, None otherwise.
         """
-        # Observation phase
-        if time_remaining > self.decision_time_s:
-            self.observe(time_remaining, oracle_snapshot, orderbook)
+        if self._decided:
             return None
 
-        # Decision phase
+        # Accumulate observation
+        self.observe(time_remaining, oracle_snapshot, orderbook)
+
+        # Try to decide if we have enough data
         if self.should_decide(time_remaining):
             return self.decide(time_remaining, oracle_snapshot, orderbook)
 

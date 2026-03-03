@@ -35,41 +35,22 @@ def _make_orderbook(ask_yes: float = 0.10, ask_no: float = 0.90) -> OrderBook:
     return ob
 
 
-def _accumulate_and_decide(
-    cs: ConvergenceStrategy,
-    snap: OracleSnapshot,
-    ob: OrderBook,
-    obs_times: list[float] | None = None,
-    decision_time: float = 8.0,
-) -> ConvergenceSignal | None:
-    """Helper: feed observations then call decide."""
-    if obs_times is None:
-        obs_times = [170.0, 150.0, 130.0, 110.0, 90.0, 70.0]
-    cs.reset()
-    for t in obs_times:
-        cs.observe(t, snap, ob)
-    return cs.decide(decision_time, snap, ob)
-
-
 def _full_cycle(
     cs: ConvergenceStrategy,
     snap: OracleSnapshot,
     ob: OrderBook,
     obs_times: list[float] | None = None,
-    decision_time: float | None = None,
+    **kwargs,
 ) -> ConvergenceSignal | None:
-    """Helper: simulate full cycle using get_signal (legacy interface)."""
+    """Helper: simulate full cycle — feed ticks via get_signal, return first trigger or None."""
     cs.reset()
     if obs_times is None:
         obs_times = [170.0, 150.0, 130.0, 110.0, 90.0, 70.0]
-    decision_t = decision_time if decision_time is not None else cs.decision_time_s
     for t in obs_times:
-        if t > decision_t:  # only observe above decision time
-            result = cs.get_signal(t, snap, ob)
-            assert result is None, f"Should not trigger during observation at t={t}"
-        else:
-            cs.observe(t, snap, ob)
-    return cs.get_signal(decision_t, snap, ob)
+        signal = cs.get_signal(t, snap, ob)
+        if signal is not None:
+            return signal
+    return None
 
 
 class TestCheapSideBuying:
@@ -121,8 +102,7 @@ class TestNoTriggerConditions:
         cs = ConvergenceStrategy(min_observations=1)
         ob = _make_orderbook()
         cs.reset()
-        cs.observe(100.0, None, ob)
-        signal = cs.decide(55.0, None, ob)
+        signal = cs.get_signal(100.0, None, ob)
         assert signal is None
 
     def test_no_price_to_beat(self):
@@ -184,26 +164,30 @@ class TestAccumulation:
         ob_yes = _make_orderbook(ask_yes=0.15, ask_no=0.85)
         ob_no = _make_orderbook(ask_yes=0.85, ask_no=0.15)
         cs.reset()
-        # Alternate sides
+        # Alternate sides — should never trigger due to inconsistency
+        signal = None
         for t, ob in [(170.0, ob_yes), (150.0, ob_no), (130.0, ob_yes),
                        (110.0, ob_no), (90.0, ob_yes), (70.0, ob_no)]:
-            cs.get_signal(t, snap, ob)
-        signal = cs.decide(55.0, snap, ob_yes)
+            result = cs.get_signal(t, snap, ob)
+            if result is not None:
+                signal = result
         assert signal is None
 
     def test_low_convergence_rate_blocks(self):
-        """Most ticks NOT converged → skip."""
-        cs = ConvergenceStrategy(threshold_pct=0.0001, min_observations=2,
+        """Most ticks NOT converged → skip. Need enough ticks to dilute rate below threshold."""
+        cs = ConvergenceStrategy(threshold_pct=0.0001, min_observations=5,
                                  min_convergence_rate=0.50, min_skew=0.75, max_cheap_price=0.30)
         snap_converged = _make_snapshot(price=85000.0, price_to_beat=85000.0)
         snap_diverged = _make_snapshot(price=86000.0, price_to_beat=85000.0)
         ob = _make_orderbook(ask_yes=0.15, ask_no=0.85)
         cs.reset()
-        # 1 converged, 5 diverged
-        cs.observe(170.0, snap_converged, ob)
-        for t in [150.0, 130.0, 110.0, 90.0, 70.0]:
-            cs.observe(t, snap_diverged, ob)
-        signal = cs.decide(55.0, snap_diverged, ob)
+        # 1 converged, then 5 diverged — convergence_rate = 1/6 < 50%
+        signal = None
+        for t, s in [(170.0, snap_converged), (160.0, snap_diverged), (150.0, snap_diverged),
+                      (140.0, snap_diverged), (130.0, snap_diverged), (120.0, snap_diverged)]:
+            result = cs.get_signal(t, s, ob)
+            if result is not None:
+                signal = result
         assert signal is None
 
     def test_decide_only_once(self):
@@ -214,8 +198,8 @@ class TestAccumulation:
         ob = _make_orderbook(ask_yes=0.15, ask_no=0.85)
         signal = _full_cycle(cs, snap, ob)
         assert signal is not None
-        # Second call should return None
-        signal2 = cs.decide(7.0, snap, ob)
+        # After trigger, further calls return None
+        signal2 = cs.get_signal(60.0, snap, ob)
         assert signal2 is None
 
     def test_reset_clears_state(self):
@@ -238,7 +222,7 @@ class TestAccumulation:
         ob = _make_orderbook(ask_yes=0.15, ask_no=0.85)
         signal = _full_cycle(cs, snap, ob)
         assert signal is not None
-        assert signal.observations >= 5
+        assert signal.observations >= 3
         assert signal.convergence_rate > 0
         assert signal.side_consistency > 0
 
@@ -309,9 +293,8 @@ class TestEdgeCases:
         cs = ConvergenceStrategy(
             threshold_pct=0.001, min_skew=0.70, max_cheap_price=0.35,
             window_start_s=120.0, window_end_s=10.0, min_observations=3,
-            decision_time_s=12.0,
         )
         snap = _make_snapshot(price=85040.0, price_to_beat=85000.0)  # 0.047%
         ob = _make_orderbook(ask_yes=0.25, ask_no=0.75)
-        signal = _full_cycle(cs, snap, ob, obs_times=[90.0, 60.0, 30.0, 15.0], decision_time=12.0)
+        signal = _full_cycle(cs, snap, ob, obs_times=[90.0, 60.0, 30.0, 15.0])
         assert signal is not None
