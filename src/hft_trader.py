@@ -952,44 +952,39 @@ class LastSecondTrader:
             ):
                 return
 
-            # Priority 1: Convergence strategy (buy cheap side when oracle ≈ price_to_beat)
+            # Priority 1: Convergence strategy (buy oracle-favored side when near beat)
             if (
                 self.convergence_strategy is not None
                 and self.oracle_guard.enabled
-                and self.convergence_strategy.should_enter(
+            ):
+                conv_signal = self.convergence_strategy.get_signal(
                     time_remaining, self.oracle_guard.snapshot, self.orderbook
                 )
-            ):
-                cheap_side, cheap_price = self.convergence_strategy.get_cheap_side(
-                    self.orderbook
-                )
-                snap = self.oracle_guard.snapshot
-                delta_pct_str = (
-                    f"{snap.delta_pct * 100:.4f}%" if snap and snap.delta_pct is not None else "-"
-                )
-                self._log(
-                    f"🎯 [{self.market_name}] CONVERGENCE TRIGGER! "
-                    f"{cheap_side} @ ${cheap_price:.4f} | "
-                    f"delta_pct={delta_pct_str} | "
-                    f"t={time_remaining:.1f}s"
-                )
-
-                if self.dry_run_sim:
-                    await self.dry_run_sim.record_buy(
-                        side=cheap_side,
-                        price=cheap_price,
-                        amount=self.trade_size,
-                        confidence=cheap_price,
-                        time_remaining=time_remaining,
-                        reason="convergence",
-                        oracle_snap=self.oracle_guard.snapshot,
-                        disable_stop_loss=True,
+                if conv_signal is not None:
+                    self._log(
+                        f"🎯 [{self.market_name}] CONVERGENCE TRIGGER! "
+                        f"{conv_signal.side} ({conv_signal.side_label}) @ ${conv_signal.price:.4f} | "
+                        f"delta_pct={conv_signal.delta_pct * 100:+.4f}% | "
+                        f"dir={conv_signal.direction} | "
+                        f"t={time_remaining:.1f}s"
                     )
 
-                self._planned_trade_side = cheap_side
-                self._convergence_trade = True
-                await self.execute_order()
-                return
+                    if self.dry_run_sim:
+                        await self.dry_run_sim.record_buy(
+                            side=conv_signal.side,
+                            price=conv_signal.price,
+                            amount=self.trade_size,
+                            confidence=conv_signal.price,
+                            time_remaining=time_remaining,
+                            reason="convergence",
+                            oracle_snap=self.oracle_guard.snapshot,
+                            disable_stop_loss=True,
+                        )
+
+                    self._planned_trade_side = conv_signal.side
+                    self._convergence_trade = True
+                    await self.execute_order()
+                    return
 
             # Priority 2: Oracle Signal strategy (buy oracle-favored side when market lags)
             if (

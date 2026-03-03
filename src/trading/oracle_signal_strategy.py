@@ -54,8 +54,9 @@ class OracleSignalStrategy:
     def __init__(
         self,
         min_delta_pct: float = 0.0010,       # 10 basis points = 0.10%
-        max_entry_price: float = 0.55,        # don't buy above 55¢
-        min_edge_pct: float = 0.10,           # require ≥10% estimated edge
+        max_entry_price: float = 0.35,        # don't buy above 35¢ (was 55¢)
+        min_edge_pct: float = 0.15,           # require ≥15% estimated edge (was 10%)
+        min_zscore: float = 1.0,              # require |z-score| >= 1.0 for direction confidence
         window_start_s: float = 60.0,         # start at 60s before expiry
         window_end_s: float = 5.0,            # stop at 5s before expiry
         # Fair value estimation: maps delta_pct ranges to fair values
@@ -66,6 +67,7 @@ class OracleSignalStrategy:
         self.min_delta_pct = min_delta_pct
         self.max_entry_price = max_entry_price
         self.min_edge_pct = min_edge_pct
+        self.min_zscore = min_zscore
         self.window_start_s = window_start_s
         self.window_end_s = window_end_s
         self.logger = logger
@@ -73,11 +75,11 @@ class OracleSignalStrategy:
         # Default delta→fair value mapping (conservative estimates)
         # (min_abs_delta_pct, estimated_fair_value_of_correct_side)
         self.delta_to_fair = delta_to_fair or [
-            (0.0010, 0.60),   # 10bp → ~60% chance
-            (0.0020, 0.65),   # 20bp → ~65%
-            (0.0050, 0.75),   # 50bp → ~75%
-            (0.0100, 0.85),   # 100bp → ~85%
-            (0.0200, 0.92),   # 200bp → ~92%
+            (0.0010, 0.58),   # 10bp → ~58% chance (was 60%)
+            (0.0020, 0.63),   # 20bp → ~63% (was 65%)
+            (0.0050, 0.73),   # 50bp → ~73% (was 75%)
+            (0.0100, 0.83),   # 100bp → ~83% (was 85%)
+            (0.0200, 0.90),   # 200bp → ~90% (was 92%)
         ]
         # Sort by delta ascending
         self.delta_to_fair.sort(key=lambda x: x[0])
@@ -178,6 +180,11 @@ class OracleSignalStrategy:
         abs_delta = abs(oracle_snapshot.delta_pct)
         if abs_delta < self.min_delta_pct:
             return None
+
+        # 3b. Z-score confirmation (oracle direction must be statistically significant)
+        if oracle_snapshot.zscore is not None:
+            if abs(oracle_snapshot.zscore) < self.min_zscore:
+                return None
 
         # 4. Determine correct side
         oracle_result = self.get_oracle_side(oracle_snapshot, up_side, down_side)

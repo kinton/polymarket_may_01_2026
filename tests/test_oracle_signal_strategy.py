@@ -65,7 +65,7 @@ class TestOracleSignalStrategy:
 
     def test_no_signal_price_too_high(self):
         """Correct side ask is 0.60 > max_entry_price 0.55."""
-        strat = OracleSignalStrategy(min_delta_pct=0.001, max_entry_price=0.55)
+        strat = OracleSignalStrategy(min_delta_pct=0.001, max_entry_price=0.55, min_zscore=0.0)
         snap = _snap(price=100.20, beat=100.0)
         ob = _ob(ask_yes=0.60, ask_no=0.40)
 
@@ -74,7 +74,7 @@ class TestOracleSignalStrategy:
 
     def test_no_signal_outside_time_window(self):
         """Too early or too late."""
-        strat = OracleSignalStrategy(window_start_s=60.0, window_end_s=5.0)
+        strat = OracleSignalStrategy(window_start_s=60.0, window_end_s=5.0, max_entry_price=0.55, min_edge_pct=0.05, min_zscore=0.0)
         snap = _snap(price=100.20, beat=100.0)
         ob = _ob()
 
@@ -102,7 +102,7 @@ class TestOracleSignalStrategy:
 
     def test_edge_calculation(self):
         """Verify edge = (fair - price) / price."""
-        strat = OracleSignalStrategy(min_delta_pct=0.001, min_edge_pct=0.0)
+        strat = OracleSignalStrategy(min_delta_pct=0.001, min_edge_pct=0.0, max_entry_price=0.55, min_zscore=0.0)
         snap = _snap(price=100.20, beat=100.0)  # +0.20% → ~65% fair
         ob = _ob(ask_yes=0.50)
 
@@ -113,7 +113,7 @@ class TestOracleSignalStrategy:
 
     def test_fair_value_increases_with_delta(self):
         """Bigger delta → higher fair value."""
-        strat = OracleSignalStrategy(min_delta_pct=0.001, min_edge_pct=0.0)
+        strat = OracleSignalStrategy(min_delta_pct=0.001, min_edge_pct=0.0, max_entry_price=0.55, min_zscore=0.0)
         ob = _ob(ask_yes=0.40)
 
         sig_small = strat.get_signal(30.0, _snap(price=100.20, beat=100.0), ob, "YES", "NO")
@@ -124,7 +124,7 @@ class TestOracleSignalStrategy:
 
     def test_should_enter_delegates_to_get_signal(self):
         """should_enter returns True iff get_signal is not None."""
-        strat = OracleSignalStrategy(min_delta_pct=0.001, min_edge_pct=0.05)
+        strat = OracleSignalStrategy(min_delta_pct=0.001, min_edge_pct=0.05, max_entry_price=0.55, min_zscore=0.0)
         snap = _snap(price=100.20, beat=100.0)
         ob = _ob()
 

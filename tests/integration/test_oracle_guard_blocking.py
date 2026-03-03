@@ -51,19 +51,20 @@ async def test_convergence_blocked_when_oracle_not_converged(integration_trader)
 
 @pytest.mark.asyncio
 async def test_convergence_fires_when_oracle_converged(integration_trader):
-    """Trade fires when oracle delta_pct < threshold."""
+    """Trade fires when oracle delta_pct < threshold and direction aligns with cheap side."""
     integration_trader.convergence_strategy = ConvergenceStrategy(
-        threshold_pct=0.0005, min_skew=0.80, max_cheap_price=0.40,
+        threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30,
         window_start_s=60.0, window_end_s=20.0,
     )
     integration_trader.oracle_guard.enabled = True
-    # delta_pct = 0.03% < 0.05% threshold
+    # Oracle slightly below beat → DOWN/NO favored, delta_pct = -0.02%
     integration_trader.oracle_guard.snapshot = OracleSnapshot(
-        ts_ms=1000000, price=100.03, n_points=10,
-        price_to_beat=100.0, delta=0.03, delta_pct=0.0003,
-        vol_pct=0.001, slope_usd_per_s=0.01, zscore=0.5,
+        ts_ms=1000000, price=99.98, n_points=10,
+        price_to_beat=100.0, delta=-0.02, delta_pct=-0.0002,
+        vol_pct=0.001, slope_usd_per_s=-0.01, zscore=-0.5,
     )
 
+    # Skewed: YES expensive, NO cheap — aligns with oracle DOWN direction
     integration_trader.orderbook = _skewed_orderbook()
     integration_trader._update_winning_side()
     integration_trader.execute_order = AsyncMock()
