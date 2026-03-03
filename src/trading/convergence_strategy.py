@@ -45,9 +45,9 @@ class ConvergenceStrategy:
 
     def __init__(
         self,
-        threshold_pct: float = 0.0002,    # 2bp — VERY tight convergence required
+        threshold_pct: float = 0.0003,    # 3bp convergence
         min_skew: float = 0.75,            # expensive side >= 75¢
-        max_cheap_price: float = 0.30,     # only buy at 30¢ or less
+        max_cheap_price: float = 0.35,     # only buy at 35¢ or less
         window_start_s: float = 60.0,
         window_end_s: float = 20.0,
         logger: logging.Logger | None = None,
