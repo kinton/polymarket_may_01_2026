@@ -983,6 +983,7 @@ class LastSecondTrader:
                         time_remaining=time_remaining,
                         reason="convergence",
                         oracle_snap=self.oracle_guard.snapshot,
+                        disable_stop_loss=True,
                     )
 
                 self._planned_trade_side = cheap_side

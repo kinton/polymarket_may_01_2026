@@ -235,3 +235,79 @@ class TestResolveAllMarkets:
             resolved = await sim.resolve_all_markets(mock_client)
             assert resolved == []
         _run(run())
+
+    def test_resolve_updown_market_custom_outcomes(self, db):
+        """BTC Up or Down: tokens have outcome='Up'/'Down', not 'YES'/'NO'.
+
+        Regression test: positions are stored with side='YES'/'NO', but
+        the winning token outcome was 'Up' — must map via token index.
+        """
+        async def run():
+            sim = DryRunSimulator(db=db, market_name="resolver", condition_id="resolver", dry_run=True)
+
+            # Bot bought YES side (token index 0 = "Up") at $0.26
+            await _open_position(
+                db, condition_id="updown_market", side="YES",
+                entry_price=0.26, amount=3.41,
+            )
+
+            mock_client = MagicMock()
+
+            def get_market(cid):
+                return {
+                    "closed": True,
+                    "accepting_orders": False,
+                    "is_50_50_outcome": False,
+                    "tokens": [
+                        {"outcome": "Up", "winner": True},   # index 0 = YES
+                        {"outcome": "Down", "winner": False}, # index 1 = NO
+                    ],
+                }
+
+            mock_client.get_market = get_market
+
+            resolved = await sim.resolve_all_markets(mock_client)
+
+            assert len(resolved) == 1
+            r = resolved[0]
+            assert r["status"] == "resolved_win"
+            assert r["exit_price"] == 1.0
+            assert abs(r["pnl"] - (1.0 - 0.26) * 3.41) < 0.01
+            assert r["pnl_pct"] > 200  # ~284%
+
+        _run(run())
+
+    def test_resolve_updown_market_losing_side(self, db):
+        """BTC Up or Down: bought YES (Up) but Down wins → loss."""
+        async def run():
+            sim = DryRunSimulator(db=db, market_name="resolver", condition_id="resolver", dry_run=True)
+
+            await _open_position(
+                db, condition_id="updown_loss", side="YES",
+                entry_price=0.70, amount=5.0,
+            )
+
+            mock_client = MagicMock()
+
+            def get_market(cid):
+                return {
+                    "closed": True,
+                    "accepting_orders": False,
+                    "is_50_50_outcome": False,
+                    "tokens": [
+                        {"outcome": "Up", "winner": False},   # index 0 = YES
+                        {"outcome": "Down", "winner": True},  # index 1 = NO
+                    ],
+                }
+
+            mock_client.get_market = get_market
+
+            resolved = await sim.resolve_all_markets(mock_client)
+
+            assert len(resolved) == 1
+            r = resolved[0]
+            assert r["status"] == "resolved_loss"
+            assert r["exit_price"] == 0.0
+            assert abs(r["pnl"] - (-0.70 * 5.0)) < 0.01
+
+        _run(run())

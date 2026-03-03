@@ -215,7 +215,7 @@ class LogParser:
                 # Check for BUY order (successful buy execution)
                 buy_match = self.ORDER_BUY_PATTERN.search(line)
                 if buy_match and current_trade:
-                    amount = float(buy_match.group(1))
+                    amount = float(buy_match.group(2))
                     current_trade.amount = amount
                     current_trade.entry_price = None  # Will be determined by side
                     # Determine entry price from order book (simplified)

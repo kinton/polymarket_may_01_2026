@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS dry_run_positions (
     trailing_stop REAL,
     stop_loss_price REAL,
     take_profit_price REAL,
+    disable_stop_loss INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'open',  -- 'open', 'stop_loss', 'take_profit', 'trailing_stop', 'expired'
     pnl REAL,
     pnl_pct REAL,
@@ -613,18 +614,19 @@ class TradeDatabase:
         trailing_stop: float | None = None,
         stop_loss_price: float | None = None,
         take_profit_price: float | None = None,
+        disable_stop_loss: bool = False,
         opened_at: float,
     ) -> int:
         cur = await self._db.execute(
             """INSERT INTO dry_run_positions
                (trade_id, condition_id, market_name, side, entry_price,
                 amount, trailing_stop, stop_loss_price, take_profit_price,
-                status, opened_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                disable_stop_loss, status, opened_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 trade_id, condition_id, market_name, side, entry_price,
                 amount, trailing_stop, stop_loss_price, take_profit_price,
-                "open", opened_at,
+                1 if disable_stop_loss else 0, "open", opened_at,
             ),
         )
         await self._db.commit()

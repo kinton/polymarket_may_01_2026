@@ -55,6 +55,7 @@ class DryRunSimulator:
         time_remaining: float | None = None,
         reason: str = "trigger",
         oracle_snap: Any | None = None,
+        disable_stop_loss: bool = False,
     ) -> int:
         """Record a buy decision and open a virtual position."""
         logger.info(
@@ -97,9 +98,14 @@ class DryRunSimulator:
         )
 
         # Open virtual position
-        stop_loss = max(price * (1 - STOP_LOSS_PCT), STOP_LOSS_ABSOLUTE)
-        take_profit = price * (1 + TAKE_PROFIT_PCT)
-        trailing = max(price * (1 - TRAILING_STOP_PCT), STOP_LOSS_ABSOLUTE)
+        if disable_stop_loss:
+            stop_loss = None
+            trailing = None
+            take_profit = None
+        else:
+            stop_loss = max(price * (1 - STOP_LOSS_PCT), STOP_LOSS_ABSOLUTE)
+            take_profit = price * (1 + TAKE_PROFIT_PCT)
+            trailing = max(price * (1 - TRAILING_STOP_PCT), STOP_LOSS_ABSOLUTE)
 
         pos_id = await self._db.open_dry_run_position(
             trade_id=trade_id,
@@ -111,6 +117,7 @@ class DryRunSimulator:
             trailing_stop=trailing,
             stop_loss_price=stop_loss,
             take_profit_price=take_profit,
+            disable_stop_loss=disable_stop_loss,
             opened_at=now,
         )
         self._open_position_ids.append(pos_id)
@@ -168,6 +175,13 @@ class DryRunSimulator:
 
             entry = pos["entry_price"]
             amount = pos["amount"]
+            pos_disable_sl = pos.get("disable_stop_loss", 0)
+            now = time.time()
+
+            # If stop_loss disabled (convergence), only resolve via market resolution
+            if pos_disable_sl:
+                continue
+
             stop_loss = pos.get("stop_loss_price") or max(
                 entry * (1 - STOP_LOSS_PCT), STOP_LOSS_ABSOLUTE
             )
@@ -177,7 +191,6 @@ class DryRunSimulator:
             )
 
             effective_stop = max(stop_loss, trailing)
-            now = time.time()
 
             if current_price <= effective_stop:
                 # Stop-loss triggered
@@ -476,8 +489,13 @@ class DryRunSimulator:
                 continue
 
             # Case 2: Normal resolution with a clear winner
-            winning_side = winning_token.get("outcome", "YES")
-            outcome_str = winning_side
+            # Map the winning token to YES/NO based on its index in the tokens array.
+            # In Polymarket binary markets, tokens[0] = YES, tokens[1] = NO.
+            # The token's "outcome" field may have custom names like "Up"/"Down",
+            # which don't match position side ("YES"/"NO").
+            winning_index = tokens.index(winning_token) if winning_token in tokens else 0
+            winning_side = "YES" if winning_index == 0 else "NO"
+            outcome_str = winning_token.get("outcome", winning_side)
 
             resolved = await self.resolve_position(cid, outcome_str, winning_side)
             all_resolved.extend(resolved)

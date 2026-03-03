@@ -556,6 +556,8 @@ class PositionSettler:
     async def check_dryrun_resolution(self, db: Optional[Any] = None):
         """Check and resolve any settled dry-run positions.
 
+        After resolution, attempts auto-redemption of winning positions on-chain.
+
         Args:
             db: TradeDatabase instance. Uses self._trade_db if not provided,
                 or creates a temporary one as last resort.
@@ -584,6 +586,8 @@ class PositionSettler:
                     f"across {len(condition_ids)} markets"
                 )
 
+                resolved_all: list[dict] = []
+
                 # If we have a CLOB client, use resolve_all_markets for best results
                 if self.client is not None:
                     sim = DryRunSimulator(
@@ -592,8 +596,8 @@ class PositionSettler:
                         condition_id="resolver",
                         dry_run=True,
                     )
-                    resolved = await sim.resolve_all_markets(self.client)
-                    for r in resolved:
+                    resolved_all = await sim.resolve_all_markets(self.client)
+                    for r in resolved_all:
                         self.logger.info(
                             f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
                         )
@@ -610,15 +614,52 @@ class PositionSettler:
                             condition_id=cid, dry_run=True,
                         )
                         resolved = await sim.resolve_position(cid, winning_side, winning_side)
+                        resolved_all.extend(resolved)
                         for r in resolved:
                             self.logger.info(
                                 f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
                             )
+
+                # Auto-redeem winning positions on-chain
+                wins = [r for r in resolved_all if r.get("status") == "resolved_win"]
+                if wins and not self.dry_run:
+                    await self._auto_redeem_wins(_db)
+
             finally:
                 if owns_db:
                     await _db.close()
         except Exception as e:
             self.logger.error(f"Error checking dry-run resolution: {e}", exc_info=True)
+
+    async def _auto_redeem_wins(self, db: Any) -> None:
+        """Attempt on-chain redemption of winning positions.
+
+        Only runs in live mode (not dry_run). Requires PRIVATE_KEY in env.
+        """
+        try:
+            from src.trading.auto_redeem import AutoRedeemer, redeem_resolved_wins
+
+            private_key = os.getenv("PRIVATE_KEY")
+            proxy_address = os.getenv("POLYMARKET_PROXY_ADDRESS")
+
+            if not private_key:
+                self.logger.warning("Cannot auto-redeem: PRIVATE_KEY not set")
+                return
+
+            redeemer = AutoRedeemer(
+                private_key=private_key,
+                proxy_address=proxy_address,
+                dry_run=self.dry_run,
+                logger_=self.logger,
+            )
+
+            results = await redeem_resolved_wins(db, redeemer, self.client)
+            if results:
+                self.logger.info(
+                    f"Auto-redeemed {len(results)} winning position(s)"
+                )
+        except Exception as e:
+            self.logger.error(f"Auto-redeem error: {e}", exc_info=True)
 
     async def run(self, interval: int = 300):
         """
