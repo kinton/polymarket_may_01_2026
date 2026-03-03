@@ -45,20 +45,19 @@ async def test_convergence_trigger(integration_trader):
     from src.trading.convergence_strategy import ConvergenceStrategy
 
     integration_trader.convergence_strategy = ConvergenceStrategy(
-        threshold_pct=0.0003,
+        threshold_pct=0.0002,
         min_skew=0.75,
         max_cheap_price=0.30,
         window_start_s=60.0,
         window_end_s=20.0,
     )
     integration_trader.oracle_guard.enabled = True
-    # Oracle slightly BELOW beat → DOWN/NO favored, delta_pct negative
+    # Oracle at beat → 50/50 → buy cheap side
     integration_trader.oracle_guard.snapshot = _make_oracle_snapshot(
-        price=99.98, price_to_beat=100.0, delta_pct=-0.0002,
+        price=100.0, price_to_beat=100.0, delta_pct=0.0,
     )
 
-    # Skewed orderbook: YES expensive (market thinks UP), NO cheap
-    # Oracle says DOWN → NO is the oracle-favored AND cheap side ✓
+    # Skewed orderbook: YES expensive, NO cheap → buy NO
     ob = OrderBook()
     ob.best_ask_yes = 0.80
     ob.best_bid_yes = 0.79

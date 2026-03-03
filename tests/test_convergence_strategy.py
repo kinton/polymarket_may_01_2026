@@ -1,4 +1,4 @@
-"""Tests for the Convergence Trading Strategy (direction-aware v2)."""
+"""Tests for the Convergence Trading Strategy (v2 — buy cheap side when oracle ≈ beat)."""
 
 import pytest
 
@@ -14,28 +14,18 @@ def _make_snapshot(
     delta_pct: float | None = None,
     n_points: int = 10,
 ) -> OracleSnapshot:
-    """Helper to create OracleSnapshot with auto-calculated delta/delta_pct."""
     if price_to_beat is not None and delta is None:
         delta = price - price_to_beat
     if price_to_beat is not None and delta_pct is None and delta is not None:
         delta_pct = delta / price_to_beat if price_to_beat else None
     return OracleSnapshot(
-        ts_ms=1000000,
-        price=price,
-        n_points=n_points,
-        price_to_beat=price_to_beat,
-        delta=delta,
-        delta_pct=delta_pct,
-        vol_pct=0.001,
-        slope_usd_per_s=0.0,
-        zscore=0.0,
+        ts_ms=1000000, price=price, n_points=n_points,
+        price_to_beat=price_to_beat, delta=delta, delta_pct=delta_pct,
+        vol_pct=0.001, slope_usd_per_s=0.0, zscore=0.0,
     )
 
 
-def _make_orderbook(
-    ask_yes: float = 0.10,
-    ask_no: float = 0.90,
-) -> OrderBook:
+def _make_orderbook(ask_yes: float = 0.10, ask_no: float = 0.90) -> OrderBook:
     ob = OrderBook()
     ob.best_ask_yes = ask_yes
     ob.best_bid_yes = ask_yes - 0.01
@@ -45,75 +35,51 @@ def _make_orderbook(
     return ob
 
 
-class TestDirectionAwareness:
-    """Core test: strategy respects oracle direction."""
+class TestCheapSideBuying:
+    """Core: buys the cheap side when oracle is at beat."""
 
-    def test_oracle_down_buys_no(self):
-        """Oracle below beat → DOWN → buy NO (cheap side must be NO)."""
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
-        # price below beat → delta_pct negative → DOWN/NO
-        snap = _make_snapshot(price=84980.0, price_to_beat=85000.0)  # -0.0235%
-        ob = _make_orderbook(ask_yes=0.80, ask_no=0.20)  # NO is cheap
+    def test_buys_cheap_yes(self):
+        """YES cheap, NO expensive → buy YES."""
+        cs = ConvergenceStrategy(threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30)
+        snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)  # exact convergence
+        ob = _make_orderbook(ask_yes=0.15, ask_no=0.85)
+        signal = cs.get_signal(30.0, snap, ob)
+        assert signal is not None
+        assert signal.side == "YES"
+        assert signal.price == 0.15
+
+    def test_buys_cheap_no(self):
+        """NO cheap, YES expensive → buy NO."""
+        cs = ConvergenceStrategy(threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30)
+        snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)
+        ob = _make_orderbook(ask_yes=0.80, ask_no=0.20)
         signal = cs.get_signal(30.0, snap, ob)
         assert signal is not None
         assert signal.side == "NO"
-        assert signal.side_label == "DOWN"
-        assert signal.direction == "oracle_down"
+        assert signal.price == 0.20
 
-    def test_oracle_up_buys_yes(self):
-        """Oracle above beat → UP → buy YES (cheap side must be YES)."""
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
-        # price above beat → delta_pct positive → UP/YES
-        snap = _make_snapshot(price=85020.0, price_to_beat=85000.0)  # +0.0235%
-        ob = _make_orderbook(ask_yes=0.20, ask_no=0.80)  # YES is cheap
-        signal = cs.get_signal(30.0, snap, ob)
-        assert signal is not None
-        assert signal.side == "YES"
-        assert signal.side_label == "UP"
-        assert signal.direction == "oracle_up"
-
-    def test_oracle_up_but_yes_expensive_no_trade(self):
-        """Oracle says UP but YES is expensive → no trade (don't buy against direction)."""
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
-        snap = _make_snapshot(price=85020.0, price_to_beat=85000.0)  # UP
-        ob = _make_orderbook(ask_yes=0.80, ask_no=0.20)  # YES expensive, NO cheap
-        signal = cs.get_signal(30.0, snap, ob)
-        # Oracle says buy YES but YES is $0.80 > max_cheap_price → no trade
-        assert signal is None
-
-    def test_oracle_down_but_no_expensive_no_trade(self):
-        """Oracle says DOWN but NO is expensive → no trade."""
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
-        snap = _make_snapshot(price=84980.0, price_to_beat=85000.0)  # DOWN
-        ob = _make_orderbook(ask_yes=0.20, ask_no=0.80)  # NO expensive
-        signal = cs.get_signal(30.0, snap, ob)
-        assert signal is None
-
-    def test_neutral_oracle_buys_cheap_side(self):
-        """Oracle exactly at beat → neutral → buy cheaper side."""
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
-        snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)  # exact
-        ob = _make_orderbook(ask_yes=0.15, ask_no=0.85)  # YES cheap
-        signal = cs.get_signal(30.0, snap, ob)
-        assert signal is not None
-        assert signal.side == "YES"
-        assert signal.direction == "neutral"
+    def test_slightly_off_beat_still_converged(self):
+        """Oracle 1bp off beat → still converged."""
+        cs = ConvergenceStrategy(threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30)
+        # 1bp = 0.0001 < 0.0002 threshold
+        snap = _make_snapshot(price=85008.5, price_to_beat=85000.0)  # +0.01%
+        ob = _make_orderbook(ask_yes=0.20, ask_no=0.80)
+        assert cs.should_enter(30.0, snap, ob) is True
 
 
 class TestShouldEnter:
-    """Test entry condition checks."""
+    """Entry condition checks."""
 
     def test_all_conditions_met(self):
-        """Entry when all conditions are met with oracle direction alignment."""
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
-        snap = _make_snapshot(price=84985.0, price_to_beat=85000.0)  # -0.018% < 0.03%
-        ob = _make_orderbook(ask_yes=0.80, ask_no=0.20)  # oracle DOWN, NO cheap ✓
+        cs = ConvergenceStrategy(threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30)
+        snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)
+        ob = _make_orderbook(ask_yes=0.10, ask_no=0.90)
         assert cs.should_enter(30.0, snap, ob) is True
 
     def test_delta_too_large(self):
-        """Reject when delta exceeds threshold."""
-        cs = ConvergenceStrategy(threshold_pct=0.0003)
-        snap = _make_snapshot(price=86000.0, price_to_beat=85000.0)  # 1.17% >> threshold
+        """Not converged — delta too big."""
+        cs = ConvergenceStrategy(threshold_pct=0.0002)
+        snap = _make_snapshot(price=86000.0, price_to_beat=85000.0)  # 1.17%
         ob = _make_orderbook()
         assert cs.should_enter(30.0, snap, ob) is False
 
@@ -129,10 +95,9 @@ class TestShouldEnter:
         assert cs.should_enter(30.0, snap, ob) is False
 
     def test_insufficient_skew(self):
-        """Reject when expensive side < min_skew."""
         cs = ConvergenceStrategy(min_skew=0.75)
-        snap = _make_snapshot(price=84985.0, price_to_beat=85000.0)
-        ob = _make_orderbook(ask_yes=0.60, ask_no=0.40)  # not skewed enough
+        snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)
+        ob = _make_orderbook(ask_yes=0.40, ask_no=0.60)  # not skewed
         assert cs.should_enter(30.0, snap, ob) is False
 
     def test_time_before_window(self):
@@ -148,10 +113,9 @@ class TestShouldEnter:
         assert cs.should_enter(10.0, snap, ob) is False
 
     def test_cheap_price_too_high(self):
-        """Reject when oracle-favored side > max_cheap_price."""
         cs = ConvergenceStrategy(max_cheap_price=0.30)
-        snap = _make_snapshot(price=84985.0, price_to_beat=85000.0)  # DOWN
-        ob = _make_orderbook(ask_yes=0.60, ask_no=0.40)  # NO=0.40 > 0.30
+        snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)
+        ob = _make_orderbook(ask_yes=0.40, ask_no=0.80)  # cheap=0.40 > 0.30
         assert cs.should_enter(30.0, snap, ob) is False
 
     def test_missing_orderbook_asks(self):
@@ -162,23 +126,19 @@ class TestShouldEnter:
 
 
 class TestGetCheapSide:
-    """Legacy get_cheap_side() still works."""
-
     def test_yes_cheaper(self):
         cs = ConvergenceStrategy()
         ob = _make_orderbook(ask_yes=0.10, ask_no=0.90)
         side, price = cs.get_cheap_side(ob)
-        assert side == "YES"
-        assert price == 0.10
+        assert side == "YES" and price == 0.10
 
     def test_no_cheaper(self):
         cs = ConvergenceStrategy()
         ob = _make_orderbook(ask_yes=0.88, ask_no=0.12)
         side, price = cs.get_cheap_side(ob)
-        assert side == "NO"
-        assert price == 0.12
+        assert side == "NO" and price == 0.12
 
-    def test_raises_on_missing_orderbook(self):
+    def test_raises_on_missing(self):
         cs = ConvergenceStrategy()
         ob = OrderBook(best_ask_yes=None, best_ask_no=0.50)
         with pytest.raises(ValueError):
@@ -186,55 +146,47 @@ class TestGetCheapSide:
 
 
 class TestGetSignal:
-    """Test get_signal() returns full ConvergenceSignal."""
-
-    def test_signal_direction_aligned(self):
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
-        snap = _make_snapshot(price=84985.0, price_to_beat=85000.0)  # DOWN
-        ob = _make_orderbook(ask_yes=0.80, ask_no=0.20)  # NO cheap = aligned
+    def test_signal_fields(self):
+        cs = ConvergenceStrategy(threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30)
+        snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)
+        ob = _make_orderbook(ask_yes=0.10, ask_no=0.90)
         signal = cs.get_signal(30.0, snap, ob)
         assert signal is not None
         assert isinstance(signal, ConvergenceSignal)
-        assert signal.side == "NO"
-        assert signal.price == 0.20
-        assert signal.expensive_price == 0.80
-        assert signal.direction == "oracle_down"
+        assert signal.side == "YES"
+        assert signal.price == 0.10
+        assert signal.expensive_price == 0.90
+        assert signal.delta_pct == 0.0
+        assert signal.time_remaining == 30.0
 
-    def test_signal_none_when_misaligned(self):
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
-        snap = _make_snapshot(price=85015.0, price_to_beat=85000.0)  # UP
-        ob = _make_orderbook(ask_yes=0.80, ask_no=0.20)  # YES expensive
-        signal = cs.get_signal(30.0, snap, ob)
-        assert signal is None
+    def test_signal_none_when_not_converged(self):
+        cs = ConvergenceStrategy(threshold_pct=0.0002)
+        snap = _make_snapshot(price=86000.0, price_to_beat=85000.0)
+        ob = _make_orderbook()
+        assert cs.get_signal(30.0, snap, ob) is None
 
 
 class TestEdgeCases:
-    """Edge cases and integration-like scenarios."""
-
-    def test_eth_convergence_direction_aligned(self):
-        """ETH below beat, NO side cheap."""
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
-        snap = _make_snapshot(price=2499.5, price_to_beat=2500.0)  # -0.02% DOWN
-        ob = _make_orderbook(ask_yes=0.78, ask_no=0.22)
-        assert cs.should_enter(40.0, snap, ob) is True
-
-    def test_zero_delta_neutral(self):
-        """Exact convergence → neutral → buy cheap side."""
-        cs = ConvergenceStrategy(threshold_pct=0.0003, min_skew=0.75, max_cheap_price=0.30)
+    def test_zero_delta(self):
+        cs = ConvergenceStrategy(threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30)
         snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)
         ob = _make_orderbook(ask_yes=0.05, ask_no=0.95)
         signal = cs.get_signal(30.0, snap, ob)
         assert signal is not None
-        assert signal.direction == "neutral"
-        assert signal.side == "YES"
-        assert signal.price == 0.05
+        assert signal.delta_pct == 0.0
 
     def test_custom_parameters(self):
         cs = ConvergenceStrategy(
             threshold_pct=0.001, min_skew=0.70, max_cheap_price=0.35,
             window_start_s=120.0, window_end_s=10.0,
         )
-        # UP direction, YES cheap
-        snap = _make_snapshot(price=85040.0, price_to_beat=85000.0)  # +0.047%
+        snap = _make_snapshot(price=85040.0, price_to_beat=85000.0)  # 0.047%
         ob = _make_orderbook(ask_yes=0.25, ask_no=0.75)
         assert cs.should_enter(90.0, snap, ob) is True
+
+    def test_negative_delta_converged(self):
+        """Price slightly below beat, still within threshold."""
+        cs = ConvergenceStrategy(threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30)
+        snap = _make_snapshot(price=84985.0, price_to_beat=85000.0)  # -0.018%
+        ob = _make_orderbook(ask_yes=0.80, ask_no=0.20)
+        assert cs.should_enter(30.0, snap, ob) is True

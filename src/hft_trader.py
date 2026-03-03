@@ -952,7 +952,7 @@ class LastSecondTrader:
             ):
                 return
 
-            # Priority 1: Convergence strategy (buy oracle-favored side when near beat)
+            # Priority 1: Convergence strategy (buy CHEAP side when oracle ≈ beat)
             if (
                 self.convergence_strategy is not None
                 and self.oracle_guard.enabled
@@ -965,7 +965,7 @@ class LastSecondTrader:
                         f"🎯 [{self.market_name}] CONVERGENCE TRIGGER! "
                         f"{conv_signal.side} ({conv_signal.side_label}) @ ${conv_signal.price:.4f} | "
                         f"delta_pct={conv_signal.delta_pct * 100:+.4f}% | "
-                        f"dir={conv_signal.direction} | "
+                        f"skew={conv_signal.expensive_price:.2f}/{conv_signal.price:.2f} | "
                         f"t={time_remaining:.1f}s"
                     )
 

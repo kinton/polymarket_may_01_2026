@@ -87,7 +87,7 @@ class TradingConfig(BaseSettings):
 
     # --- Convergence strategy ---
     convergence_enabled: bool = Field(default=True)
-    convergence_threshold_pct: float = Field(default=0.0003)  # 3bp (was 5bp) — tighter convergence
+    convergence_threshold_pct: float = Field(default=0.0002)  # 2bp — very tight convergence required
     convergence_min_skew: float = Field(default=0.75)  # expensive side >= 75¢ (was 60¢)
     convergence_max_cheap_price: float = Field(default=0.30)  # max 30¢ (was 45¢) — better R/R
     convergence_window_start_s: float = Field(default=60.0)  # start at 60s before expiry
