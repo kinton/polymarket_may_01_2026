@@ -620,6 +620,10 @@ class PositionSettler:
                                 f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
                             )
 
+                # Send resolution notifications
+                if resolved_all:
+                    await self._send_resolution_alerts(resolved_all)
+
                 # Auto-redeem winning positions on-chain
                 wins = [r for r in resolved_all if r.get("status") == "resolved_win"]
                 if wins and not self.dry_run:
@@ -630,6 +634,34 @@ class PositionSettler:
                     await _db.close()
         except Exception as e:
             self.logger.error(f"Error checking dry-run resolution: {e}", exc_info=True)
+
+    def _get_alert_manager(self):
+        """Lazily create AlertManager for notifications."""
+        if hasattr(self, "_alert_manager"):
+            return self._alert_manager
+
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        if not telegram_bot_token or not telegram_chat_id:
+            self._alert_manager = None
+            return None
+
+        from src.alerts import TelegramAlertSender, AlertManager
+        telegram = TelegramAlertSender(telegram_bot_token, telegram_chat_id)
+        self._alert_manager = AlertManager(telegram=telegram)
+        return self._alert_manager
+
+    async def _send_resolution_alerts(self, resolved: list[dict]) -> None:
+        """Send Telegram alerts for each resolved position."""
+        alert_mgr = self._get_alert_manager()
+        if not alert_mgr:
+            return
+        try:
+            for r in resolved:
+                await alert_mgr.send_resolution_alert(r)
+        except Exception as e:
+            self.logger.warning(f"Resolution alert error: {e}")
 
     async def _auto_redeem_wins(self, db: Any) -> None:
         """Attempt on-chain redemption of winning positions.
@@ -658,6 +690,15 @@ class PositionSettler:
                 self.logger.info(
                     f"Auto-redeemed {len(results)} winning position(s)"
                 )
+                # Send redeem notifications
+                alert_mgr = self._get_alert_manager()
+                if alert_mgr:
+                    for r in results:
+                        if r.get("status") == "success":
+                            try:
+                                await alert_mgr.send_redeem_alert(r)
+                            except Exception as e:
+                                self.logger.warning(f"Redeem alert error: {e}")
         except Exception as e:
             self.logger.error(f"Auto-redeem error: {e}", exc_info=True)
 

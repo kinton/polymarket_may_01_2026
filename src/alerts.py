@@ -216,6 +216,56 @@ class TelegramAlertSender:
         message = f"📊 <b>Daily Report:</b>\n\n{summary}"
         return await self.send_alert(message)
 
+    async def send_resolution_alert(self, data: dict[str, Any]) -> bool:
+        """Send market resolution alert (win or loss).
+
+        Args:
+            data: Dict with keys: market, side, entry_price, exit_price,
+                  amount, pnl, pnl_pct, status
+        """
+        market = data.get("market", "UNKNOWN")
+        side = data.get("side", "YES")
+        entry = data.get("entry_price", 0.0)
+        pnl = data.get("pnl", 0.0)
+        pnl_pct = data.get("pnl_pct", 0.0)
+        status = data.get("status", "resolved")
+
+        if status == "resolved_win":
+            emoji = "🏆"
+            label = "WIN"
+        else:
+            emoji = "💔"
+            label = "LOSS"
+
+        pnl_sign = "+" if pnl >= 0 else ""
+        message = (
+            f"{emoji} <b>Market resolved — {label}:</b> {market}\n"
+            f"Side: {side} | Entry: ${entry:.4f}\n"
+            f"PnL: {pnl_sign}${pnl:.4f} ({pnl_sign}{pnl_pct:.1f}%)"
+        )
+        return await self.send_alert(message)
+
+    async def send_redeem_alert(self, data: dict[str, Any]) -> bool:
+        """Send redemption success alert.
+
+        Args:
+            data: Dict with keys: condition_id, redeemed_amount,
+                  usdc_balance, tx_hash
+        """
+        amount = data.get("redeemed_amount", 0.0)
+        balance = data.get("usdc_balance", 0.0)
+        tx_hash = data.get("tx_hash", "")
+        tx_link = f"https://polygonscan.com/tx/0x{tx_hash}" if tx_hash else ""
+
+        message = (
+            f"💰 <b>Winnings redeemed!</b>\n"
+            f"Amount: +${amount:.2f} USDC\n"
+            f"Balance: ${balance:.2f} USDC"
+        )
+        if tx_link:
+            message += f"\n<a href=\"{tx_link}\">View TX</a>"
+        return await self.send_alert(message)
+
 
 class SlackAlertSender:
     """Send trading alerts to Slack via webhook."""
@@ -527,5 +577,25 @@ class AlertManager:
         if self.slack:
             tasks.append(self.slack.send_daily_report_summary(report_summary))
 
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def send_resolution_alert(self, data: dict[str, Any]) -> None:
+        """Broadcast market resolution alert (win/loss)."""
+        if not self._enabled:
+            return
+        tasks = []
+        if self.telegram:
+            tasks.append(self.telegram.send_resolution_alert(data))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def send_redeem_alert(self, data: dict[str, Any]) -> None:
+        """Broadcast redemption success alert."""
+        if not self._enabled:
+            return
+        tasks = []
+        if self.telegram:
+            tasks.append(self.telegram.send_redeem_alert(data))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
