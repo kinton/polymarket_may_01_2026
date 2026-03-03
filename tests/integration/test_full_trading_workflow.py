@@ -64,12 +64,12 @@ async def test_convergence_accumulate_then_decide(integration_trader):
         threshold_pct=0.0003,
         min_skew=0.75,
         max_cheap_price=0.30,
-        window_start_s=60.0,
+        window_start_s=180.0,
         window_end_s=20.0,
         min_observations=3,
         min_convergence_rate=0.30,
         min_side_consistency=0.70,
-        decision_time_s=8.0,
+        decision_time_s=55.0,
     )
     integration_trader.convergence_strategy = strategy
     integration_trader.oracle_guard.enabled = True
@@ -85,12 +85,12 @@ async def test_convergence_accumulate_then_decide(integration_trader):
     integration_trader.execute_order = AsyncMock()
 
     # Phase 1: Observation ticks (should NOT trigger)
-    for t in [50.0, 45.0, 40.0, 35.0, 30.0, 25.0]:
+    for t in [170.0, 150.0, 130.0, 110.0, 90.0, 70.0]:
         await integration_trader.check_trigger(time_remaining=t)
     integration_trader.execute_order.assert_not_called()
 
     # Phase 2: Decision time (t=8s)
-    await integration_trader.check_trigger(time_remaining=8.0)
+    await integration_trader.check_trigger(time_remaining=55.0)
     integration_trader.execute_order.assert_called_once()
     assert integration_trader._convergence_trade is True
 
@@ -107,7 +107,7 @@ async def test_no_trigger_without_convergence(integration_trader):
         min_skew=0.75,
         max_cheap_price=0.30,
         min_observations=3,
-        decision_time_s=8.0,
+        decision_time_s=55.0,
     )
     integration_trader.convergence_strategy = strategy
     integration_trader.oracle_guard.enabled = True
@@ -122,11 +122,11 @@ async def test_no_trigger_without_convergence(integration_trader):
     integration_trader.execute_order = AsyncMock()
 
     # Observe
-    for t in [50.0, 40.0, 30.0]:
+    for t in [170.0, 130.0, 90.0]:
         await integration_trader.check_trigger(time_remaining=t)
 
     # Decide
-    await integration_trader.check_trigger(time_remaining=8.0)
+    await integration_trader.check_trigger(time_remaining=55.0)
     integration_trader.execute_order.assert_not_called()
 
 
@@ -142,7 +142,7 @@ async def test_no_trigger_outside_time_window(integration_trader):
         min_skew=0.75,
         max_cheap_price=0.30,
         min_observations=3,
-        decision_time_s=8.0,
+        decision_time_s=55.0,
     )
     integration_trader.convergence_strategy = strategy
     integration_trader.oracle_guard.enabled = True
@@ -175,7 +175,7 @@ async def test_no_trigger_insufficient_observations(integration_trader):
         min_skew=0.75,
         max_cheap_price=0.30,
         min_observations=10,  # need 10 but only get 2
-        decision_time_s=8.0,
+        decision_time_s=55.0,
     )
     integration_trader.convergence_strategy = strategy
     integration_trader.oracle_guard.enabled = True
@@ -192,7 +192,7 @@ async def test_no_trigger_insufficient_observations(integration_trader):
     await integration_trader.check_trigger(time_remaining=40.0)
 
     # Decide — not enough obs
-    await integration_trader.check_trigger(time_remaining=8.0)
+    await integration_trader.check_trigger(time_remaining=55.0)
     integration_trader.execute_order.assert_not_called()
 
 
@@ -209,7 +209,7 @@ async def test_no_trigger_side_inconsistency(integration_trader):
         max_cheap_price=0.30,
         min_observations=3,
         min_side_consistency=0.70,
-        decision_time_s=8.0,
+        decision_time_s=55.0,
     )
     integration_trader.convergence_strategy = strategy
     integration_trader.oracle_guard.enabled = True
@@ -221,7 +221,7 @@ async def test_no_trigger_side_inconsistency(integration_trader):
     ob_no = _make_skewed_ob("NO", 0.20, 0.80)
     ob_yes = _make_skewed_ob("YES", 0.20, 0.80)
 
-    for t, ob in [(50.0, ob_no), (45.0, ob_yes), (40.0, ob_no), (35.0, ob_yes), (30.0, ob_no), (25.0, ob_yes)]:
+    for t, ob in [(170.0, ob_no), (150.0, ob_yes), (130.0, ob_no), (110.0, ob_yes), (90.0, ob_no), (70.0, ob_yes)]:
         integration_trader.orderbook = ob
         integration_trader._update_winning_side()
         await integration_trader.check_trigger(time_remaining=t)
@@ -229,5 +229,5 @@ async def test_no_trigger_side_inconsistency(integration_trader):
     # Decide — sides flip 50/50
     integration_trader.orderbook = ob_no
     integration_trader._update_winning_side()
-    await integration_trader.check_trigger(time_remaining=8.0)
+    await integration_trader.check_trigger(time_remaining=55.0)
     integration_trader.execute_order.assert_not_called()

@@ -91,12 +91,12 @@ class ConvergenceStrategy:
         min_skew: float = 0.75,            # expensive side >= 75¢
         max_cheap_price: float = 0.35,     # only buy at 35¢ or less
         max_against_pct: float = DEFAULT_MAX_AGAINST_BP,
-        window_start_s: float = 60.0,
+        window_start_s: float = 180.0,    # observe from 3 min before close
         window_end_s: float = 20.0,
         min_observations: int = MIN_OBSERVATIONS,
         min_convergence_rate: float = MIN_CONVERGENCE_RATE,
         min_side_consistency: float = MIN_SIDE_CONSISTENCY,
-        decision_time_s: float = 25.0,     # decide at t=25s — buy early while cheap
+        decision_time_s: float = 55.0,     # decide at t=55s — buy early while uncertain
         logger: logging.Logger | None = None,
     ):
         self.threshold_pct = threshold_pct

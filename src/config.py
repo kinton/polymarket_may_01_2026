@@ -90,8 +90,8 @@ class TradingConfig(BaseSettings):
     convergence_threshold_pct: float = Field(default=0.0003)  # 3bp convergence
     convergence_min_skew: float = Field(default=0.75)  # expensive side >= 75¢
     convergence_max_cheap_price: float = Field(default=0.35)  # max 35¢
-    convergence_window_start_s: float = Field(default=60.0)  # start at 60s before expiry
-    convergence_window_end_s: float = Field(default=20.0)  # stop at 20s before expiry
+    convergence_window_start_s: float = Field(default=180.0)  # start observing 3 min before expiry
+    convergence_window_end_s: float = Field(default=20.0)  # stop observing at 20s
     convergence_disable_stop_loss: bool = Field(default=True)  # hold until resolution
     convergence_partial_tp_pct: float = Field(default=0.10)  # partial TP at +10%
     convergence_partial_tp_fraction: float = Field(default=0.50)  # sell 50% of position
