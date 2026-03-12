@@ -55,12 +55,14 @@ from src.alerts import (
 from src.clob_types import (
     CLOB_WS_URL,
     CONVERGENCE_ENABLED,
+    MAX_ENTRY_PRICE,
     MIN_ORDERBOOK_SIZE_USD,
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
     TRIGGER_THRESHOLD,
     OrderBook,
 )
+# Lazy-imported in __init__ to avoid circular: CONVERGENCE_MIN_CHEAP_PRICE, etc.
 from src.market_parser import (
     determine_winning_side,
     extract_best_ask_with_size_from_book,
@@ -81,7 +83,6 @@ from src.trading.orderbook_ws_adapter import OrderbookWSAdapter
 from src.trading.websocket_client import WebSocketClient
 from src.trading.orderbook_tracker import OrderbookTracker
 from src.trading.convergence_strategy import ConvergenceStrategy
-from src.trading.oracle_signal_strategy import OracleSignalStrategy
 
 try:
     from py_clob_client.client import ClobClient
@@ -180,8 +181,11 @@ class LastSecondTrader:
                 CONVERGENCE_THRESHOLD_PCT,
                 CONVERGENCE_MIN_SKEW,
                 CONVERGENCE_MAX_CHEAP_PRICE,
+                CONVERGENCE_MIN_CHEAP_PRICE,
                 CONVERGENCE_WINDOW_START_S,
                 CONVERGENCE_WINDOW_END_S,
+                CONVERGENCE_MIN_OBSERVATIONS,
+                CONVERGENCE_MIN_CONVERGENCE_RATE,
                 CONVERGENCE_DISABLE_STOP_LOSS,
             )
             _conv_enabled = convergence_enabled if convergence_enabled is not None else CONVERGENCE_ENABLED
@@ -190,8 +194,11 @@ class LastSecondTrader:
                     threshold_pct=CONVERGENCE_THRESHOLD_PCT,
                     min_skew=CONVERGENCE_MIN_SKEW,
                     max_cheap_price=CONVERGENCE_MAX_CHEAP_PRICE,
+                    min_cheap_price=CONVERGENCE_MIN_CHEAP_PRICE,
                     window_start_s=CONVERGENCE_WINDOW_START_S,
                     window_end_s=CONVERGENCE_WINDOW_END_S,
+                    min_observations=CONVERGENCE_MIN_OBSERVATIONS,
+                    min_convergence_rate=CONVERGENCE_MIN_CONVERGENCE_RATE,
                     logger=trader_logger,
                 )
                 self._convergence_disable_stop_loss = CONVERGENCE_DISABLE_STOP_LOSS
@@ -199,28 +206,8 @@ class LastSecondTrader:
                 self.convergence_strategy = None
                 self._convergence_disable_stop_loss = False
             self._convergence_trade = False  # flag: current position is from convergence
-            self._convergence_partial_tp_done = False  # flag: partial take-profit already executed
 
-            # Oracle Signal strategy
-            from src.clob_types import (
-                ORACLE_SIGNAL_ENABLED,
-                ORACLE_SIGNAL_MIN_DELTA_PCT,
-                ORACLE_SIGNAL_MAX_ENTRY_PRICE,
-                ORACLE_SIGNAL_MIN_EDGE_PCT,
-                ORACLE_SIGNAL_WINDOW_START_S,
-                ORACLE_SIGNAL_WINDOW_END_S,
-            )
-            if ORACLE_SIGNAL_ENABLED and oracle_enabled:
-                self.oracle_signal_strategy: OracleSignalStrategy | None = OracleSignalStrategy(
-                    min_delta_pct=ORACLE_SIGNAL_MIN_DELTA_PCT,
-                    max_entry_price=ORACLE_SIGNAL_MAX_ENTRY_PRICE,
-                    min_edge_pct=ORACLE_SIGNAL_MIN_EDGE_PCT,
-                    window_start_s=ORACLE_SIGNAL_WINDOW_START_S,
-                    window_end_s=ORACLE_SIGNAL_WINDOW_END_S,
-                    logger=trader_logger,
-                )
-            else:
-                self.oracle_signal_strategy = None
+
 
             # Shutdown flag
             self._shutting_down = False
@@ -286,6 +273,9 @@ class LastSecondTrader:
                 logger=self.logger,
             )
 
+            # Initialize trade_db before OrderExecutionManager (it references self._trade_db)
+            self._trade_db = trade_db
+
             # Order execution manager
             self.order_execution = OrderExecutionManager(
                 client=self.client,
@@ -299,6 +289,7 @@ class LastSecondTrader:
                 position_manager=self.position_manager,
                 alert_dispatcher=None,  # Will be set after init
                 risk_manager=self.risk_manager,
+                trade_db=self._trade_db,
             )
 
             # Alert dispatcher
@@ -322,7 +313,6 @@ class LastSecondTrader:
                 self.event_recorder = None
 
             # Dry-run simulator (SQLite-backed decision recording)
-            self._trade_db = trade_db
             if trade_db is not None:
                 self.dry_run_sim: DryRunSimulator | None = DryRunSimulator(
                     db=trade_db,
@@ -354,8 +344,7 @@ class LastSecondTrader:
             mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
             self._log(
                 f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} | "
-                f"convergence={'on' if self.convergence_strategy else 'off'} | "
-                f"oracle_signal={'on' if self.oracle_signal_strategy else 'off'}"
+                f"convergence={'on' if self.convergence_strategy else 'off'}"
             )
             if self.oracle_guard.enabled:
                 sym = self.oracle_guard.symbol or "unknown"
@@ -862,19 +851,6 @@ class LastSecondTrader:
                 if current_price is not None:
                     await self.stop_loss_manager.check_and_execute(current_price)
 
-            # Convergence partial take-profit: sell half at +10% to lock in breakeven
-            if (
-                self.position_manager.is_open
-                and self._convergence_trade
-                and not self._convergence_partial_tp_done
-                and self.position_manager.entry_price is not None
-            ):
-                current_price = self._get_ask_for_side(
-                    self.position_manager.position_side or ""
-                )
-                if current_price is not None:
-                    await self._check_convergence_partial_tp(current_price)
-
             # Check virtual dry-run positions for simulated stop-loss/take-profit
             if self.dry_run_sim and self.winning_side:
                 sim_price = self._get_ask_for_side(self.winning_side)
@@ -1003,44 +979,6 @@ class LastSecondTrader:
                     await self.execute_order()
                     return
 
-            # Priority 2: Oracle Signal strategy (buy oracle-favored side when market lags)
-            if (
-                self.oracle_signal_strategy is not None
-                and self.oracle_guard.enabled
-            ):
-                signal = self.oracle_signal_strategy.get_signal(
-                    time_remaining,
-                    self.oracle_guard.snapshot,
-                    self.orderbook,
-                    up_side=self.oracle_guard.up_side,
-                    down_side=self.oracle_guard.down_side,
-                )
-                if signal is not None:
-                    self._log(
-                        f"📡 [{self.market_name}] ORACLE SIGNAL! "
-                        f"{signal.side} ({signal.side_label}) @ ${signal.price:.4f} | "
-                        f"delta={signal.delta_pct * 100:+.4f}% | "
-                        f"fair={signal.estimated_fair_value:.2f} | "
-                        f"edge={signal.edge_pct * 100:.1f}% | "
-                        f"t={time_remaining:.1f}s"
-                    )
-
-                    if self.dry_run_sim:
-                        await self.dry_run_sim.record_buy(
-                            side=signal.side,
-                            price=signal.price,
-                            amount=self.trade_size,
-                            confidence=signal.estimated_fair_value,
-                            time_remaining=time_remaining,
-                            reason=f"oracle_signal_{signal.side_label.lower()}",
-                            oracle_snap=self.oracle_guard.snapshot,
-                        )
-
-                    self._planned_trade_side = signal.side
-                    self._convergence_trade = False  # not a convergence trade
-                    await self.execute_order()
-                    return
-
             # No strategy triggered, wait for next tick.
             self._market_stats["ticks_total"] += 1
 
@@ -1085,6 +1023,13 @@ class LastSecondTrader:
         is_convergence = self._convergence_trade
         self._planned_trade_side = None
         winning_ask = self._get_ask_for_side(side)
+
+        if winning_ask is not None and winning_ask > MAX_ENTRY_PRICE:
+            self._log(
+                f"[{self.market_name}] Price {winning_ask:.4f} above max entry {MAX_ENTRY_PRICE} — skipping"
+            )
+            return
+
         was_executed_before = self.order_execution.is_executed()
         await self.order_execution.execute_order_for(side, winning_ask)
         # Record buy trade for replay
@@ -1102,67 +1047,6 @@ class LastSecondTrader:
         """Execute order (deprecated - use execute_order instead)."""
         await self.execute_order()
 
-    async def _check_convergence_partial_tp(self, current_price: float) -> None:
-        """
-        Partial take-profit for convergence trades: sell half at +10%.
-        
-        If cheap side was bought at 20¢ and rises to 22¢ (+10%),
-        sell half to lock in ~breakeven on the full position.
-        Rest rides to resolution for max upside.
-        """
-        from src.clob_types import CONVERGENCE_PARTIAL_TP_PCT, CONVERGENCE_PARTIAL_TP_FRACTION
-
-        entry = self.position_manager.entry_price
-        if entry is None:
-            return
-
-        tp_price = entry * (1 + CONVERGENCE_PARTIAL_TP_PCT)
-        if current_price < tp_price:
-            return
-
-        # Triggered! Sell fraction of position
-        pnl_pct = ((current_price - entry) / entry) * 100
-        sell_amount = round(self.trade_size * CONVERGENCE_PARTIAL_TP_FRACTION, 2)
-        sell_amount = max(sell_amount, 0.50)  # minimum $0.50
-
-        self._log(
-            f"💰 [{self.market_name}] PARTIAL TP! "
-            f"Price ${current_price:.4f} > TP ${tp_price:.4f} (+{pnl_pct:.1f}%) | "
-            f"Selling {CONVERGENCE_PARTIAL_TP_FRACTION:.0%} (${sell_amount:.2f}), "
-            f"rest rides to resolution"
-        )
-
-        if self.dry_run_sim:
-            # Record in dry-run simulator
-            await self.dry_run_sim.record_partial_tp(
-                side=self.position_manager.position_side or "",
-                entry_price=entry,
-                exit_price=current_price,
-                fraction=CONVERGENCE_PARTIAL_TP_FRACTION,
-                amount=sell_amount,
-            )
-
-        # Record trade
-        if self._trade_db:
-            try:
-                await self._trade_db.record_trade(
-                    market_name=self.market_name,
-                    condition_id=self.condition_id or "",
-                    action="sell",
-                    side=self.position_manager.position_side or "",
-                    price=current_price,
-                    amount=sell_amount,
-                    pnl=(current_price - entry) * (sell_amount / entry),
-                    pnl_pct=pnl_pct,
-                    reason="partial_tp",
-                    dry_run=self.dry_run,
-                )
-            except Exception as e:
-                self._log(f"[{self.market_name}] Error recording partial TP: {e}")
-
-        self._convergence_partial_tp_done = True
-        # Don't close position — rest rides to resolution
-
     async def execute_sell(self, reason: str) -> None:
         """Execute sell order using order execution manager."""
         position_side = (
@@ -1171,7 +1055,6 @@ class LastSecondTrader:
         current_price = self._get_ask_for_side(position_side or "")
         await self.order_execution.execute_sell(reason, current_price)
         self._convergence_trade = False  # Reset convergence flag on sell
-        self._convergence_partial_tp_done = False
         # Record sell trade for replay
         if self.event_recorder is not None:
             self.event_recorder.record_trade(
@@ -1428,6 +1311,15 @@ class LastSecondTrader:
                             start_ms=start_ms,
                             max_lag_ms=self.oracle_guard.beat_max_lag_ms,
                         )
+                    # Ultimate fallback: if price_to_beat is still None,
+                    # use current oracle price. Within the window, delta will
+                    # be small and convergence detection works correctly.
+                    if self.oracle_guard.tracker.price_to_beat is None:
+                        self.oracle_guard.tracker.price_to_beat = tick.price
+                        self._log(
+                            f"[{self.market_name}] Using first oracle price as price_to_beat: {tick.price:,.2f}"
+                        )
+
                     self.oracle_guard.snapshot = self.oracle_guard.tracker.update(
                         ts_ms=tick.ts_ms, price=tick.price
                     )

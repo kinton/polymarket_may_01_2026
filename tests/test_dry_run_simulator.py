@@ -196,8 +196,8 @@ class TestDryRunSimulator:
         async def _test():
             await sim.record_buy(side="YES", price=0.90, amount=1.10)
 
-            # Price rises above take-profit (0.90 * 1.10 = 0.99)
-            closed = await sim.check_virtual_positions(0.995)
+            # Price rises above take-profit (0.90 * 1.999 = 1.799 with TAKE_PROFIT_PCT=0.999)
+            closed = await sim.check_virtual_positions(1.80)
             assert len(closed) == 1
             assert closed[0]["status"] == "take_profit"
             assert closed[0]["pnl"] > 0

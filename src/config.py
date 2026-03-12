@@ -52,6 +52,7 @@ class TradingConfig(BaseSettings):
     trigger_threshold: float = Field(default=30.0)
     price_threshold: float = Field(default=0.50)  # Winning side threshold (bid > this = winning)
     price_tie_eps: float = Field(default=1e-6)
+    max_entry_price: float = Field(default=0.35)  # skip if ask > this (aligned with convergence_max_cheap_price)
 
     # --- Trade sizing ---
     min_trade_usdc: float = Field(default=1.00)
@@ -62,13 +63,12 @@ class TradingConfig(BaseSettings):
     min_orderbook_size_usd: float = Field(default=100.0)
 
     # --- Stop-loss ---
-    stop_loss_pct: float = Field(default=0.30)
-    stop_loss_absolute: float = Field(default=0.80)
+    stop_loss_pct: float = Field(default=0.50)
     trailing_stop_pct: float = Field(default=0.05)
     stop_loss_check_interval_s: float = Field(default=1.0)
 
     # --- Take-profit ---
-    take_profit_pct: float = Field(default=0.10)
+    take_profit_pct: float = Field(default=0.999)
     take_profit_check_interval_s: float = Field(default=1.0)
 
     # --- Risk management ---
@@ -87,22 +87,15 @@ class TradingConfig(BaseSettings):
 
     # --- Convergence strategy ---
     convergence_enabled: bool = Field(default=True)
-    convergence_threshold_pct: float = Field(default=0.0003)  # 3bp convergence
-    convergence_min_skew: float = Field(default=0.75)  # expensive side >= 75¢
+    convergence_threshold_pct: float = Field(default=0.0005)  # 5bp convergence
+    convergence_min_skew: float = Field(default=0.65)  # expensive side >= 65¢
     convergence_max_cheap_price: float = Field(default=0.35)  # max 35¢
-    convergence_window_start_s: float = Field(default=180.0)  # start observing 3 min before expiry
+    convergence_min_cheap_price: float = Field(default=0.0)  # disabled — convergence check is the filter
+    convergence_window_start_s: float = Field(default=200.0)  # start observing ~3.3 min before expiry
     convergence_window_end_s: float = Field(default=20.0)  # stop observing at 20s
+    convergence_min_observations: int = Field(default=5)  # require 5+ ticks (~5s of data)
+    convergence_min_convergence_rate: float = Field(default=0.40)  # 40% of ticks must converge
     convergence_disable_stop_loss: bool = Field(default=True)  # hold until resolution
-    convergence_partial_tp_pct: float = Field(default=0.10)  # partial TP at +10%
-    convergence_partial_tp_fraction: float = Field(default=0.50)  # sell 50% of position
-
-    # --- Oracle Signal strategy ---
-    oracle_signal_enabled: bool = Field(default=True)
-    oracle_signal_min_delta_pct: float = Field(default=0.0020)  # 20bp minimum oracle divergence
-    oracle_signal_max_entry_price: float = Field(default=0.35)  # don't buy above 35¢ (was 45¢)
-    oracle_signal_min_edge_pct: float = Field(default=0.15)     # require ≥15% edge (was 10%)
-    oracle_signal_window_start_s: float = Field(default=60.0)   # start at 60s before expiry
-    oracle_signal_window_end_s: float = Field(default=5.0)      # stop at 5s before expiry
 
     # --- API URLs ---
     gamma_api_url: str = Field(default="https://gamma-api.polymarket.com/public-search")

@@ -40,15 +40,15 @@ class TestStopLoss:
 
     @pytest.mark.asyncio
     async def test_stop_loss_triggers_on_30_percent_drop(self, trader):
-        """Test that stop-loss triggers when price drops 30% from entry."""
+        """Test that stop-loss triggers when price drops 50% from entry."""
         # Set up position
         trader.entry_price = 0.90
         trader.position_side = "YES"
         trader.position_open = True
-        trader.trailing_stop_price = 0.90 * (1 - STOP_LOSS_PCT)  # 0.63
+        trader.trailing_stop_price = 0.90 * (1 - STOP_LOSS_PCT)  # 0.45
 
-        # Set current price below stop-loss threshold (31% drop)
-        trader.orderbook.best_ask_yes = 0.62
+        # Set current price below stop-loss threshold (51% drop)
+        trader.orderbook.best_ask_yes = 0.44
 
         # Mock execute_sell - both the trader method and the stop_loss_manager callback
         mock_sell = AsyncMock()
@@ -63,15 +63,15 @@ class TestStopLoss:
 
     @pytest.mark.asyncio
     async def test_stop_loss_does_not_trigger_on_29_percent_drop(self, trader):
-        """Test that stop-loss does NOT trigger on 29% drop (under threshold)."""
+        """Test that stop-loss does NOT trigger on 49% drop (under threshold)."""
         # Set up position
         trader.entry_price = 0.90
         trader.position_side = "YES"
         trader.position_open = True
-        trader.trailing_stop_price = 0.90 * (1 - STOP_LOSS_PCT)  # 0.63
+        trader.trailing_stop_price = 0.90 * (1 - STOP_LOSS_PCT)  # 0.45
 
-        # Set current price above stop-loss threshold (29% drop)
-        trader.orderbook.best_ask_yes = 0.64
+        # Set current price above stop-loss threshold (49% drop)
+        trader.orderbook.best_ask_yes = 0.46
 
         # Mock execute_sell - both the trader method and the stop_loss_manager callback
         mock_sell = AsyncMock()
@@ -85,16 +85,16 @@ class TestStopLoss:
         mock_sell.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_stop_loss_uses_absolute_floor(self, trader):
-        """Test that stop-loss uses absolute floor when price drops below it."""
-        # Set up position — trailing stop is at the absolute floor
-        trader.entry_price = 0.96
-        trader.position_side = "YES"
+    async def test_stop_loss_uses_percentage_only(self, trader):
+        """Test that stop-loss uses percentage from entry (no absolute floor)."""
+        # Set up position — trailing stop at -50% from entry
+        trader.entry_price = 0.40
+        trader.position_side = "NO"
         trader.position_open = True
-        trader.trailing_stop_price = STOP_LOSS_ABSOLUTE  # 0.80
+        trader.trailing_stop_price = 0.40 * (1 - STOP_LOSS_PCT)  # 0.20
 
-        # Set current price BELOW absolute floor (0.80)
-        trader.orderbook.best_ask_yes = 0.79
+        # Set current price BELOW -50% threshold
+        trader.orderbook.best_ask_no = 0.19
 
         # Mock execute_sell
         mock_sell = AsyncMock()
@@ -104,7 +104,7 @@ class TestStopLoss:
         # Run check
         await trader._check_stop_loss_take_profit()
 
-        # Verify sell was called — price 0.79 < trailing_stop 0.80
+        # Verify sell was called — price 0.19 < trailing_stop 0.20
         mock_sell.assert_called_once_with("STOP-LOSS")
 
     @pytest.mark.asyncio
@@ -138,16 +138,16 @@ class TestTakeProfit:
     """Test take-profit mechanism."""
 
     @pytest.mark.asyncio
-    async def test_take_profit_triggers_on_10_percent_rise(self, trader):
-        """Test that take-profit triggers when price rises 10% from entry."""
+    async def test_take_profit_triggers_on_100_percent_rise(self, trader):
+        """Test that take-profit triggers when price rises ~100% from entry (TAKE_PROFIT_PCT=0.999)."""
         # Set up position with low entry price so absolute floor doesn't interfere
         trader.entry_price = 0.60
         trader.position_side = "YES"
         trader.position_open = True
         trader.trailing_stop_price = 0.60 * (1 - STOP_LOSS_PCT)  # 0.42
 
-        # Set current price above take-profit threshold (10% rise)
-        trader.orderbook.best_ask_yes = 0.67  # 0.60 * 1.10 = 0.66
+        # Set current price above take-profit threshold (0.60 * 1.999 = 1.199)
+        trader.orderbook.best_ask_yes = 1.21
 
         # Mock execute_sell
         mock_sell = AsyncMock()
@@ -192,8 +192,8 @@ class TestTakeProfit:
         trader.position_open = True
         trader.trailing_stop_price = 0.60 * (1 - STOP_LOSS_PCT)  # 0.42
 
-        # Set current price above take-profit threshold
-        trader.orderbook.best_ask_yes = 0.67
+        # Set current price above take-profit threshold (0.60 * 1.999 = 1.199)
+        trader.orderbook.best_ask_yes = 1.21
 
         # Mock execute_sell
         mock_sell = AsyncMock()
@@ -216,19 +216,18 @@ class TestTrailingStop:
     """Test trailing-stop mechanism."""
 
     @pytest.mark.asyncio
-    async def test_trailing_stop_uses_absolute_floor(self, trader):
-        """Test that trailing stop uses absolute floor when price is below floor."""
+    async def test_trailing_stop_moves_up_with_price(self, trader):
+        """Test that trailing stop rises when price rises."""
         # Set up position
-        trader.entry_price = 0.60
-        trader.position_side = "YES"
+        trader.entry_price = 0.20
+        trader.position_side = "NO"
         trader.position_open = True
-        trader.trailing_stop_price = 0.60 * (1 - STOP_LOSS_PCT)  # 0.42
+        trader.trailing_stop_price = 0.20 * (1 - STOP_LOSS_PCT)  # 0.10
 
-        # Set current price (trailing stop would be 0.66 * 0.95 = 0.627)
-        # But absolute floor 0.95 is higher, so floor is used
-        trader.orderbook.best_ask_yes = 0.66
+        # Price moves up — trailing stop should rise with it
+        trader.orderbook.best_ask_no = 0.30
 
-        # Mock execute_sell (should not be called, just stop raised to floor)
+        # Mock execute_sell (should not be called — price is above stop)
         mock_sell = AsyncMock()
         trader.execute_sell = mock_sell
         trader.stop_loss_manager.set_sell_callback(mock_sell)
@@ -236,8 +235,9 @@ class TestTrailingStop:
         # Run check
         await trader._check_stop_loss_take_profit()
 
-        # Verify stop was raised to absolute floor (0.95)
-        assert trader.trailing_stop_price == STOP_LOSS_ABSOLUTE
+        # Trailing stop should have moved up: 0.30 * (1 - TRAILING_STOP_PCT)
+        expected_stop = 0.30 * (1 - TRAILING_STOP_PCT)
+        assert abs(trader.trailing_stop_price - expected_stop) < 1e-6
         # Verify sell was not called
         mock_sell.assert_not_called()
 
@@ -328,8 +328,8 @@ class TestPriorityAndIntegration:
         trader.position_open = True
         trader.trailing_stop_price = 0.60 * (1 - STOP_LOSS_PCT)  # 0.42
 
-        # Set current price above take-profit
-        trader.orderbook.best_ask_yes = 0.67  # 0.60 * 1.10 = 0.66
+        # Set current price above take-profit (0.60 * 1.999 = 1.199)
+        trader.orderbook.best_ask_yes = 1.21
 
         # Mock oracle guard to block (but take-profit should override)
         trader.oracle_enabled = True
@@ -370,18 +370,18 @@ class TestPositionTracking:
     @pytest.mark.asyncio
     async def test_position_tracked_after_dry_run_buy(self, trader):
         """Test that position state is set after dry run buy."""
-        # Set up orderbook with low price so absolute floor takes precedence
-        trader.orderbook.best_ask_yes = 0.80
+        # Set up orderbook
+        trader.orderbook.best_ask_yes = 0.30
 
         # Execute buy
         await trader.execute_order_for("YES")
 
         # Verify position state
         assert trader.position_open is True
-        assert trader.entry_price == 0.80
+        assert trader.entry_price == 0.30
         assert trader.position_side == "YES"
-        # Absolute floor (0.95) should be used since 0.80 * 0.70 = 0.56 < 0.95
-        assert trader.trailing_stop_price == STOP_LOSS_ABSOLUTE
+        # Trailing stop: entry * (1 - TRAILING_STOP_PCT)
+        assert trader.trailing_stop_price is not None
 
     @pytest.mark.asyncio
     async def test_position_closed_after_sell(self, trader):
@@ -408,13 +408,13 @@ class TestConstants:
 
     def test_stop_loss_constants(self):
         """Verify stop-loss constants."""
-        assert STOP_LOSS_PCT == 0.30
-        assert STOP_LOSS_ABSOLUTE == 0.80
+        assert STOP_LOSS_PCT == 0.50
+        assert STOP_LOSS_ABSOLUTE == 0.0  # disabled — not relevant for NO tokens at ≤0.35
         assert STOP_LOSS_CHECK_INTERVAL_S == 1.0
 
     def test_take_profit_constants(self):
         """Verify take-profit constants."""
-        assert TAKE_PROFIT_PCT == 0.10
+        assert TAKE_PROFIT_PCT == 0.999
         assert TAKE_PROFIT_CHECK_INTERVAL_S == 1.0
 
     def test_trailing_stop_constants(self):

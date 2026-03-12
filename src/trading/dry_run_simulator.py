@@ -158,39 +158,6 @@ class DryRunSimulator:
             **oracle_kwargs,
         )
 
-    async def record_partial_tp(
-        self,
-        *,
-        side: str,
-        entry_price: float,
-        exit_price: float,
-        fraction: float,
-        amount: float,
-    ) -> None:
-        """Record a partial take-profit event (sell fraction, rest rides)."""
-        pnl = (exit_price - entry_price) * (amount / entry_price)
-        pnl_pct = ((exit_price - entry_price) / entry_price) * 100
-        logger.info(
-            "[%s] DryRunSim.record_partial_tp: %s entry=$%.4f exit=$%.4f "
-            "fraction=%.0f%% amount=$%.2f pnl=$%.4f (%.1f%%)",
-            self.market_name, side, entry_price, exit_price,
-            fraction * 100, amount, pnl, pnl_pct,
-        )
-        await self._db.insert_trade_decision(
-            timestamp=time.time(),
-            timestamp_iso=_now_iso(),
-            market_name=self.market_name,
-            condition_id=self.condition_id,
-            action="partial_sell",
-            side=side,
-            price=exit_price,
-            confidence=None,
-            time_remaining=None,
-            reason="partial_tp",
-            reason_detail=f"sold {fraction:.0%} at +{pnl_pct:.1f}% | amount=${amount:.2f} | pnl=${pnl:.4f}",
-            dry_run=True,
-        )
-
     # -- virtual position simulation -----------------------------------------
 
     async def check_virtual_positions(self, current_price: float) -> list[dict]:
@@ -227,7 +194,8 @@ class DryRunSimulator:
 
             if current_price <= effective_stop:
                 # Stop-loss triggered
-                pnl = (current_price - entry) / entry * amount
+                # amount = shares, pnl = (exit - entry) * shares
+                pnl = (current_price - entry) * amount
                 pnl_pct = (current_price - entry) / entry * 100
                 status = "trailing_stop" if trailing > stop_loss else "stop_loss"
                 await self._db.close_dry_run_position(
@@ -258,7 +226,8 @@ class DryRunSimulator:
 
             elif current_price >= take_profit:
                 # Take-profit triggered
-                pnl = (current_price - entry) / entry * amount
+                # amount = shares, pnl = (exit - entry) * shares
+                pnl = (current_price - entry) * amount
                 pnl_pct = (current_price - entry) / entry * 100
                 await self._db.close_dry_run_position(
                     pos["id"],
@@ -332,6 +301,8 @@ class DryRunSimulator:
             amount = pos["amount"]
             side = pos["side"]
 
+            # amount = number of shares (contracts), not dollars
+            # PnL = (exit_price - entry_price) * shares
             if side.upper() == winning_side.upper():
                 exit_price = 1.0
                 pnl = (1.0 - entry) * amount

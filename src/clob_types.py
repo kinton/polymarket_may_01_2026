@@ -48,6 +48,11 @@ class OrderBook:
 TRIGGER_THRESHOLD = _cfg.trigger_threshold
 PRICE_THRESHOLD = _cfg.price_threshold
 PRICE_TIE_EPS = _cfg.price_tie_eps
+
+# Entry price range filter
+# MIN_ENTRY_PRICE removed — low prices are valid (FOK won't fill if no liquidity)
+MAX_ENTRY_PRICE = _cfg.max_entry_price  # skip if ask > 0.80 (little upside)
+STOP_LOSS_ABSOLUTE = 0.0  # removed — not relevant for NO tokens at ≤0.35
 # MIN_CONFIDENCE removed — legacy strategy cleaned up
 
 # Trade sizing constants
@@ -60,7 +65,6 @@ MIN_ORDERBOOK_SIZE_USD = _cfg.min_orderbook_size_usd
 
 # Stop-loss constants
 STOP_LOSS_PCT = _cfg.stop_loss_pct
-STOP_LOSS_ABSOLUTE = _cfg.stop_loss_absolute
 TRAILING_STOP_PCT = _cfg.trailing_stop_pct
 STOP_LOSS_CHECK_INTERVAL_S = _cfg.stop_loss_check_interval_s
 
@@ -94,17 +98,11 @@ CONVERGENCE_ENABLED = _cfg.convergence_enabled
 CONVERGENCE_THRESHOLD_PCT = _cfg.convergence_threshold_pct
 CONVERGENCE_MIN_SKEW = _cfg.convergence_min_skew
 CONVERGENCE_MAX_CHEAP_PRICE = _cfg.convergence_max_cheap_price
+CONVERGENCE_MIN_CHEAP_PRICE = _cfg.convergence_min_cheap_price
 CONVERGENCE_WINDOW_START_S = _cfg.convergence_window_start_s
 CONVERGENCE_WINDOW_END_S = _cfg.convergence_window_end_s
+CONVERGENCE_MIN_OBSERVATIONS = _cfg.convergence_min_observations
+CONVERGENCE_MIN_CONVERGENCE_RATE = _cfg.convergence_min_convergence_rate
 CONVERGENCE_DISABLE_STOP_LOSS = _cfg.convergence_disable_stop_loss
-CONVERGENCE_PARTIAL_TP_PCT = _cfg.convergence_partial_tp_pct
-CONVERGENCE_PARTIAL_TP_FRACTION = _cfg.convergence_partial_tp_fraction
 
-# Early entry mode constants
-# Oracle Signal strategy constants
-ORACLE_SIGNAL_ENABLED = _cfg.oracle_signal_enabled
-ORACLE_SIGNAL_MIN_DELTA_PCT = _cfg.oracle_signal_min_delta_pct
-ORACLE_SIGNAL_MAX_ENTRY_PRICE = _cfg.oracle_signal_max_entry_price
-ORACLE_SIGNAL_MIN_EDGE_PCT = _cfg.oracle_signal_min_edge_pct
-ORACLE_SIGNAL_WINDOW_START_S = _cfg.oracle_signal_window_start_s
-ORACLE_SIGNAL_WINDOW_END_S = _cfg.oracle_signal_window_end_s
+
