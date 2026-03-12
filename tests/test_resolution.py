@@ -56,7 +56,7 @@ class TestResolvePosition:
             r = resolved[0]
             assert r["status"] == "resolved_win"
             assert r["exit_price"] == 1.0
-            assert abs(r["pnl"] - 4.0) < 0.001  # (1.0 - 0.6) * 10
+            assert abs(r["pnl"] - 6.6667) < 0.001  # tokens=10/0.6=16.67; (1.0-0.6)*16.67=6.67
             assert r["pnl_pct"] > 0
             # Position should be closed in DB
             open_pos = await db.get_open_dry_run_positions()
@@ -72,7 +72,7 @@ class TestResolvePosition:
             r = resolved[0]
             assert r["status"] == "resolved_loss"
             assert r["exit_price"] == 0.0
-            assert abs(r["pnl"] - (-6.0)) < 0.001  # -0.6 * 10
+            assert abs(r["pnl"] - (-10.0)) < 0.001  # loss = -amount (tokens=10/0.6; -0.6*16.67=-10)
             assert r["pnl_pct"] == -100.0
         _run(run())
 
@@ -163,7 +163,7 @@ class TestResolveAllMarkets:
 
             assert len(resolved) == 1
             assert resolved[0]["status"] == "resolved_win"
-            assert abs(resolved[0]["pnl"] - 2.5) < 0.001  # (1.0 - 0.5) * 5
+            assert abs(resolved[0]["pnl"] - 5.0) < 0.001  # tokens=5/0.5=10; (1.0-0.5)*10=5.0
 
             open_pos = await db.get_open_dry_run_positions()
             assert len(open_pos) == 1
@@ -272,7 +272,7 @@ class TestResolveAllMarkets:
             r = resolved[0]
             assert r["status"] == "resolved_win"
             assert r["exit_price"] == 1.0
-            assert abs(r["pnl"] - (1.0 - 0.26) * 3.41) < 0.01
+            assert abs(r["pnl"] - 3.41 * (1.0 / 0.26 - 1)) < 0.01  # tokens=3.41/0.26; pnl≈9.71
             assert r["pnl_pct"] > 200  # ~284%
 
         _run(run())
@@ -308,6 +308,6 @@ class TestResolveAllMarkets:
             r = resolved[0]
             assert r["status"] == "resolved_loss"
             assert r["exit_price"] == 0.0
-            assert abs(r["pnl"] - (-0.70 * 5.0)) < 0.01
+            assert abs(r["pnl"] - (-5.0)) < 0.01  # loss = -amount (tokens=5/0.70; -0.70*7.14=-5.0)
 
         _run(run())

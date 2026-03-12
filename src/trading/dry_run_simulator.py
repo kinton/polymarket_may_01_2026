@@ -194,9 +194,10 @@ class DryRunSimulator:
 
             if current_price <= effective_stop:
                 # Stop-loss triggered
-                # amount = shares, pnl = (exit - entry) * shares
-                pnl = (current_price - entry) * amount
-                pnl_pct = (current_price - entry) / entry * 100
+                # amount = dollars invested; tokens = amount / entry_price
+                tokens = amount / entry if entry > 0 else 0
+                pnl = (current_price - entry) * tokens
+                pnl_pct = pnl / amount * 100 if amount > 0 else 0
                 status = "trailing_stop" if trailing > stop_loss else "stop_loss"
                 await self._db.close_dry_run_position(
                     pos["id"],
@@ -226,9 +227,10 @@ class DryRunSimulator:
 
             elif current_price >= take_profit:
                 # Take-profit triggered
-                # amount = shares, pnl = (exit - entry) * shares
-                pnl = (current_price - entry) * amount
-                pnl_pct = (current_price - entry) / entry * 100
+                # amount = dollars invested; tokens = amount / entry_price
+                tokens = amount / entry if entry > 0 else 0
+                pnl = (current_price - entry) * tokens
+                pnl_pct = pnl / amount * 100 if amount > 0 else 0
                 await self._db.close_dry_run_position(
                     pos["id"],
                     exit_price=current_price,
@@ -301,16 +303,17 @@ class DryRunSimulator:
             amount = pos["amount"]
             side = pos["side"]
 
-            # amount = number of shares (contracts), not dollars
-            # PnL = (exit_price - entry_price) * shares
+            # amount = dollars invested; tokens = amount / entry_price
+            # PnL = (exit_price - entry_price) * tokens = amount * (exit/entry - 1)
+            tokens = amount / entry if entry > 0 else 0
             if side.upper() == winning_side.upper():
                 exit_price = 1.0
-                pnl = (1.0 - entry) * amount
-                pnl_pct = (1.0 - entry) / entry * 100 if entry > 0 else 0
+                pnl = (1.0 - entry) * tokens
+                pnl_pct = pnl / amount * 100 if amount > 0 else 0
                 status = "resolved_win"
             else:
                 exit_price = 0.0
-                pnl = -entry * amount
+                pnl = -entry * tokens  # = -amount
                 pnl_pct = -100.0
                 status = "resolved_loss"
 
