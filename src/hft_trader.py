@@ -951,6 +951,30 @@ class LastSecondTrader:
                     time_remaining, self.oracle_guard.snapshot, self.orderbook
                 )
                 if conv_signal is not None:
+                    # Oracle freshness check (staleness + min_points only).
+                    # NOTE: z-score check intentionally skipped — convergence
+                    # strategy WANTS low |z| (price near target). The standard
+                    # quality_ok() filter is designed for directional trading
+                    # (high |z| = strong signal) and would wrongly block the
+                    # best convergence opportunities.
+                    oracle_ok, oracle_block_reason, oracle_block_detail = (
+                        self.oracle_guard.quality_ok_for_convergence()
+                    )
+                    if not oracle_ok:
+                        self._log(
+                            f"⛔ [{self.market_name}] CONVERGENCE blocked: "
+                            f"oracle_quality={oracle_block_reason} ({oracle_block_detail})"
+                        )
+                        if self.dry_run_sim and oracle_block_reason not in self._recorded_skip_guards:
+                            self._recorded_skip_guards.add(oracle_block_reason)
+                            await self.dry_run_sim.record_skip(
+                                reason=oracle_block_reason,
+                                reason_detail=oracle_block_detail,
+                                time_remaining=time_remaining,
+                                oracle_snap=self.oracle_guard.snapshot,
+                            )
+                        return
+
                     self._log(
                         f"🎯 [{self.market_name}] CONVERGENCE TRIGGER! "
                         f"{conv_signal.side} ({conv_signal.side_label}) @ ${conv_signal.price:.4f} | "

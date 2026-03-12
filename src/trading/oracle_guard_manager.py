@@ -323,6 +323,16 @@ class OracleGuardManager:
                     max_lag_ms=self.beat_max_lag_ms,
                 )
 
+            # Fallback: if price_to_beat is still None (missed window start,
+            # HTML failed or no slug), use the first oracle price we receive.
+            # Better than having no data — delta will be small (we're already
+            # in the window) and convergence detection works.
+            if self.tracker.price_to_beat is None:
+                self.tracker.price_to_beat = tick.price
+                logger.info(
+                    f"[{self.market_name}] Using first oracle price as price_to_beat fallback: {tick.price:,.2f}"
+                )
+
             self.snapshot = self.tracker.update(ts_ms=tick.ts_ms, price=tick.price)
 
             # Periodic logging
@@ -343,6 +353,37 @@ class OracleGuardManager:
                         parts.append(f"z={snap.zscore:.2f}")
                     logger.info(f"[{self.market_name}] ORACLE " + " | ".join(parts))
                 self._last_log_ts = time.time()
+
+    def quality_ok_for_convergence(self) -> tuple[bool, str, str]:
+        """
+        Lightweight oracle quality check for convergence strategy entries.
+
+        Unlike quality_ok(), this does NOT check z-score direction — for convergence
+        we WANT low |z| (price near target). Only validates data freshness and
+        sufficient sample count.
+
+        Returns:
+            (ok, reason_code, detail) tuple.
+        """
+        if not self.enabled:
+            return True, "", ""
+
+        snap = self.snapshot
+        if snap is None:
+            return False, "oracle_snapshot_missing", ""
+
+        staleness_s = time.time() - float(self.last_update_ts)
+        if staleness_s > self.max_stale_s:
+            return False, "oracle_stale", f"{staleness_s:.2f}s"
+
+        if snap.n_points < self.min_points:
+            return (
+                False,
+                "oracle_points_insufficient",
+                f"{snap.n_points}<{self.min_points}",
+            )
+
+        return True, "", ""
 
     def log_block_summary(self, logger: logging.Logger) -> None:
         """Log oracle guard block summary."""

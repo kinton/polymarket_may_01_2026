@@ -1,9 +1,10 @@
 """
 Convergence Trading Strategy for Polymarket "Up or Down" markets.
 
-Core idea: When the oracle price converges with price_to_beat (within threshold),
-the real odds are ~50/50. But the market may still show a skew — one side
-priced high, one side cheap. We buy the CHEAP side because it's undervalued.
+Core idea (May strategy):
+  When |current_price - target| < 5bp, the outcome is ~50/50.
+  If the market shows a strong skew (cheap side ≤ 35¢), buy the cheap side.
+  That's it. Direction within 5bp is noise — price skew is the edge, not delta sign.
 
 V2 — Accumulate-and-trigger:
 Instead of buying on the first convergence tick, we accumulate evidence
@@ -75,14 +76,15 @@ class ConvergenceStrategy:
     2. decide() — called once at decision time (≤10s), returns signal or None
     """
 
-    # If oracle is MORE than this against the cheap side ON AVERAGE, skip
-    DEFAULT_MAX_AGAINST_BP = 0.0002  # 2bp (slightly relaxed from 1bp for averages)
+    # REMOVED: direction filter within convergence zone is noise.
+    # Within 5bp = ~50/50; cheap side payoff dominates regardless of delta sign.
+    DEFAULT_MAX_AGAINST_BP = float("inf")  # disabled: buy cheap side regardless
 
     # Minimum observations needed for a decision
     MIN_OBSERVATIONS = 5
 
     # Minimum % of observations that show convergence
-    MIN_CONVERGENCE_RATE = 0.30  # 30% of ticks must show convergence
+    MIN_CONVERGENCE_RATE = 0.40  # 40% of ticks must show convergence
 
     # Minimum % of observations agreeing on which side is cheap
     MIN_SIDE_CONSISTENCY = 0.70  # 70% must agree on same cheap side
@@ -92,8 +94,9 @@ class ConvergenceStrategy:
         threshold_pct: float = 0.0003,    # 3bp convergence
         min_skew: float = 0.75,            # expensive side >= 75¢
         max_cheap_price: float = 0.35,     # only buy at 35¢ or less
+        min_cheap_price: float = 0.0,      # disabled — convergence check is the real filter
         max_against_pct: float = DEFAULT_MAX_AGAINST_BP,
-        window_start_s: float = 180.0,    # observe from 3 min before close
+        window_start_s: float = 200.0,    # observe from ~3.3 min before close
         window_end_s: float = 20.0,
         min_observations: int = MIN_OBSERVATIONS,
         min_convergence_rate: float = MIN_CONVERGENCE_RATE,
@@ -104,6 +107,7 @@ class ConvergenceStrategy:
         self.threshold_pct = threshold_pct
         self.min_skew = min_skew
         self.max_cheap_price = max_cheap_price
+        self.min_cheap_price = min_cheap_price
         self.max_against_pct = max_against_pct
         self.window_start_s = window_start_s
         self.window_end_s = window_end_s
@@ -245,6 +249,13 @@ class ConvergenceStrategy:
         if median_cheap > self.max_cheap_price:
             return None
 
+        if median_cheap < self.min_cheap_price:
+            self._log(
+                f"SKIP: median_cheap={median_cheap:.2f} < min_cheap={self.min_cheap_price:.2f} "
+                f"(market already decided, not worth buying)"
+            )
+            return None
+
         if median_expensive < self.min_skew:
             return None
 
@@ -269,9 +280,32 @@ class ConvergenceStrategy:
         if buy_price > self.max_cheap_price:
             return None
 
+        if buy_price < self.min_cheap_price:
+            self._log(
+                f"SKIP: buy_price={buy_price:.2f} < min_cheap={self.min_cheap_price:.2f}"
+            )
+            return None
+
         oracle_price = oracle_snapshot.price if oracle_snapshot else side_obs[-1].oracle_price
         price_to_beat = oracle_snapshot.price_to_beat if oracle_snapshot and oracle_snapshot.price_to_beat else side_obs[-1].price_to_beat
         current_delta = oracle_snapshot.delta_pct if oracle_snapshot and oracle_snapshot.delta_pct is not None else median_delta
+
+        # Warn if oracle has drifted outside the convergence zone at decision time.
+        # This can happen when the oracle converged during the observation window but
+        # moved away before we decided. Does NOT block the trade (historical evidence
+        # still valid), but logs a visible warning for post-trade review.
+        if oracle_snapshot is not None and oracle_snapshot.delta_pct is not None:
+            current_abs_delta_pct = abs(oracle_snapshot.delta_pct)
+            if current_abs_delta_pct > self.threshold_pct:
+                self._log(
+                    f"⚠️  CONVERGENCE: oracle outside zone at decision time — "
+                    f"current delta_pct={current_abs_delta_pct * 100:.4f}% > threshold={self.threshold_pct * 100:.4f}% "
+                    f"(delta_usd={oracle_snapshot.delta:+.4f}, z={oracle_snapshot.zscore:.3f})"
+                    if oracle_snapshot.zscore is not None else
+                    f"⚠️  CONVERGENCE: oracle outside zone at decision time — "
+                    f"current delta_pct={current_abs_delta_pct * 100:.4f}% > threshold={self.threshold_pct * 100:.4f}% "
+                    f"(delta_usd={oracle_snapshot.delta:+.4f})"
+                )
 
         # All checks passed — commit to this decision
         self._decided = True
