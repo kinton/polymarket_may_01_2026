@@ -991,7 +991,7 @@ class LastSecondTrader:
                             side=conv_signal.side,
                             price=conv_signal.price,
                             amount=self.trade_size,
-                            confidence=conv_signal.price,
+                            confidence=conv_signal.convergence_rate * conv_signal.side_consistency,
                             time_remaining=time_remaining,
                             reason="convergence",
                             oracle_snap=self.oracle_guard.snapshot,
@@ -1436,7 +1436,7 @@ class LastSecondTrader:
             reason_detail=summary,
             side=self.winning_side,
             price=winning_ask,
-            confidence=winning_ask,
+            confidence=None,
             time_remaining=0.0,
             oracle_snap=self.oracle_guard.snapshot if self.oracle_guard.enabled else None,
         )

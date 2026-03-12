@@ -226,6 +226,23 @@ class TestAccumulation:
         assert signal.convergence_rate > 0
         assert signal.side_consistency > 0
 
+    def test_confidence_is_not_price(self):
+        """confidence = convergence_rate * side_consistency, NOT entry price.
+
+        Regression test: previously confidence was accidentally set to conv_signal.price.
+        """
+        cs = ConvergenceStrategy(threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30,
+                                 min_observations=3)
+        snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)
+        ob = _make_orderbook(ask_yes=0.15, ask_no=0.85)
+        signal = _full_cycle(cs, snap, ob)
+        assert signal is not None
+        expected_confidence = signal.convergence_rate * signal.side_consistency
+        # confidence must be in [0, 1] — not a raw price like 0.15
+        assert 0.0 < expected_confidence <= 1.0
+        # entry price is 0.15; confidence must differ from price
+        assert abs(expected_confidence - signal.price) > 1e-9
+
 
 class TestOracleAgainstFilter:
     """Oracle 'not against' filter on median delta."""
@@ -282,6 +299,7 @@ class TestGetCheapSide:
 class TestEdgeCases:
     def test_zero_delta(self):
         cs = ConvergenceStrategy(threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30,
+                                 min_cheap_price=0.0,  # disable min price for this test
                                  min_observations=3)
         snap = _make_snapshot(price=85000.0, price_to_beat=85000.0)
         ob = _make_orderbook(ask_yes=0.05, ask_no=0.95)
