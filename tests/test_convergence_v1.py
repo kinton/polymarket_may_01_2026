@@ -7,7 +7,7 @@ Mirrors test_convergence_strategy.py but uses the new plugin types
 import pytest
 
 from strategies.convergence_v1 import ConvergenceV1
-from strategies.base import MarketTick, Signal
+from strategies.base import MarketInfo, MarketTick, Signal
 from src.oracle_tracker import OracleSnapshot
 from src.clob_types import OrderBook
 
@@ -279,3 +279,41 @@ class TestSnapshotParity:
         assert old_signal.price == new_signal.price
         assert abs(old_signal.convergence_rate - new_signal.metadata["convergence_rate"]) < 1e-9
         assert abs(old_signal.side_consistency - new_signal.metadata["side_consistency"]) < 1e-9
+
+
+def _make_market_info(ticker: str = "BTC") -> MarketInfo:
+    return MarketInfo(
+        condition_id="test_cid", ticker=ticker, title=f"{ticker} Up or Down",
+        end_time_utc="2026-03-14 18:30:00 UTC", minutes_until_end=5.0,
+        token_id_yes="ty", token_id_no="tn",
+    )
+
+
+class TestMarketFilter:
+    def test_accepts_btc(self):
+        cs = ConvergenceV1()
+        assert cs.market_filter(_make_market_info("BTC")) is True
+
+    def test_accepts_eth(self):
+        cs = ConvergenceV1()
+        assert cs.market_filter(_make_market_info("ETH")) is True
+
+    def test_rejects_sol_by_default(self):
+        cs = ConvergenceV1()
+        assert cs.market_filter(_make_market_info("SOL")) is False
+
+    def test_case_insensitive(self):
+        cs = ConvergenceV1()
+        assert cs.market_filter(_make_market_info("btc")) is True
+        assert cs.market_filter(_make_market_info("Eth")) is True
+
+    def test_configure_overrides_tickers(self):
+        cs = ConvergenceV1()
+        cs.configure(tickers=["SOL", "BTC"])
+        assert cs.market_filter(_make_market_info("SOL")) is True
+        assert cs.market_filter(_make_market_info("BTC")) is True
+        assert cs.market_filter(_make_market_info("ETH")) is False
+
+    def test_rejects_unknown_ticker(self):
+        cs = ConvergenceV1()
+        assert cs.market_filter(_make_market_info("DOGE")) is False

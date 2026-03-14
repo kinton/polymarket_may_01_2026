@@ -14,10 +14,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from strategies.base import BaseStrategy, MarketTick, Signal
+from strategies.base import BaseStrategy, MarketInfo, MarketTick, Signal
 
 __all__ = [
     "BaseStrategy",
+    "MarketInfo",
     "MarketTick",
     "Signal",
     "register",

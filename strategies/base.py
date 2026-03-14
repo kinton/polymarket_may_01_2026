@@ -1,7 +1,7 @@
 """Base strategy interface for the plugin architecture.
 
 All trading strategies inherit from BaseStrategy and implement
-observe(), decide(), and reset().
+observe(), decide(), reset(), and market_filter().
 """
 
 from __future__ import annotations
@@ -12,6 +12,19 @@ from typing import Any
 
 from src.clob_types import OrderBook
 from src.oracle_tracker import OracleSnapshot
+
+
+@dataclass(frozen=True)
+class MarketInfo:
+    """Market metadata available at discovery time (before orderbook)."""
+
+    condition_id: str
+    ticker: str            # "BTC", "ETH", "SOL"
+    title: str
+    end_time_utc: str
+    minutes_until_end: float
+    token_id_yes: str
+    token_id_no: str
 
 
 @dataclass(frozen=True)
@@ -39,15 +52,17 @@ class BaseStrategy(ABC):
     """Abstract base for all trading strategies.
 
     Subclasses must define class-level identity attributes and implement
-    the three abstract methods.
+    the four abstract methods.
     """
 
     # --- identity (override in subclass) ---
     name: str = ""
     version: str = ""
-    default_tickers: list[str] = []
-    default_min_price: float = 0.0
-    default_max_price: float = 0.35
+
+    @abstractmethod
+    def market_filter(self, market: MarketInfo) -> bool:
+        """Does this strategy want to trade this market?"""
+        ...
 
     @abstractmethod
     def observe(self, tick: MarketTick) -> None:
@@ -63,6 +78,10 @@ class BaseStrategy(ABC):
     def reset(self) -> None:
         """Reset internal state for a new market cycle."""
         ...
+
+    def configure(self, **kwargs: Any) -> None:
+        """Optional: override runtime parameters (e.g. from CLI)."""
+        pass
 
     def get_signal(self, tick: MarketTick) -> Signal | None:
         """Convenience: observe + decide in one call.

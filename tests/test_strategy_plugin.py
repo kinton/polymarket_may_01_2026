@@ -8,7 +8,7 @@ from strategies import (
     load_strategy,
     register,
 )
-from strategies.base import BaseStrategy, MarketTick, Signal
+from strategies.base import BaseStrategy, MarketInfo, MarketTick, Signal
 from src.clob_types import OrderBook
 
 
@@ -19,13 +19,13 @@ class _DummyStrategy(BaseStrategy):
 
     name = "dummy"
     version = "v1"
-    default_tickers = ["BTC"]
-    default_min_price = 0.0
-    default_max_price = 1.0
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self._observed = False
+
+    def market_filter(self, market: MarketInfo) -> bool:
+        return market.ticker.upper() in ("BTC", "ETH")
 
     def observe(self, tick: MarketTick) -> None:
         self._observed = True
@@ -157,3 +157,54 @@ class TestMarketTickAndSignal:
     def test_signal_with_metadata(self):
         sig = Signal(side="NO", price=0.20, metadata={"reason": "convergence"})
         assert sig.metadata["reason"] == "convergence"
+
+
+class TestMarketInfo:
+    def test_market_info_frozen(self):
+        mi = MarketInfo(
+            condition_id="abc", ticker="BTC", title="Test",
+            end_time_utc="2026-03-14 18:30:00 UTC",
+            minutes_until_end=5.0,
+            token_id_yes="tok_yes", token_id_no="tok_no",
+        )
+        with pytest.raises(AttributeError):
+            mi.ticker = "ETH"
+
+    def test_market_info_fields(self):
+        mi = MarketInfo(
+            condition_id="abc", ticker="BTC", title="Test",
+            end_time_utc="2026-03-14 18:30:00 UTC",
+            minutes_until_end=5.0,
+            token_id_yes="tok_yes", token_id_no="tok_no",
+        )
+        assert mi.condition_id == "abc"
+        assert mi.ticker == "BTC"
+
+
+class TestMarketFilter:
+    def setup_method(self):
+        STRATEGY_REGISTRY.pop("dummy/v1", None)
+        register(_DummyStrategy)
+
+    def teardown_method(self):
+        STRATEGY_REGISTRY.pop("dummy/v1", None)
+
+    def test_market_filter_accepts(self):
+        s = load_strategy("dummy", "v1")
+        mi = MarketInfo(
+            condition_id="c1", ticker="BTC", title="BTC Up or Down",
+            end_time_utc="2026-03-14 18:30:00 UTC",
+            minutes_until_end=5.0,
+            token_id_yes="ty", token_id_no="tn",
+        )
+        assert s.market_filter(mi) is True
+
+    def test_market_filter_rejects(self):
+        s = load_strategy("dummy", "v1")
+        mi = MarketInfo(
+            condition_id="c2", ticker="SOL", title="SOL Up or Down",
+            end_time_utc="2026-03-14 18:30:00 UTC",
+            minutes_until_end=5.0,
+            token_id_yes="ty", token_id_no="tn",
+        )
+        assert s.market_filter(mi) is False

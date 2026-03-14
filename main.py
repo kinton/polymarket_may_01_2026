@@ -40,7 +40,8 @@ from src.trading.trade_db import TradeDatabase
 from src.gamma_15m_finder import GammaAPI15mFinder
 from src.hft_trader import LastSecondTrader
 from src.trading.dry_run_simulator import DryRunSimulator
-from strategies import discover_strategies
+from strategies import discover_strategies, load_strategy
+from strategies.base import MarketInfo
 
 
 class TradingBotRunner:
@@ -70,7 +71,8 @@ class TradingBotRunner:
         strategy: str = "convergence",
         strategy_version: str = "v1",
         mode: str = "test",
-        tickers: list[str] | None = None,
+        universe: list[str] | None = None,
+        tickers_override: list[str] | None = None,
         min_cheap_price: float = 0.0,
         health_server_enabled: bool = True,
     ):
@@ -97,7 +99,8 @@ class TradingBotRunner:
         self.strategy = strategy
         self.strategy_version = strategy_version
         self.mode = mode
-        self.tickers = tickers or ["BTC", "ETH", "SOL"]
+        self.universe = universe or ["BTC", "ETH", "SOL"]
+        self.tickers_override = tickers_override
         self.min_cheap_price = min_cheap_price
         self.health_server_enabled = health_server_enabled
 
@@ -126,14 +129,18 @@ class TradingBotRunner:
         n_strategies = discover_strategies()
         self.finder_logger.info(f"Discovered {n_strategies} strategy plugin(s)")
 
+        # Create a filter strategy instance for market_filter()
+        self._filter_strategy = load_strategy(self.strategy, self.strategy_version)
+        if self.tickers_override:
+            self._filter_strategy.configure(tickers=self.tickers_override)
+
         self.finder_logger.info("=" * 80)
         self.finder_logger.info("Trading Bot Runner Initialized")
         self.finder_logger.info("=" * 80)
         self.finder_logger.info(
             f"Strategy: {self.strategy} {self.strategy_version} | "
             f"Mode: {self.mode} | "
-            f"Tickers: {','.join(self.tickers)} | "
-            f"Min price: {self.min_cheap_price}"
+            f"Universe: {','.join(self.universe)}"
         )
         self.finder_logger.info(
             f"Mode: {'DRY RUN (Safe Mode)' if self.dry_run else '🔴 LIVE TRADING 🔴'}"
@@ -165,7 +172,7 @@ class TradingBotRunner:
         try:
             finder = GammaAPI15mFinder(
                 logger=self.finder_logger,
-                tickers=self.tickers,
+                tickers=self.universe,
             )  # Default: 20 minutes search window
             markets = await finder.find_active_market()
             return markets
@@ -418,8 +425,32 @@ class TradingBotRunner:
                 if markets:
                     self.finder_logger.info(f"Found {len(markets)} active market(s)")
 
-                    # Filter eligible markets
-                    eligible = [m for m in markets if self.should_start_trader(m)]
+                    # Level 2: strategy market_filter
+                    filtered = []
+                    for m in markets:
+                        mi = MarketInfo(
+                            condition_id=m.get("condition_id", ""),
+                            ticker=m.get("ticker", ""),
+                            title=m.get("title", ""),
+                            end_time_utc=m.get("end_time_utc", ""),
+                            minutes_until_end=m.get("minutes_until_end", 0.0),
+                            token_id_yes=m.get("token_id_yes", ""),
+                            token_id_no=m.get("token_id_no", ""),
+                        )
+                        if self._filter_strategy.market_filter(mi):
+                            filtered.append(m)
+                        else:
+                            self.finder_logger.debug(
+                                f"Strategy rejected market: {mi.ticker} {mi.title}"
+                            )
+
+                    if len(filtered) < len(markets):
+                        self.finder_logger.info(
+                            f"Strategy market_filter: {len(filtered)}/{len(markets)} markets accepted"
+                        )
+
+                    # Filter eligible markets (timing)
+                    eligible = [m for m in filtered if self.should_start_trader(m)]
 
                     if eligible:
                         self.finder_logger.info(
@@ -558,10 +589,16 @@ async def main():
         help="Strategy version (default: v1)",
     )
     parser.add_argument(
-        "--tickers",
+        "--universe",
         type=str,
         default="BTC,ETH,SOL",
-        help="Comma-separated tickers to trade (default: BTC,ETH,SOL)",
+        help="Comma-separated tickers for Finder to search (default: BTC,ETH,SOL)",
+    )
+    parser.add_argument(
+        "--tickers",
+        type=str,
+        default=None,
+        help="Override strategy's supported tickers (default: strategy decides)",
     )
     parser.add_argument(
         "--min-price",
@@ -643,11 +680,19 @@ async def main():
         )
         args.mode = "live"
 
-    # Parse and validate tickers
-    tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    for t in tickers:
+    # Parse and validate universe
+    universe = [t.strip().upper() for t in args.universe.split(",") if t.strip()]
+    for t in universe:
         if t not in VALID_TICKERS:
             parser.error(f"Invalid ticker '{t}'. Must be one of: {', '.join(VALID_TICKERS)}")
+
+    # Parse optional tickers override
+    tickers_override = None
+    if args.tickers:
+        tickers_override = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+        for t in tickers_override:
+            if t not in VALID_TICKERS:
+                parser.error(f"Invalid ticker '{t}'. Must be one of: {', '.join(VALID_TICKERS)}")
 
     # Validate min-price
     if not (0.0 <= args.min_price < 1.0):
@@ -694,7 +739,8 @@ async def main():
         strategy=args.strategy,
         strategy_version=args.strategy_version,
         mode=args.mode,
-        tickers=tickers,
+        universe=universe,
+        tickers_override=tickers_override,
         min_cheap_price=args.min_price,
         health_server_enabled=not args.no_health_server,
     )

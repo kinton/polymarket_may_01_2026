@@ -34,7 +34,7 @@ from typing import Any
 
 from src.oracle_tracker import OracleSnapshot
 from src.clob_types import OrderBook
-from strategies.base import BaseStrategy, MarketTick, Signal
+from strategies.base import BaseStrategy, MarketInfo, MarketTick, Signal
 from strategies import register
 
 
@@ -65,9 +65,9 @@ class ConvergenceV1(BaseStrategy):
     # --- identity ---
     name = "convergence"
     version = "v1"
-    default_tickers = ["BTC", "ETH", "SOL"]
-    default_min_price = 0.0
-    default_max_price = 0.35
+
+    # Tickers this strategy supports (no SOL — poor win rate)
+    SUPPORTED_TICKERS: tuple[str, ...] = ("BTC", "ETH")
 
     # REMOVED: direction filter within convergence zone is noise.
     # Within 5bp = ~50/50; cheap side payoff dominates regardless of delta sign.
@@ -110,10 +110,23 @@ class ConvergenceV1(BaseStrategy):
         self.decision_time_s = decision_time_s  # if set, forces fixed decision point
         self._logger = logger
 
+        # Active tickers (can be overridden via configure)
+        self._active_tickers: tuple[str, ...] = self.SUPPORTED_TICKERS
+
         # Accumulation state (reset per market cycle)
         self._observations: list[_Observation] = []
         self._decided: bool = False
         self._total_ticks: int = 0  # all ticks in window, not just converging
+
+    def market_filter(self, market: MarketInfo) -> bool:
+        """Accept markets whose ticker is in the active set."""
+        return market.ticker.upper() in self._active_tickers
+
+    def configure(self, **kwargs) -> None:
+        """Override runtime parameters (e.g. tickers from CLI)."""
+        tickers = kwargs.get("tickers")
+        if tickers:
+            self._active_tickers = tuple(t.upper() for t in tickers)
 
     def reset(self) -> None:
         """Reset state for a new market cycle."""
