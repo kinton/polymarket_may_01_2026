@@ -131,6 +131,10 @@ class LastSecondTrader:
         orderbook_ws_poll_interval: float = 0.1,
         trade_db: Any | None = None,
         convergence_enabled: bool | None = None,
+        strategy: str = "convergence",
+        strategy_version: str = "v1",
+        mode: str = "test",
+        min_cheap_price: float = 0.0,
     ):
         """
         Initialize the trader.
@@ -148,10 +152,14 @@ class LastSecondTrader:
             self.token_id_yes = token_id_yes
             self.token_id_no = token_id_no
             self.end_time = end_time
+            self.strategy = strategy
+            self.strategy_version = strategy_version
+            self.mode = mode
             self.dry_run = dry_run
             self.trade_size = trade_size
             self.title = title
             self.slug = slug
+            self._min_cheap_price_override = min_cheap_price
             self.logger = trader_logger
 
             # Extract short market name for logging
@@ -189,12 +197,14 @@ class LastSecondTrader:
                 CONVERGENCE_DISABLE_STOP_LOSS,
             )
             _conv_enabled = convergence_enabled if convergence_enabled is not None else CONVERGENCE_ENABLED
+            # CLI --min-price overrides config if non-zero
+            _effective_min_cheap = min_cheap_price if min_cheap_price > 0 else CONVERGENCE_MIN_CHEAP_PRICE
             if _conv_enabled and oracle_enabled:
                 self.convergence_strategy: ConvergenceStrategy | None = ConvergenceStrategy(
                     threshold_pct=CONVERGENCE_THRESHOLD_PCT,
                     min_skew=CONVERGENCE_MIN_SKEW,
                     max_cheap_price=CONVERGENCE_MAX_CHEAP_PRICE,
-                    min_cheap_price=CONVERGENCE_MIN_CHEAP_PRICE,
+                    min_cheap_price=_effective_min_cheap,
                     window_start_s=CONVERGENCE_WINDOW_START_S,
                     window_end_s=CONVERGENCE_WINDOW_END_S,
                     min_observations=CONVERGENCE_MIN_OBSERVATIONS,
@@ -319,6 +329,9 @@ class LastSecondTrader:
                     market_name=self.market_name,
                     condition_id=condition_id,
                     dry_run=dry_run,
+                    strategy=self.strategy,
+                    strategy_version=self.strategy_version,
+                    mode=self.mode,
                 )
                 self._log(f"[{self.market_name}] DryRunSimulator enabled (SQLite)")
             else:

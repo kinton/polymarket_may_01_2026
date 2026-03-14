@@ -33,6 +33,13 @@ from zoneinfo import ZoneInfo
 import aiohttp
 
 
+TICKER_MAP: dict[str, list[str]] = {
+    "BTC": ["Bitcoin", "BTC"],
+    "ETH": ["Ethereum", "ETH"],
+    "SOL": ["Solana", "SOL"],
+}
+
+
 class GammaAPI15mFinder:
     """Find active binary markets on Polymarket."""
 
@@ -46,6 +53,7 @@ class GammaAPI15mFinder:
         max_minutes_ahead: int = 20,
         use_wide_search: bool = False,
         logger: logging.Logger | None = None,
+        tickers: list[str] | None = None,
     ):
         """Initialize finder.
 
@@ -59,6 +67,7 @@ class GammaAPI15mFinder:
         self.max_minutes_ahead = max_minutes_ahead
         self.use_wide_search = use_wide_search
         self.logger = logger
+        self.tickers = tickers or list(TICKER_MAP.keys())
         # Always load base queries (Bitcoin/Ethereum + custom from env)
         self.base_queries = self._load_base_queries()
         # Rate limiting to avoid Cloudflare 403
@@ -137,31 +146,24 @@ class GammaAPI15mFinder:
         await asyncio.sleep(delay)
 
     def _load_base_queries(self) -> list[str]:
-        """Load base queries from env or use defaults.
+        """Load base queries from env or build from active tickers.
 
         Env format: MARKET_QUERIES="Query1;Query2;Query3"
 
-        Default queries target Bitcoin/Ethereum/Solana 5m/15m markets.
+        Default queries target the configured tickers' 5m/15m markets.
         You can add more via env variable to trade on other markets.
-
-        Examples:
-            MARKET_QUERIES="Trump;Election;Will"  # Add political markets
-            MARKET_QUERIES="AAPL;TSLA;Stock"      # Add stock markets
         """
         env_val = os.getenv("MARKET_QUERIES")
 
-        # Start with crypto "Up or Down" defaults (5m/15m markets)
-        # Note: Recent format uses time ranges: "2:45PM-3:00PM ET"
-        default_queries = [
-            "Bitcoin Up or Down",
-            "Ethereum Up or Down",
-            "Solana Up or Down",
-            "BTC Up or Down",
-            "ETH Up or Down",
-            "SOL Up or Down",
-            "BTC 15 Minute Up or Down",
-            "ETH 15 Minute Up or Down",
-        ]
+        # Build queries dynamically from active tickers
+        default_queries: list[str] = []
+        for ticker in self.tickers:
+            names = TICKER_MAP.get(ticker, [ticker])
+            for name in names:
+                default_queries.append(f"{name} Up or Down")
+            # Add specific format queries for first two names
+            if len(names) >= 2:
+                default_queries.append(f"{names[1]} 15 Minute Up or Down")
 
         if env_val:
             # Add custom queries from env
@@ -250,6 +252,28 @@ class GammaAPI15mFinder:
             if session_to_close is not None:
                 await session_to_close.close()
 
+    def _matches_tickers(self, event: dict[str, Any], title: str) -> bool:
+        """Check if an event/market matches one of the active tickers."""
+        # Build allowed keywords from active tickers
+        allowed_keywords: list[str] = []
+        for ticker in self.tickers:
+            allowed_keywords.extend(TICKER_MAP.get(ticker, [ticker]))
+
+        # Check event ticker field
+        event_ticker = event.get("ticker", "")
+        if event_ticker:
+            for kw in allowed_keywords:
+                if kw.upper() == event_ticker.upper():
+                    return True
+
+        # Check title
+        title_upper = title.upper()
+        for kw in allowed_keywords:
+            if kw.upper() in title_upper:
+                return True
+
+        return False
+
     def filter_markets(
         self, events: list[dict[str, Any]], max_minutes_ahead: int = 20
     ) -> list[dict[str, Any]]:
@@ -264,12 +288,14 @@ class GammaAPI15mFinder:
         self._out(f"Filtering {len(events)} events...")
         self._out(f"Searching for markets ending within {max_minutes_ahead} minutes")
         self._out(f"Current time: {now.strftime('%H:%M:%S %Z')}")
+        self._out(f"Active tickers: {', '.join(self.tickers)}")
 
         markets_checked = 0
         markets_skipped_inactive = 0
         markets_skipped_no_endtime = 0
         markets_skipped_time_window = 0
         markets_skipped_non_binary = 0
+        markets_skipped_ticker = 0
         events_skipped_inactive = 0
 
         for event in events:
@@ -377,6 +403,11 @@ class GammaAPI15mFinder:
                         markets_skipped_non_binary += 1
                         continue
 
+                    # Filter by active tickers
+                    if not self._matches_tickers(event, title):
+                        markets_skipped_ticker += 1
+                        continue
+
                     # Extract slug for UI link if available
                     slug = market.get("slug") or event.get("slug") or None
 
@@ -407,6 +438,7 @@ class GammaAPI15mFinder:
         self._out(f"  Skipped (no end time): {markets_skipped_no_endtime}")
         self._out(f"  Skipped (outside time window): {markets_skipped_time_window}")
         self._out(f"  Skipped (non-binary): {markets_skipped_non_binary}")
+        self._out(f"  Skipped (ticker filter): {markets_skipped_ticker}")
         self._out(f"  Found: {len(filtered_markets)}")
 
         return filtered_markets

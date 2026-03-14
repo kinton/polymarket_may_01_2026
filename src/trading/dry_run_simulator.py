@@ -35,11 +35,17 @@ class DryRunSimulator:
         market_name: str,
         condition_id: str,
         dry_run: bool = True,
+        strategy: str = "convergence",
+        strategy_version: str = "v1",
+        mode: str = "test",
     ) -> None:
         self._db = db
         self.market_name = market_name
         self.condition_id = condition_id
         self.dry_run = dry_run
+        self.strategy = strategy
+        self.strategy_version = strategy_version
+        self.mode = mode
         # Cache open position ids for stop-loss checking
         self._open_position_ids: list[int] = []
 
@@ -80,6 +86,9 @@ class DryRunSimulator:
             time_remaining=time_remaining,
             reason=reason,
             dry_run=self.dry_run,
+            strategy=self.strategy,
+            strategy_version=self.strategy_version,
+            mode=self.mode,
             **oracle_kwargs,
         )
 
@@ -95,6 +104,9 @@ class DryRunSimulator:
             amount=amount,
             reason=reason,
             dry_run=self.dry_run,
+            strategy=self.strategy,
+            strategy_version=self.strategy_version,
+            mode=self.mode,
         )
 
         # Open virtual position
@@ -119,6 +131,9 @@ class DryRunSimulator:
             take_profit_price=take_profit,
             disable_stop_loss=disable_stop_loss,
             opened_at=now,
+            strategy=self.strategy,
+            strategy_version=self.strategy_version,
+            mode=self.mode,
         )
         self._open_position_ids.append(pos_id)
         return pos_id
@@ -155,6 +170,9 @@ class DryRunSimulator:
             reason=reason,
             reason_detail=reason_detail,
             dry_run=self.dry_run,
+            strategy=self.strategy,
+            strategy_version=self.strategy_version,
+            mode=self.mode,
             **oracle_kwargs,
         )
 
@@ -241,7 +259,10 @@ class DryRunSimulator:
                     pnl=pnl,
                     pnl_pct=pnl_pct,
                     reason=status,
-                    dry_run=True,
+                    dry_run=self.dry_run,
+                    strategy=self.strategy,
+                    strategy_version=self.strategy_version,
+                    mode=self.mode,
                 )
                 closed.append({"id": pos["id"], "status": status, "pnl": pnl})
 
@@ -272,7 +293,10 @@ class DryRunSimulator:
                     pnl=pnl,
                     pnl_pct=pnl_pct,
                     reason="take_profit",
-                    dry_run=True,
+                    dry_run=self.dry_run,
+                    strategy=self.strategy,
+                    strategy_version=self.strategy_version,
+                    mode=self.mode,
                 )
                 closed.append({"id": pos["id"], "status": "take_profit", "pnl": pnl})
 
@@ -359,7 +383,10 @@ class DryRunSimulator:
                 pnl=pnl,
                 pnl_pct=pnl_pct,
                 reason=status,
-                dry_run=True,
+                dry_run=self.dry_run,
+                strategy=self.strategy,
+                strategy_version=self.strategy_version,
+                mode=self.mode,
             )
 
             resolved.append({
@@ -426,7 +453,10 @@ class DryRunSimulator:
                 pnl=0.0,
                 pnl_pct=0.0,
                 reason="voided",
-                dry_run=True,
+                dry_run=self.dry_run,
+                strategy=self.strategy,
+                strategy_version=self.strategy_version,
+                mode=self.mode,
             )
 
             voided.append({

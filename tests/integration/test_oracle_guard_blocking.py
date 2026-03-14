@@ -2,6 +2,7 @@
 Test Oracle Guard integration with convergence strategy V2 (continuous eval).
 """
 
+import time
 import pytest
 from unittest.mock import AsyncMock
 
@@ -55,6 +56,7 @@ async def test_convergence_fires_when_oracle_converged(integration_trader):
         price_to_beat=100.0, delta=0.0, delta_pct=0.0,
         vol_pct=0.001, slope_usd_per_s=0.0, zscore=0.0,
     )
+    integration_trader.oracle_guard.last_update_ts = time.time()
     integration_trader.orderbook = _skewed_orderbook()
     integration_trader._update_winning_side()
     integration_trader.execute_order = AsyncMock()

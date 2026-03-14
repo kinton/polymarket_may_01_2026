@@ -209,11 +209,49 @@ async def _apply_v2(db: aiosqlite.Connection) -> None:
     await db.executescript(_V2_TABLES)
 
 
+async def _apply_v4(db: aiosqlite.Connection) -> None:
+    """Add strategy, strategy_version, mode columns to trades/trade_decisions/dry_run_positions.
+
+    Backfill mode from dry_run where applicable.
+    """
+    alter_stmts = [
+        # trades
+        "ALTER TABLE trades ADD COLUMN strategy TEXT DEFAULT 'convergence'",
+        "ALTER TABLE trades ADD COLUMN strategy_version TEXT DEFAULT 'v1'",
+        "ALTER TABLE trades ADD COLUMN mode TEXT DEFAULT 'test'",
+        # trade_decisions
+        "ALTER TABLE trade_decisions ADD COLUMN strategy TEXT DEFAULT 'convergence'",
+        "ALTER TABLE trade_decisions ADD COLUMN strategy_version TEXT DEFAULT 'v1'",
+        "ALTER TABLE trade_decisions ADD COLUMN mode TEXT DEFAULT 'test'",
+        # dry_run_positions
+        "ALTER TABLE dry_run_positions ADD COLUMN strategy TEXT DEFAULT 'convergence'",
+        "ALTER TABLE dry_run_positions ADD COLUMN strategy_version TEXT DEFAULT 'v1'",
+        "ALTER TABLE dry_run_positions ADD COLUMN mode TEXT DEFAULT 'test'",
+    ]
+    for stmt in alter_stmts:
+        try:
+            await db.execute(stmt)
+        except Exception:
+            pass  # column may already exist
+
+    # Backfill mode from dry_run flag
+    await db.execute(
+        "UPDATE trades SET mode = CASE WHEN dry_run = 1 THEN 'test' ELSE 'live' END "
+        "WHERE mode IS NULL OR mode = 'test'"
+    )
+    await db.execute(
+        "UPDATE trade_decisions SET mode = CASE WHEN dry_run = 1 THEN 'test' ELSE 'live' END "
+        "WHERE mode IS NULL OR mode = 'test'"
+    )
+    await db.commit()
+
+
 # List of (version, coroutine_factory).  Each is applied once, in order.
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, _apply_v1),
     (2, _apply_v2),
     (3, _apply_v3),
+    (4, _apply_v4),
 ]
 
 
@@ -285,17 +323,22 @@ class TradeDatabase:
         pnl_pct: float | None = None,
         reason: str | None = None,
         dry_run: bool = True,
+        strategy: str = "convergence",
+        strategy_version: str = "v1",
+        mode: str = "test",
     ) -> int:
         cur = await self._db.execute(
             """INSERT INTO trades
                (timestamp, timestamp_iso, market_name, condition_id,
                 action, side, price, amount, order_id, status,
-                pnl, pnl_pct, reason, dry_run)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                pnl, pnl_pct, reason, dry_run,
+                strategy, strategy_version, mode)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 timestamp, timestamp_iso, market_name, condition_id,
                 action, side, price, amount, order_id, status,
                 pnl, pnl_pct, reason, int(dry_run),
+                strategy, strategy_version, mode,
             ),
         )
         await self._db.commit()
@@ -589,6 +632,9 @@ class TradeDatabase:
         oracle_delta: float | None = None,
         oracle_n_points: int | None = None,
         dry_run: bool = True,
+        strategy: str = "convergence",
+        strategy_version: str = "v1",
+        mode: str = "test",
     ) -> int:
         cur = await self._db.execute(
             """INSERT INTO trade_decisions
@@ -596,14 +642,16 @@ class TradeDatabase:
                 action, side, price, amount, confidence, time_remaining,
                 reason, reason_detail,
                 oracle_price, oracle_z, oracle_vol, oracle_delta, oracle_n_points,
-                dry_run)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                dry_run,
+                strategy, strategy_version, mode)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 timestamp, timestamp_iso, market_name, condition_id,
                 action, side, price, amount, confidence, time_remaining,
                 reason, reason_detail,
                 oracle_price, oracle_z, oracle_vol, oracle_delta, oracle_n_points,
                 int(dry_run),
+                strategy, strategy_version, mode,
             ),
         )
         await self._db.commit()
@@ -666,17 +714,22 @@ class TradeDatabase:
         take_profit_price: float | None = None,
         disable_stop_loss: bool = False,
         opened_at: float,
+        strategy: str = "convergence",
+        strategy_version: str = "v1",
+        mode: str = "test",
     ) -> int:
         cur = await self._db.execute(
             """INSERT INTO dry_run_positions
                (trade_id, condition_id, market_name, side, entry_price,
                 amount, trailing_stop, stop_loss_price, take_profit_price,
-                disable_stop_loss, status, opened_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                disable_stop_loss, status, opened_at,
+                strategy, strategy_version, mode)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 trade_id, condition_id, market_name, side, entry_price,
                 amount, trailing_stop, stop_loss_price, take_profit_price,
                 1 if disable_stop_loss else 0, "open", opened_at,
+                strategy, strategy_version, mode,
             ),
         )
         await self._db.commit()

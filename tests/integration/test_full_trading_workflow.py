@@ -9,6 +9,7 @@ Verifies:
 """
 
 from unittest.mock import AsyncMock, MagicMock
+import time
 import pytest
 
 from src.clob_types import OrderBook
@@ -72,6 +73,7 @@ async def test_convergence_triggers_when_evidence_sufficient(integration_trader)
     integration_trader.oracle_guard.enabled = True
     snap = _make_oracle_snapshot(price=100.0, price_to_beat=100.0, delta_pct=0.0)
     integration_trader.oracle_guard.snapshot = snap
+    integration_trader.oracle_guard.last_update_ts = time.time()
     ob = _make_skewed_ob("NO", 0.20, 0.80)
     integration_trader.orderbook = ob
     integration_trader._update_winning_side()

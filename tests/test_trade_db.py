@@ -326,3 +326,82 @@ async def test_cleanup_old_snapshots(db: TradeDatabase):
     assert deleted == 1
     async with db._db.execute("SELECT COUNT(*) FROM order_book_snapshots") as cur:
         assert (await cur.fetchone())[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# V4 migration — strategy columns
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_v4_migration_adds_strategy_columns(db: TradeDatabase):
+    """V4 migration adds strategy, strategy_version, mode columns."""
+    # Check trades table has strategy columns
+    tid = await db.insert_trade(
+        timestamp=time.time(),
+        timestamp_iso="2026-03-14T10:00:00Z",
+        market_name="BTC",
+        condition_id="c1",
+        action="buy",
+        side="YES",
+        price=0.20,
+        amount=1.0,
+        strategy="convergence",
+        strategy_version="v1",
+        mode="test",
+    )
+    trades = await db.get_trades()
+    assert trades[0]["strategy"] == "convergence"
+    assert trades[0]["strategy_version"] == "v1"
+    assert trades[0]["mode"] == "test"
+
+    # Check trade_decisions table
+    await db.insert_trade_decision(
+        timestamp=time.time(),
+        timestamp_iso="2026-03-14T10:00:00Z",
+        market_name="BTC",
+        condition_id="c1",
+        action="buy",
+        reason="trigger",
+        strategy="convergence",
+        strategy_version="v1",
+        mode="live",
+    )
+    decisions = await db.get_trade_decisions(action="buy")
+    assert decisions[0]["strategy"] == "convergence"
+    assert decisions[0]["mode"] == "live"
+
+    # Check dry_run_positions table
+    pid = await db.open_dry_run_position(
+        condition_id="c1",
+        market_name="BTC",
+        side="YES",
+        entry_price=0.20,
+        amount=1.0,
+        opened_at=time.time(),
+        strategy="convergence",
+        strategy_version="v1",
+        mode="test",
+    )
+    positions = await db.get_open_dry_run_positions()
+    assert positions[0]["strategy"] == "convergence"
+    assert positions[0]["mode"] == "test"
+
+
+@pytest.mark.asyncio
+async def test_v4_migration_defaults(db: TradeDatabase):
+    """V4 columns use correct defaults when not specified."""
+    tid = await db.insert_trade(
+        timestamp=time.time(),
+        timestamp_iso="2026-03-14T10:00:00Z",
+        market_name="BTC",
+        condition_id="c1",
+        action="buy",
+        side="YES",
+        price=0.20,
+        amount=1.0,
+    )
+    trades = await db.get_trades()
+    assert trades[0]["strategy"] == "convergence"
+    assert trades[0]["strategy_version"] == "v1"
+    assert trades[0]["mode"] == "test"

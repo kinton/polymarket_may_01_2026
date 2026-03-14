@@ -66,6 +66,12 @@ class TradingBotRunner:
         oracle_window_s: float = 60.0,
         book_log_every_s: float = 1.0,
         book_log_every_s_final: float = 0.5,
+        strategy: str = "convergence",
+        strategy_version: str = "v1",
+        mode: str = "test",
+        tickers: list[str] | None = None,
+        min_cheap_price: float = 0.0,
+        health_server_enabled: bool = True,
     ):
         """
         Initialize the trading bot runner.
@@ -87,6 +93,12 @@ class TradingBotRunner:
         self.oracle_guard_enabled = bool(oracle_guard_enabled)
         self.oracle_min_points = int(oracle_min_points)
         self.oracle_window_s = float(oracle_window_s)
+        self.strategy = strategy
+        self.strategy_version = strategy_version
+        self.mode = mode
+        self.tickers = tickers or ["BTC", "ETH", "SOL"]
+        self.min_cheap_price = min_cheap_price
+        self.health_server_enabled = health_server_enabled
 
         # Active traders (track running tasks)
         self.active_traders = {}  # condition_id -> asyncio.Task
@@ -97,7 +109,7 @@ class TradingBotRunner:
         self._traders: Dict[str, Any] = {}  # condition_id -> LastSecondTrader instance
 
         # Health check server
-        self._health: Optional[HealthCheckServer] = HealthCheckServer()
+        self._health: Optional[HealthCheckServer] = HealthCheckServer() if self.health_server_enabled else None
 
         # Trade database (SQLite) for dry-run recording
         self._trade_db: Optional[TradeDatabase] = None
@@ -112,6 +124,12 @@ class TradingBotRunner:
         self.finder_logger.info("=" * 80)
         self.finder_logger.info("Trading Bot Runner Initialized")
         self.finder_logger.info("=" * 80)
+        self.finder_logger.info(
+            f"Strategy: {self.strategy} {self.strategy_version} | "
+            f"Mode: {self.mode} | "
+            f"Tickers: {','.join(self.tickers)} | "
+            f"Min price: {self.min_cheap_price}"
+        )
         self.finder_logger.info(
             f"Mode: {'DRY RUN (Safe Mode)' if self.dry_run else '🔴 LIVE TRADING 🔴'}"
         )
@@ -141,7 +159,8 @@ class TradingBotRunner:
         """
         try:
             finder = GammaAPI15mFinder(
-                logger=self.finder_logger
+                logger=self.finder_logger,
+                tickers=self.tickers,
             )  # Default: 20 minutes search window
             markets = await finder.find_active_market()
             return markets
@@ -257,6 +276,10 @@ class TradingBotRunner:
                 book_log_every_s=self.book_log_every_s,
                 book_log_every_s_final=self.book_log_every_s_final,
                 trade_db=self._trade_db,
+                strategy=self.strategy,
+                strategy_version=self.strategy_version,
+                mode=self.mode,
+                min_cheap_price=self.min_cheap_price,
             )
 
             # Track trader instance for graceful shutdown
@@ -328,7 +351,10 @@ class TradingBotRunner:
                 db=self._trade_db,
                 market_name="resolver",
                 condition_id="resolver",
-                dry_run=True,
+                dry_run=self.dry_run,
+                strategy=self.strategy,
+                strategy_version=self.strategy_version,
+                mode=self.mode,
             )
             # resolve_all_markets needs a CLOB client; in dry-run mode we don't have one,
             # so we create a lightweight one just for market queries
@@ -496,13 +522,52 @@ class TradingBotRunner:
 
 async def main():
     """Main entry point with command line argument parsing."""
+    import warnings
+
+    VALID_TICKERS = ["BTC", "ETH", "SOL"]
+
     parser = argparse.ArgumentParser(
         description="Polymarket 15-minute market trading bot runner"
     )
     parser.add_argument(
         "--live",
         action="store_true",
-        help="Enable live trading mode (default: dry run)",
+        help="[DEPRECATED: use --mode live] Enable live trading mode",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["test", "live"],
+        default="test",
+        help="Trading mode: test (dry run) or live (default: test)",
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="convergence",
+        help="Strategy name (default: convergence)",
+    )
+    parser.add_argument(
+        "--strategy-version",
+        type=str,
+        default="v1",
+        help="Strategy version (default: v1)",
+    )
+    parser.add_argument(
+        "--tickers",
+        type=str,
+        default="BTC,ETH,SOL",
+        help="Comma-separated tickers to trade (default: BTC,ETH,SOL)",
+    )
+    parser.add_argument(
+        "--min-price",
+        type=float,
+        default=0.0,
+        help="Minimum cheap price to buy (default: 0.0 = disabled)",
+    )
+    parser.add_argument(
+        "--no-health-server",
+        action="store_true",
+        help="Disable health check HTTP server",
     )
     parser.add_argument(
         "--size",
@@ -564,6 +629,25 @@ async def main():
 
     args = parser.parse_args()
 
+    # --live is deprecated alias for --mode live
+    if args.live:
+        warnings.warn(
+            "--live is deprecated, use --mode live instead",
+            DeprecationWarning,
+            stacklevel=1,
+        )
+        args.mode = "live"
+
+    # Parse and validate tickers
+    tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+    for t in tickers:
+        if t not in VALID_TICKERS:
+            parser.error(f"Invalid ticker '{t}'. Must be one of: {', '.join(VALID_TICKERS)}")
+
+    # Validate min-price
+    if not (0.0 <= args.min_price < 1.0):
+        parser.error("--min-price must be in [0, 1)")
+
     if args.size <= 0:
         parser.error("--size must be a positive number")
     if args.max_traders < 1:
@@ -577,8 +661,10 @@ async def main():
     if args.book_log_every_final < 0:
         parser.error("--book-log-every-final must be >= 0")
 
+    is_live = args.mode == "live"
+
     # Safety warning for live mode
-    if args.live:
+    if is_live:
         print("\n" + "=" * 80)
         print("🔴 WARNING: LIVE TRADING MODE ENABLED 🔴")
         print("=" * 80)
@@ -589,7 +675,7 @@ async def main():
 
     # Create and run bot
     runner = TradingBotRunner(
-        dry_run=not args.live,
+        dry_run=not is_live,
         trade_size=args.size,
         poll_interval=args.poll_interval,
         run_once=args.once,
@@ -600,6 +686,12 @@ async def main():
         oracle_window_s=args.oracle_window_s,
         book_log_every_s=args.book_log_every,
         book_log_every_s_final=args.book_log_every_final,
+        strategy=args.strategy,
+        strategy_version=args.strategy_version,
+        mode=args.mode,
+        tickers=tickers,
+        min_cheap_price=args.min_price,
+        health_server_enabled=not args.no_health_server,
     )
 
     await runner.run()

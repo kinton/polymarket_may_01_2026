@@ -7,6 +7,8 @@ Env var names match the field names in UPPER_CASE (e.g., MAX_BUY_PRICE=0.95).
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -47,6 +49,18 @@ def _env_bool(name: str, default: bool) -> bool:
 
 class TradingConfig(BaseSettings):
     """All trading constants in one place, overridable via env vars."""
+
+    # --- Strategy identity ---
+    strategy: str = Field(default="convergence")
+    strategy_version: str = Field(default="v1")
+    mode: Literal["test", "live"] = Field(default="test")
+    tickers: list[str] = Field(default=["BTC", "ETH", "SOL"])
+    health_server_enabled: bool = Field(default=True)
+
+    @property
+    def dry_run(self) -> bool:
+        """Derived from mode: test → True, live → False."""
+        return self.mode == "test"
 
     # --- Price thresholds ---
     trigger_threshold: float = Field(default=30.0)
