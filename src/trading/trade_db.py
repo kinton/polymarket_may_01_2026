@@ -132,6 +132,21 @@ async def _apply_v1(db: aiosqlite.Connection) -> None:
     await db.executescript(_V1_TABLES)
 
 
+_V3_ALTER = """
+ALTER TABLE trades ADD COLUMN order_status TEXT DEFAULT 'unknown';
+"""
+
+
+async def _apply_v3(db: aiosqlite.Connection) -> None:
+    """Add order_status column to trades table."""
+    try:
+        await db.execute("ALTER TABLE trades ADD COLUMN order_status TEXT DEFAULT 'unknown'")
+        await db.commit()
+    except Exception:
+        # Column may already exist in some edge cases
+        pass
+
+
 _V2_TABLES = """
 -- trade_decisions: records every buy/skip decision with full context
 CREATE TABLE IF NOT EXISTS trade_decisions (
@@ -198,6 +213,7 @@ async def _apply_v2(db: aiosqlite.Connection) -> None:
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, _apply_v1),
     (2, _apply_v2),
+    (3, _apply_v3),
 ]
 
 
@@ -279,6 +295,40 @@ class TradeDatabase:
             (
                 timestamp, timestamp_iso, market_name, condition_id,
                 action, side, price, amount, order_id, status,
+                pnl, pnl_pct, reason, int(dry_run),
+            ),
+        )
+        await self._db.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def record_trade(
+        self,
+        *,
+        market_name: str,
+        condition_id: str,
+        action: str,
+        side: str,
+        price: float,
+        amount: float,
+        pnl: float | None = None,
+        pnl_pct: float | None = None,
+        reason: str | None = None,
+        dry_run: bool = True,
+        order_status: str = "unknown",
+    ) -> int:
+        """Convenience wrapper around insert_trade with order_status support."""
+        import datetime as _dt
+        ts = time.time()
+        ts_iso = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).isoformat()
+        cur = await self._db.execute(
+            """INSERT INTO trades
+               (timestamp, timestamp_iso, market_name, condition_id,
+                action, side, price, amount, order_id, status, order_status,
+                pnl, pnl_pct, reason, dry_run)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                ts, ts_iso, market_name, condition_id,
+                action, side, price, amount, None, None, order_status,
                 pnl, pnl_pct, reason, int(dry_run),
             ),
         )

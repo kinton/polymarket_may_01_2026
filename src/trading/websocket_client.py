@@ -106,7 +106,7 @@ class WebSocketClient:
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
-        if self.ws and not self.ws.closed:
+        if self.ws is not None:
             try:
                 await asyncio.wait_for(self.ws.close(), timeout=5.0)
             except (asyncio.TimeoutError, Exception):

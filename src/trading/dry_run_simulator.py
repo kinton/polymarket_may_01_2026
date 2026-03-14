@@ -160,8 +160,17 @@ class DryRunSimulator:
 
     # -- virtual position simulation -----------------------------------------
 
-    async def check_virtual_positions(self, current_price: float) -> list[dict]:
+    async def check_virtual_positions(
+        self,
+        yes_price: float | None = None,
+        no_price: float | None = None,
+        current_price: float | None = None,
+    ) -> list[dict]:
         """Check open virtual positions for stop-loss/take-profit triggers.
+
+        Pass yes_price and no_price so each position is checked against its own
+        side's current ask (not the winning side's price). Falls back to
+        current_price if yes_price/no_price are not provided (legacy callers).
 
         Returns list of closed positions with details.
         """
@@ -182,6 +191,17 @@ class DryRunSimulator:
             if pos_disable_sl:
                 continue
 
+            # Use side-specific price; fall back to current_price for compatibility
+            side = pos.get("side", "YES")
+            if side == "YES" and yes_price is not None:
+                pos_price = yes_price
+            elif side == "NO" and no_price is not None:
+                pos_price = no_price
+            elif current_price is not None:
+                pos_price = current_price
+            else:
+                continue  # no usable price for this position
+
             stop_loss = pos.get("stop_loss_price") or max(
                 entry * (1 - STOP_LOSS_PCT), STOP_LOSS_ABSOLUTE
             )
@@ -192,18 +212,18 @@ class DryRunSimulator:
 
             effective_stop = max(stop_loss, trailing)
 
-            if current_price <= effective_stop:
+            if pos_price <= effective_stop:
                 # Stop-loss triggered
                 # amount = dollars invested; tokens = amount / entry_price
                 tokens = amount / entry if entry > 0 else 0
-                pnl = (current_price - entry) * tokens
+                pnl = (pos_price - entry) * tokens
                 pnl_pct = pnl / amount * 100 if amount > 0 else 0
                 status = "trailing_stop" if trailing > stop_loss else "stop_loss"
                 await self._db.close_dry_run_position(
                     pos["id"],
-                    exit_price=current_price,
+                    exit_price=pos_price,
                     status=status,
-                    close_reason=f"{status} at ${current_price:.4f}",
+                    close_reason=f"{status} at ${pos_price:.4f}",
                     pnl=pnl,
                     pnl_pct=pnl_pct,
                     closed_at=now,
@@ -216,7 +236,7 @@ class DryRunSimulator:
                     condition_id=pos["condition_id"],
                     action="sell",
                     side=pos["side"],
-                    price=current_price,
+                    price=pos_price,
                     amount=amount,
                     pnl=pnl,
                     pnl_pct=pnl_pct,
@@ -225,17 +245,17 @@ class DryRunSimulator:
                 )
                 closed.append({"id": pos["id"], "status": status, "pnl": pnl})
 
-            elif current_price >= take_profit:
+            elif pos_price >= take_profit:
                 # Take-profit triggered
                 # amount = dollars invested; tokens = amount / entry_price
                 tokens = amount / entry if entry > 0 else 0
-                pnl = (current_price - entry) * tokens
+                pnl = (pos_price - entry) * tokens
                 pnl_pct = pnl / amount * 100 if amount > 0 else 0
                 await self._db.close_dry_run_position(
                     pos["id"],
-                    exit_price=current_price,
+                    exit_price=pos_price,
                     status="take_profit",
-                    close_reason=f"take_profit at ${current_price:.4f}",
+                    close_reason=f"take_profit at ${pos_price:.4f}",
                     pnl=pnl,
                     pnl_pct=pnl_pct,
                     closed_at=now,
@@ -247,7 +267,7 @@ class DryRunSimulator:
                     condition_id=pos["condition_id"],
                     action="sell",
                     side=pos["side"],
-                    price=current_price,
+                    price=pos_price,
                     amount=amount,
                     pnl=pnl,
                     pnl_pct=pnl_pct,
@@ -259,7 +279,7 @@ class DryRunSimulator:
             else:
                 # Update trailing stop if price moved up
                 new_trailing = max(
-                    current_price * (1 - TRAILING_STOP_PCT), STOP_LOSS_ABSOLUTE
+                    pos_price * (1 - TRAILING_STOP_PCT), STOP_LOSS_ABSOLUTE
                 )
                 if new_trailing > trailing:
                     await self._db._db.execute(

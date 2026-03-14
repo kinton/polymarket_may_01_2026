@@ -437,18 +437,15 @@ class LastSecondTrader:
             self._log(f"[TRADER] [{self.market_name}] ERROR closing EventRecorder: {e}")
 
         # Close WebSocket connection
-        try:
-            if self.ws and not self.ws.closed:
-                self._log(f"[TRADER] [{self.market_name}] Closing WebSocket connection...")
-                try:
-                    await asyncio.wait_for(self.ws.close(), timeout=5.0)
-                    self._log(f"[TRADER] [{self.market_name}] WebSocket closed successfully")
-                except asyncio.TimeoutError:
-                    self._log(f"[TRADER] [{self.market_name}] WebSocket close timeout")
-                except Exception as e:
-                    self._log(f"[TRADER] [{self.market_name}] ERROR closing WebSocket: {e}")
-        except Exception as e:
-            self._log(f"[TRADER] [{self.market_name}] ERROR during WebSocket cleanup: {e}")
+        if self.ws is not None:
+            self._log(f"[TRADER] [{self.market_name}] Closing WebSocket connection...")
+            try:
+                await asyncio.wait_for(self.ws.close(), timeout=5.0)
+                self._log(f"[TRADER] [{self.market_name}] WebSocket closed successfully")
+            except asyncio.TimeoutError:
+                self._log(f"[TRADER] [{self.market_name}] WebSocket close timeout")
+            except Exception as e:
+                self._log(f"[TRADER] [{self.market_name}] ERROR closing WebSocket: {e}")
 
         # Close client session if applicable
         try:
@@ -851,11 +848,14 @@ class LastSecondTrader:
                 if current_price is not None:
                     await self.stop_loss_manager.check_and_execute(current_price)
 
-            # Check virtual dry-run positions for simulated stop-loss/take-profit
-            if self.dry_run_sim and self.winning_side:
-                sim_price = self._get_ask_for_side(self.winning_side)
-                if sim_price is not None:
-                    await self.dry_run_sim.check_virtual_positions(sim_price)
+            # Check virtual dry-run positions for simulated stop-loss/take-profit.
+            # Pass side-specific prices so each position is checked against its
+            # own side's ask (not blindly the winning side's price).
+            if self.dry_run_sim:
+                await self.dry_run_sim.check_virtual_positions(
+                    yes_price=self._get_ask_for_side("YES"),
+                    no_price=self._get_ask_for_side("NO"),
+                )
 
         except Exception as e:
             self._log(f"Error processing market update: {e}")
@@ -986,7 +986,16 @@ class LastSecondTrader:
                         f"t={time_remaining:.1f}s"
                     )
 
-                    if self.dry_run_sim:
+                    self._planned_trade_side = conv_signal.side
+                    self._convergence_trade = True
+                    _was_executed = self.order_execution.is_executed()
+                    await self.execute_order()
+
+                    # Record buy AFTER confirming execution to avoid phantom
+                    # positions when the FOK order is killed (live mode).
+                    # In dry_run mode execute_order() always succeeds, so the
+                    # condition is always True there too.
+                    if self.dry_run_sim and not _was_executed and self.order_execution.is_executed():
                         await self.dry_run_sim.record_buy(
                             side=conv_signal.side,
                             price=conv_signal.price,
@@ -997,10 +1006,6 @@ class LastSecondTrader:
                             oracle_snap=self.oracle_guard.snapshot,
                             disable_stop_loss=True,
                         )
-
-                    self._planned_trade_side = conv_signal.side
-                    self._convergence_trade = True
-                    await self.execute_order()
                     return
 
             # No strategy triggered, wait for next tick.

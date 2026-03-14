@@ -138,7 +138,7 @@ class TestEventRecorderIntegration:
         """Buy trade should be recorded after successful execution."""
         trader = _make_trader(tmp_path)
         trader.winning_side = "YES"
-        trader.orderbook.best_ask_yes = 0.95
+        trader.orderbook.best_ask_yes = 0.30  # within valid range (≤ MAX_ENTRY_PRICE 0.35)
         trader._planned_trade_side = "YES"
 
         # Mock execute_order_for to mark as executed
@@ -155,7 +155,7 @@ class TestEventRecorderIntegration:
         assert len(trade_events) == 1
         assert trade_events[0]["data"]["action"] == "buy"
         assert trade_events[0]["data"]["side"] == "YES"
-        assert trade_events[0]["data"]["price"] == 0.95
+        assert trade_events[0]["data"]["price"] == 0.30
 
     @pytest.mark.asyncio
     async def test_sell_trade_recorded(self, tmp_path):

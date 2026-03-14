@@ -69,6 +69,7 @@ class OrderExecutionManager:
         risk_manager: RiskManager | None = None,
         rate_limiter: RateLimiter | None = None,
         circuit_breaker: CircuitBreaker | None = None,
+        trade_db: Any | None = None,
     ):
         """
         Initialize the order execution manager.
@@ -106,6 +107,7 @@ class OrderExecutionManager:
             recovery_timeout=60.0,
             name=f"polymarket-{market_name}",
         )
+        self.trade_db = trade_db
 
         # Order state
         self.order_executed = False
@@ -274,6 +276,19 @@ class OrderExecutionManager:
             )
 
             self._log(f"✓ [{self.market_name}] Order posted: {response}")
+
+            # Check FOK fill status
+            order_status = (
+                response.get("status", "unknown").lower()
+                if isinstance(response, dict)
+                else "unknown"
+            )
+            if order_status != "matched":
+                self._log(
+                    f"⚠️ [{self.market_name}] FOK order killed/not filled (status={order_status})"
+                )
+                return False
+
             MetricsCollector.get().record_trade("buy")
 
             if winning_ask is not None and self.position_manager:
@@ -301,6 +316,25 @@ class OrderExecutionManager:
 
             if self.risk_manager:
                 self.risk_manager.track_daily_pnl(amount)
+
+            # Record BUY in SQLite
+            if self.trade_db is not None:
+                try:
+                    await self.trade_db.record_trade(
+                        market_name=self.market_name,
+                        condition_id=self.condition_id or "",
+                        action="buy",
+                        side=side,
+                        price=winning_ask if winning_ask is not None else price,
+                        amount=amount,
+                        pnl=None,
+                        pnl_pct=None,
+                        reason="entry",
+                        dry_run=False,
+                        order_status="filled",
+                    )
+                except Exception as e:
+                    self._log(f"[{self.market_name}] Error recording buy to DB: {e}")
 
             self.order_executed = True
             return True
@@ -352,11 +386,15 @@ class OrderExecutionManager:
         )
 
         if self.dry_run:
-            if current_price is not None:
-                num_contracts = self.trade_size / self.position_manager.entry_price
+            trade_amount = max(round(self.trade_size, 2), 1.00)
+            if (
+                current_price is not None
+                and self.position_manager.entry_price is not None
+            ):
+                num_contracts = trade_amount / self.position_manager.entry_price
                 position_value = num_contracts * current_price
-                pnl_amount = position_value - self.trade_size
-                pnl_pct = (pnl_amount / self.trade_size) * 100
+                pnl_amount = position_value - trade_amount
+                pnl_pct = (pnl_amount / trade_amount) * 100
                 pnl_sign = "+" if pnl_pct >= 0 else ""
                 self._log(
                     (
@@ -382,14 +420,6 @@ class OrderExecutionManager:
                             current_price,
                         )
 
-            trade_amount = max(round(self.trade_size, 2), 1.00)
-            if (
-                current_price is not None
-                and self.position_manager.entry_price is not None
-            ):
-                num_contracts = trade_amount / self.position_manager.entry_price
-                position_value = num_contracts * current_price
-                pnl_amount = position_value - trade_amount
                 if self.risk_manager:
                     self.risk_manager.track_daily_pnl(trade_amount, pnl_amount)
 
@@ -449,8 +479,15 @@ class OrderExecutionManager:
 
             self._log(f"✓ [{self.market_name}] Sell order posted: {response}")
 
-            if current_price is not None:
-                num_contracts = amount / self.position_manager.entry_price
+            # Save position data BEFORE close_position() resets it to None
+            entry_price_snapshot = self.position_manager.entry_price
+            position_side_snapshot = self.position_manager.position_side
+
+            # Calculate PnL using snapshot values
+            pnl_amount: float | None = None
+            pnl_pct: float | None = None
+            if current_price is not None and entry_price_snapshot is not None:
+                num_contracts = amount / entry_price_snapshot
                 position_value = num_contracts * current_price
                 pnl_amount = position_value - amount
                 MetricsCollector.get().record_trade("sell", pnl=pnl_amount)
@@ -468,29 +505,43 @@ class OrderExecutionManager:
                         await self.alert_dispatcher.send_stop_loss_alert(
                             self.market_name,
                             pnl_pct,
-                            self.position_manager.entry_price,
+                            entry_price_snapshot,
                             current_price,
                         )
                     elif reason == "TAKE-PROFIT":
                         await self.alert_dispatcher.send_take_profit_alert(
                             self.market_name,
                             pnl_pct,
-                            self.position_manager.entry_price,
+                            entry_price_snapshot,
                             current_price,
                         )
 
-            self.position_manager.close_position()
-            self._log(f"✓ [{self.market_name}] Position closed ({reason})")
-
-            if (
-                current_price is not None
-                and self.position_manager.entry_price is not None
-            ):
-                num_contracts = amount / self.position_manager.entry_price
-                position_value = num_contracts * current_price
-                pnl_amount = position_value - amount
+                # Track risk/PnL BEFORE close_position()
                 if self.risk_manager:
                     self.risk_manager.track_daily_pnl(amount, pnl_amount)
+
+                # Record sell in SQLite BEFORE close_position()
+                if self.trade_db is not None:
+                    try:
+                        pnl_pct_val = (pnl_amount / amount) * 100
+                        await self.trade_db.record_trade(
+                            market_name=self.market_name,
+                            condition_id=self.condition_id or "",
+                            action="sell",
+                            side=position_side_snapshot or "",
+                            price=current_price,
+                            amount=amount,
+                            pnl=pnl_amount,
+                            pnl_pct=pnl_pct_val,
+                            reason=reason,
+                            dry_run=False,
+                        )
+                    except Exception as e:
+                        self._log(f"[{self.market_name}] Error recording sell to DB: {e}")
+
+            # Close position AFTER all recording is done
+            self.position_manager.close_position()
+            self._log(f"✓ [{self.market_name}] Position closed ({reason})")
 
             return True
 

@@ -90,7 +90,7 @@ class TradingConfig(BaseSettings):
     convergence_threshold_pct: float = Field(default=0.0005)  # 5bp convergence
     convergence_min_skew: float = Field(default=0.65)  # expensive side >= 65¢
     convergence_max_cheap_price: float = Field(default=0.35)  # max 35¢
-    convergence_min_cheap_price: float = Field(default=0.0)  # disabled — convergence check is the filter
+    convergence_min_cheap_price: float = Field(default=0.0)  # disabled
     convergence_window_start_s: float = Field(default=200.0)  # start observing ~3.3 min before expiry
     convergence_window_end_s: float = Field(default=20.0)  # stop observing at 20s
     convergence_min_observations: int = Field(default=5)  # require 5+ ticks (~5s of data)

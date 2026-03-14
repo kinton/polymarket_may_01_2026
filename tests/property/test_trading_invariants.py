@@ -34,24 +34,16 @@ class TestStopLossInvariant:
 
     @given(entry_price=floats(min_value=0.01, max_value=0.99))
     @settings(max_examples=100)
-    def test_stop_loss_absolute_floor_behavior(self, entry_price):
+    def test_stop_loss_percentage_only(self, entry_price):
         """
-        Test that absolute floor stop-loss behavior is correct.
+        Test that stop-loss uses percentage only (no absolute floor).
 
-        When the absolute floor (0.95) is higher than the percentage stop,
-        the floor becomes the stop price. The floor is designed to protect
-        high-value positions from dropping below a safe threshold.
+        STOP_LOSS_ABSOLUTE is 0.0 (disabled) — strategy buys at ≤0.35,
+        so an absolute price floor is irrelevant.
         """
-        stop_price = max(entry_price * (1 - STOP_LOSS_PCT), STOP_LOSS_ABSOLUTE)
-        pct_stop = entry_price * (1 - STOP_LOSS_PCT)
-
-        # Either the percentage stop or the absolute floor is used
-        if pct_stop < STOP_LOSS_ABSOLUTE:
-            # Floor is higher, so floor is used
-            assert stop_price == STOP_LOSS_ABSOLUTE
-        else:
-            # Percentage stop is higher (or equal), so it's used
-            assert stop_price == pct_stop
+        stop_price = entry_price * (1 - STOP_LOSS_PCT)
+        assert stop_price < entry_price
+        assert stop_price >= 0
 
     @given(
         entry_price=floats(min_value=0.01, max_value=0.99),
@@ -248,11 +240,10 @@ class TestPositionStateInvariant:
             # Current price should be valid
             assert 0.01 <= current_price <= 0.99
 
-            # Trailing stop should be valid and below entry (or at floor)
-            trailing_stop = max(entry_price * (1 - STOP_LOSS_PCT), STOP_LOSS_ABSOLUTE)
-            assert 0.01 <= trailing_stop <= 0.99
-            if trailing_stop != STOP_LOSS_ABSOLUTE:
-                assert trailing_stop < entry_price
+            # Trailing stop should be below entry price
+            trailing_stop = entry_price * (1 - STOP_LOSS_PCT)
+            assert trailing_stop < entry_price
+            assert trailing_stop >= 0
 
     @given(
         entry_price=floats(min_value=0.01, max_value=0.99),

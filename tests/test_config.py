@@ -52,10 +52,10 @@ class TestTradingConfig:
 
     def test_defaults(self):
         cfg = TradingConfig()
-        assert cfg.stop_loss_pct == 0.30
+        assert cfg.stop_loss_pct == 0.50
         assert cfg.max_total_trades_per_day == 100
         assert cfg.convergence_enabled is True
-        assert cfg.convergence_threshold_pct == 0.0003
+        assert cfg.convergence_threshold_pct == 0.0005
         assert cfg.convergence_max_cheap_price == 0.35
 
     def test_env_override(self):

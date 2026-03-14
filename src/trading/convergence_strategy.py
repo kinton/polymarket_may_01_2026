@@ -16,7 +16,7 @@ Observation window (180s → 20s before expiry):
 
 Trigger (any tick after min_observations reached):
   - Need minimum N observations
-  - ≥30% of ticks show convergence (|delta| < threshold)
+  - ≥40% of valid observations show convergence (|delta| < threshold)
   - ≥70% of observations agree on cheap side (consistency)
   - Median cheap price ≤ max_cheap_price
   - Oracle not strongly against cheap side (on median)
@@ -94,7 +94,7 @@ class ConvergenceStrategy:
         threshold_pct: float = 0.0003,    # 3bp convergence
         min_skew: float = 0.75,            # expensive side >= 75¢
         max_cheap_price: float = 0.35,     # only buy at 35¢ or less
-        min_cheap_price: float = 0.0,      # disabled — convergence check is the real filter
+        min_cheap_price: float = 0.0,      # disabled
         max_against_pct: float = DEFAULT_MAX_AGAINST_BP,
         window_start_s: float = 200.0,    # observe from ~3.3 min before close
         window_end_s: float = 20.0,
@@ -215,9 +215,12 @@ class ConvergenceStrategy:
         if len(obs) < self.min_observations:
             return None
 
-        # 1. Convergence rate: how many observations had |delta| < threshold?
+        # 1. Convergence rate: how many valid observations had |delta| < threshold?
+        # Use len(obs) as denominator (valid oracle ticks), not total_ticks.
+        # total_ticks includes ticks where oracle/orderbook data was unavailable,
+        # which would unfairly deflate the rate when data is intermittent.
         converging = [o for o in obs if o.abs_delta_pct <= self.threshold_pct]
-        convergence_rate = len(converging) / total_ticks
+        convergence_rate = len(converging) / len(obs)
 
         if convergence_rate < self.min_convergence_rate:
             return None
@@ -290,22 +293,22 @@ class ConvergenceStrategy:
         price_to_beat = oracle_snapshot.price_to_beat if oracle_snapshot and oracle_snapshot.price_to_beat else side_obs[-1].price_to_beat
         current_delta = oracle_snapshot.delta_pct if oracle_snapshot and oracle_snapshot.delta_pct is not None else median_delta
 
-        # Warn if oracle has drifted outside the convergence zone at decision time.
+        # Block the trade if oracle has drifted outside the convergence zone at decision time.
         # This can happen when the oracle converged during the observation window but
-        # moved away before we decided. Does NOT block the trade (historical evidence
-        # still valid), but logs a visible warning for post-trade review.
+        # moved away before we decided. Signal is stale — entering now is unsafe.
         if oracle_snapshot is not None and oracle_snapshot.delta_pct is not None:
             current_abs_delta_pct = abs(oracle_snapshot.delta_pct)
             if current_abs_delta_pct > self.threshold_pct:
                 self._log(
-                    f"⚠️  CONVERGENCE: oracle outside zone at decision time — "
+                    f"SKIP: oracle outside zone at decision time — "
                     f"current delta_pct={current_abs_delta_pct * 100:.4f}% > threshold={self.threshold_pct * 100:.4f}% "
                     f"(delta_usd={oracle_snapshot.delta:+.4f}, z={oracle_snapshot.zscore:.3f})"
                     if oracle_snapshot.zscore is not None else
-                    f"⚠️  CONVERGENCE: oracle outside zone at decision time — "
+                    f"SKIP: oracle outside zone at decision time — "
                     f"current delta_pct={current_abs_delta_pct * 100:.4f}% > threshold={self.threshold_pct * 100:.4f}% "
                     f"(delta_usd={oracle_snapshot.delta:+.4f})"
                 )
+                return None
 
         # All checks passed — commit to this decision
         self._decided = True

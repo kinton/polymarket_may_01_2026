@@ -10,7 +10,6 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 from src.clob_types import (
-    STOP_LOSS_ABSOLUTE,
     STOP_LOSS_CHECK_INTERVAL_S,
     STOP_LOSS_PCT,
     TAKE_PROFIT_CHECK_INTERVAL_S,
@@ -113,12 +112,9 @@ class StopLossManager:
             self.position_manager.trailing_stop_price
             if self.position_manager.trailing_stop_price is not None
             else (
-                max(
-                    self.position_manager.entry_price * (1 - STOP_LOSS_PCT),
-                    STOP_LOSS_ABSOLUTE,
-                )
+                self.position_manager.entry_price * (1 - STOP_LOSS_PCT)
                 if self.position_manager.entry_price is not None
-                else STOP_LOSS_ABSOLUTE
+                else 0.0
             )
         )
 
@@ -196,10 +192,7 @@ class StopLossManager:
         self._last_trailing_stop_update_ts = now
 
         # Calculate new trailing stop level based on current high water mark
-        new_trailing_stop = max(
-            current_price * (1 - TRAILING_STOP_PCT),
-            STOP_LOSS_ABSOLUTE,
-        )
+        new_trailing_stop = current_price * (1 - TRAILING_STOP_PCT)
 
         # Initialize trailing stop if not set yet
         if self.position_manager.trailing_stop_price is None:
@@ -224,10 +217,7 @@ class StopLossManager:
         if self.position_manager.entry_price is None:
             return None
 
-        return max(
-            self.position_manager.entry_price * (1 - STOP_LOSS_PCT),
-            STOP_LOSS_ABSOLUTE,
-        )
+        return self.position_manager.entry_price * (1 - STOP_LOSS_PCT)
 
     def get_take_profit_price(self) -> float | None:
         """

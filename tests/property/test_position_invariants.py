@@ -47,7 +47,7 @@ class TestStopLossInvariant:
 
     @given(
         entry_price=st.floats(
-            min_value=STOP_LOSS_ABSOLUTE,
+            min_value=0.01,
             max_value=0.99,
             allow_nan=False,
             allow_infinity=False,
@@ -56,18 +56,15 @@ class TestStopLossInvariant:
     @settings(max_examples=100)
     def test_stop_loss_absolute_floor(self, entry_price: float) -> None:
         """
-        Invariant: Absolute stop-loss floor (0.95) takes precedence when applicable.
+        Invariant: Stop-loss uses percentage only (absolute floor disabled).
 
-        For entry prices at or above STOP_LOSS_ABSOLUTE (0.95), the absolute
-        floor is higher than the percentage-based stop, so it must be used.
-
-        This prevents stops from being too aggressive for high-priced entries.
+        STOP_LOSS_ABSOLUTE is 0.0 — strategy buys NO tokens at ≤0.35,
+        so an absolute price floor is irrelevant.
+        Stop is always entry_price * (1 - STOP_LOSS_PCT).
         """
-        stop_threshold_pct = entry_price * (1 - STOP_LOSS_PCT)
-        assert STOP_LOSS_ABSOLUTE >= stop_threshold_pct, (
-            f"Absolute floor {STOP_LOSS_ABSOLUTE} should be >= "
-            f"percentage stop {stop_threshold_pct} for entry {entry_price}"
-        )
+        stop_threshold = entry_price * (1 - STOP_LOSS_PCT)
+        assert stop_threshold < entry_price
+        assert stop_threshold >= 0
 
     @given(
         current_price=st.floats(
