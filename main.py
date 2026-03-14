@@ -40,6 +40,7 @@ from src.trading.trade_db import TradeDatabase
 from src.gamma_15m_finder import GammaAPI15mFinder
 from src.hft_trader import LastSecondTrader
 from src.trading.dry_run_simulator import DryRunSimulator
+from strategies import discover_strategies
 
 
 class TradingBotRunner:
@@ -120,6 +121,10 @@ class TradingBotRunner:
 
         # Setup logging
         self.setup_logging()
+
+        # Discover strategy plugins (import all strategies/*.py modules)
+        n_strategies = discover_strategies()
+        self.finder_logger.info(f"Discovered {n_strategies} strategy plugin(s)")
 
         self.finder_logger.info("=" * 80)
         self.finder_logger.info("Trading Bot Runner Initialized")

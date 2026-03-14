@@ -57,9 +57,9 @@ async def test_convergence_triggers_when_evidence_sufficient(integration_trader)
     Triggers as soon as min_observations reached and all conditions met.
     With min_observations=3, should trigger on the 3rd+ tick.
     """
-    from src.trading.convergence_strategy import ConvergenceStrategy
+    from strategies.convergence_v1 import ConvergenceV1
 
-    strategy = ConvergenceStrategy(
+    strategy = ConvergenceV1(
         threshold_pct=0.0003,
         min_skew=0.75,
         max_cheap_price=0.30,
@@ -69,7 +69,7 @@ async def test_convergence_triggers_when_evidence_sufficient(integration_trader)
         min_convergence_rate=0.30,
         min_side_consistency=0.70,
     )
-    integration_trader.convergence_strategy = strategy
+    integration_trader.strategy_instance = strategy
     integration_trader.oracle_guard.enabled = True
     snap = _make_oracle_snapshot(price=100.0, price_to_beat=100.0, delta_pct=0.0)
     integration_trader.oracle_guard.snapshot = snap
@@ -87,21 +87,21 @@ async def test_convergence_triggers_when_evidence_sufficient(integration_trader)
     # 5th tick: should trigger (min_observations=5 met)
     await integration_trader.check_trigger(time_remaining=90.0)
     integration_trader.execute_order.assert_called_once()
-    assert integration_trader._convergence_trade is True
+    assert integration_trader._strategy_trade is True
 
 
 @pytest.mark.asyncio
 async def test_no_trigger_without_convergence(integration_trader):
     """Without convergence (delta too high), no trade."""
-    from src.trading.convergence_strategy import ConvergenceStrategy
+    from strategies.convergence_v1 import ConvergenceV1
 
-    strategy = ConvergenceStrategy(
+    strategy = ConvergenceV1(
         threshold_pct=0.0003,
         min_skew=0.75,
         max_cheap_price=0.30,
         min_observations=3,
     )
-    integration_trader.convergence_strategy = strategy
+    integration_trader.strategy_instance = strategy
     integration_trader.oracle_guard.enabled = True
     snap = _make_oracle_snapshot(price=105.0, price_to_beat=100.0, delta_pct=0.05)
     integration_trader.oracle_guard.snapshot = snap
@@ -118,15 +118,15 @@ async def test_no_trigger_without_convergence(integration_trader):
 @pytest.mark.asyncio
 async def test_no_trigger_outside_time_window(integration_trader):
     """No accumulation outside observation window."""
-    from src.trading.convergence_strategy import ConvergenceStrategy
+    from strategies.convergence_v1 import ConvergenceV1
 
-    strategy = ConvergenceStrategy(
+    strategy = ConvergenceV1(
         threshold_pct=0.0003,
         min_skew=0.75,
         max_cheap_price=0.30,
         min_observations=3,
     )
-    integration_trader.convergence_strategy = strategy
+    integration_trader.strategy_instance = strategy
     integration_trader.oracle_guard.enabled = True
     snap = _make_oracle_snapshot(price=100.0, price_to_beat=100.0, delta_pct=0.0)
     integration_trader.oracle_guard.snapshot = snap
@@ -147,15 +147,15 @@ async def test_no_trigger_outside_time_window(integration_trader):
 @pytest.mark.asyncio
 async def test_no_trigger_insufficient_observations(integration_trader):
     """Too few observations → skip."""
-    from src.trading.convergence_strategy import ConvergenceStrategy
+    from strategies.convergence_v1 import ConvergenceV1
 
-    strategy = ConvergenceStrategy(
+    strategy = ConvergenceV1(
         threshold_pct=0.0003,
         min_skew=0.75,
         max_cheap_price=0.30,
         min_observations=10,  # need 10 but only get 2
     )
-    integration_trader.convergence_strategy = strategy
+    integration_trader.strategy_instance = strategy
     integration_trader.oracle_guard.enabled = True
     snap = _make_oracle_snapshot(price=100.0, price_to_beat=100.0, delta_pct=0.0)
     integration_trader.oracle_guard.snapshot = snap
@@ -173,16 +173,16 @@ async def test_no_trigger_insufficient_observations(integration_trader):
 @pytest.mark.asyncio
 async def test_no_trigger_side_inconsistency(integration_trader):
     """Cheap side flip-flops → no trigger."""
-    from src.trading.convergence_strategy import ConvergenceStrategy
+    from strategies.convergence_v1 import ConvergenceV1
 
-    strategy = ConvergenceStrategy(
+    strategy = ConvergenceV1(
         threshold_pct=0.0003,
         min_skew=0.75,
         max_cheap_price=0.30,
         min_observations=3,
         min_side_consistency=0.70,
     )
-    integration_trader.convergence_strategy = strategy
+    integration_trader.strategy_instance = strategy
     integration_trader.oracle_guard.enabled = True
     snap = _make_oracle_snapshot(price=100.0, price_to_beat=100.0, delta_pct=0.0)
     integration_trader.oracle_guard.snapshot = snap

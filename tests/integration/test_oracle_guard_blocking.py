@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 from src.clob_types import OrderBook
 from src.oracle_tracker import OracleSnapshot
-from src.trading.convergence_strategy import ConvergenceStrategy
+from strategies.convergence_v1 import ConvergenceV1
 
 
 def _skewed_orderbook() -> OrderBook:
@@ -24,7 +24,7 @@ def _skewed_orderbook() -> OrderBook:
 @pytest.mark.asyncio
 async def test_convergence_blocked_when_oracle_not_converged(integration_trader):
     """No trade when oracle delta is too high."""
-    integration_trader.convergence_strategy = ConvergenceStrategy(
+    integration_trader.strategy_instance = ConvergenceV1(
         threshold_pct=0.0005, min_skew=0.80, max_cheap_price=0.40,
         window_start_s=180.0, window_end_s=20.0, min_observations=3,
     )
@@ -46,7 +46,7 @@ async def test_convergence_blocked_when_oracle_not_converged(integration_trader)
 @pytest.mark.asyncio
 async def test_convergence_fires_when_oracle_converged(integration_trader):
     """Trade fires when oracle converged and enough evidence accumulated."""
-    integration_trader.convergence_strategy = ConvergenceStrategy(
+    integration_trader.strategy_instance = ConvergenceV1(
         threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30,
         window_start_s=180.0, window_end_s=20.0, min_observations=3,
     )
@@ -65,13 +65,13 @@ async def test_convergence_fires_when_oracle_converged(integration_trader):
     for t in [170.0, 130.0, 90.0]:
         await integration_trader.check_trigger(time_remaining=t)
     integration_trader.execute_order.assert_called_once()
-    assert integration_trader._convergence_trade is True
+    assert integration_trader._strategy_trade is True
 
 
 @pytest.mark.asyncio
 async def test_convergence_blocked_when_no_oracle_snapshot(integration_trader):
     """No trade when oracle snapshot is None."""
-    integration_trader.convergence_strategy = ConvergenceStrategy(
+    integration_trader.strategy_instance = ConvergenceV1(
         threshold_pct=0.0005, min_skew=0.80, max_cheap_price=0.40,
         window_start_s=180.0, window_end_s=20.0, min_observations=3,
     )

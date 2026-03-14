@@ -54,7 +54,6 @@ from src.alerts import (
 )
 from src.clob_types import (
     CLOB_WS_URL,
-    CONVERGENCE_ENABLED,
     MAX_ENTRY_PRICE,
     MIN_ORDERBOOK_SIZE_USD,
     MIN_TRADE_USDC,
@@ -82,7 +81,8 @@ from src.trading.orderbook_ws import OrderbookWS
 from src.trading.orderbook_ws_adapter import OrderbookWSAdapter
 from src.trading.websocket_client import WebSocketClient
 from src.trading.orderbook_tracker import OrderbookTracker
-from src.trading.convergence_strategy import ConvergenceStrategy
+from strategies import discover_strategies, load_strategy
+from strategies.base import BaseStrategy, MarketTick, Signal
 
 try:
     from py_clob_client.client import ClobClient
@@ -183,7 +183,7 @@ class LastSecondTrader:
                 logger=trader_logger,
             )
 
-            # Convergence strategy
+            # Strategy plugin system
             from src.clob_types import (
                 CONVERGENCE_ENABLED,
                 CONVERGENCE_THRESHOLD_PCT,
@@ -200,7 +200,10 @@ class LastSecondTrader:
             # CLI --min-price overrides config if non-zero
             _effective_min_cheap = min_cheap_price if min_cheap_price > 0 else CONVERGENCE_MIN_CHEAP_PRICE
             if _conv_enabled and oracle_enabled:
-                self.convergence_strategy: ConvergenceStrategy | None = ConvergenceStrategy(
+                discover_strategies()
+                self.strategy_instance: BaseStrategy | None = load_strategy(
+                    name=strategy,
+                    version=strategy_version,
                     threshold_pct=CONVERGENCE_THRESHOLD_PCT,
                     min_skew=CONVERGENCE_MIN_SKEW,
                     max_cheap_price=CONVERGENCE_MAX_CHEAP_PRICE,
@@ -213,9 +216,9 @@ class LastSecondTrader:
                 )
                 self._convergence_disable_stop_loss = CONVERGENCE_DISABLE_STOP_LOSS
             else:
-                self.convergence_strategy = None
+                self.strategy_instance = None
                 self._convergence_disable_stop_loss = False
-            self._convergence_trade = False  # flag: current position is from convergence
+            self._strategy_trade = False  # flag: current position is from strategy
 
 
 
@@ -357,7 +360,7 @@ class LastSecondTrader:
             mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
             self._log(
                 f"[{self.market_name}] Trader initialized | {mode} | ${self.trade_size} | "
-                f"convergence={'on' if self.convergence_strategy else 'off'}"
+                f"strategy={'on (' + self.strategy_instance.name + '/' + self.strategy_instance.version + ')' if self.strategy_instance else 'off'}"
             )
             if self.oracle_guard.enabled:
                 sym = self.oracle_guard.symbol or "unknown"
@@ -854,7 +857,7 @@ class LastSecondTrader:
 
             await self.check_trigger(time_remaining)
 
-            if self.position_manager.is_open and not self._convergence_trade:
+            if self.position_manager.is_open and not self._strategy_trade:
                 current_price = self._get_ask_for_side(
                     self.position_manager.position_side or ""
                 )
@@ -955,15 +958,18 @@ class LastSecondTrader:
             ):
                 return
 
-            # Priority 1: Convergence strategy (buy CHEAP side when oracle ≈ beat)
+            # Priority 1: Strategy plugin (e.g. convergence — buy CHEAP side when oracle near beat)
             if (
-                self.convergence_strategy is not None
+                self.strategy_instance is not None
                 and self.oracle_guard.enabled
             ):
-                conv_signal = self.convergence_strategy.get_signal(
-                    time_remaining, self.oracle_guard.snapshot, self.orderbook
+                tick = MarketTick(
+                    time_remaining=time_remaining,
+                    oracle_snapshot=self.oracle_guard.snapshot,
+                    orderbook=self.orderbook,
                 )
-                if conv_signal is not None:
+                signal = self.strategy_instance.get_signal(tick)
+                if signal is not None:
                     # Oracle freshness check (staleness + min_points only).
                     # NOTE: z-score check intentionally skipped — convergence
                     # strategy WANTS low |z| (price near target). The standard
@@ -974,8 +980,9 @@ class LastSecondTrader:
                         self.oracle_guard.quality_ok_for_convergence()
                     )
                     if not oracle_ok:
+                        strategy_name = self.strategy_instance.name
                         self._log(
-                            f"⛔ [{self.market_name}] CONVERGENCE blocked: "
+                            f"⛔ [{self.market_name}] {strategy_name.upper()} blocked: "
                             f"oracle_quality={oracle_block_reason} ({oracle_block_detail})"
                         )
                         if self.dry_run_sim and oracle_block_reason not in self._recorded_skip_guards:
@@ -988,19 +995,21 @@ class LastSecondTrader:
                             )
                         return
 
+                    meta = signal.metadata
+                    strategy_name = self.strategy_instance.name
                     self._log(
-                        f"🎯 [{self.market_name}] CONVERGENCE TRIGGER! "
-                        f"{conv_signal.side} ({conv_signal.side_label}) @ ${conv_signal.price:.4f} | "
-                        f"delta_pct={conv_signal.delta_pct * 100:+.4f}% | "
-                        f"skew={conv_signal.expensive_price:.2f}/{conv_signal.price:.2f} | "
-                        f"obs={conv_signal.observations} | "
-                        f"conv_rate={conv_signal.convergence_rate:.0%} | "
-                        f"side_cons={conv_signal.side_consistency:.0%} | "
+                        f"🎯 [{self.market_name}] {strategy_name.upper()} TRIGGER! "
+                        f"{signal.side} ({meta.get('side_label', '')}) @ ${signal.price:.4f} | "
+                        f"delta_pct={meta.get('delta_pct', 0) * 100:+.4f}% | "
+                        f"skew={meta.get('expensive_price', 0):.2f}/{signal.price:.2f} | "
+                        f"obs={meta.get('observations', 0)} | "
+                        f"conv_rate={meta.get('convergence_rate', 0):.0%} | "
+                        f"side_cons={meta.get('side_consistency', 0):.0%} | "
                         f"t={time_remaining:.1f}s"
                     )
 
-                    self._planned_trade_side = conv_signal.side
-                    self._convergence_trade = True
+                    self._planned_trade_side = signal.side
+                    self._strategy_trade = True
                     _was_executed = self.order_execution.is_executed()
                     await self.execute_order()
 
@@ -1010,14 +1019,14 @@ class LastSecondTrader:
                     # condition is always True there too.
                     if self.dry_run_sim and not _was_executed and self.order_execution.is_executed():
                         await self.dry_run_sim.record_buy(
-                            side=conv_signal.side,
-                            price=conv_signal.price,
+                            side=signal.side,
+                            price=signal.price,
                             amount=self.trade_size,
-                            confidence=conv_signal.convergence_rate * conv_signal.side_consistency,
+                            confidence=meta.get("confidence", 0.0),
                             time_remaining=time_remaining,
-                            reason="convergence",
+                            reason=meta.get("reason", strategy_name),
                             oracle_snap=self.oracle_guard.snapshot,
-                            disable_stop_loss=True,
+                            disable_stop_loss=signal.disable_stop_loss,
                         )
                     return
 
@@ -1062,7 +1071,7 @@ class LastSecondTrader:
 
     async def execute_order(self) -> None:
         side = self._planned_trade_side or self.winning_side or "YES"
-        is_convergence = self._convergence_trade
+        is_strategy = self._strategy_trade
         self._planned_trade_side = None
         winning_ask = self._get_ask_for_side(side)
 
@@ -1076,13 +1085,14 @@ class LastSecondTrader:
         await self.order_execution.execute_order_for(side, winning_ask)
         # Record buy trade for replay
         if self.event_recorder is not None and not was_executed_before and self.order_execution.is_executed():
+            reason = self.strategy_instance.name if (is_strategy and self.strategy_instance) else "trigger"
             self.event_recorder.record_trade(
                 action="buy",
                 side=side,
                 price=winning_ask or 0.0,
                 size=self.trade_size,
                 success=True,
-                reason="convergence" if is_convergence else "trigger",
+                reason=reason,
             )
 
     async def execute_order_for(self, side: str) -> None:
@@ -1096,7 +1106,7 @@ class LastSecondTrader:
         )
         current_price = self._get_ask_for_side(position_side or "")
         await self.order_execution.execute_sell(reason, current_price)
-        self._convergence_trade = False  # Reset convergence flag on sell
+        self._strategy_trade = False  # Reset convergence flag on sell
         # Record sell trade for replay
         if self.event_recorder is not None:
             self.event_recorder.record_trade(
@@ -1119,9 +1129,9 @@ class LastSecondTrader:
 
     async def run(self):
         """Main entry point: Connect and start trading."""
-        # Reset convergence accumulator for this market cycle
-        if self.convergence_strategy is not None:
-            self.convergence_strategy.reset()
+        # Reset strategy accumulator for this market cycle
+        if self.strategy_instance is not None:
+            self.strategy_instance.reset()
         try:
             if self._orderbook_ws_adapter is not None:
                 # Use OrderbookWS adapter — it handles connect, subscribe, reconnect
