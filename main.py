@@ -35,6 +35,7 @@ from src.logging_config import setup_bot_loggers
 from src.healthcheck import HealthCheckServer
 from src.trading.parallel_launcher import ParallelLauncher
 from src.trading.trade_db import TradeDatabase
+from src.watchdog import watchdog_loop
 
 # Import our modules
 from src.gamma_15m_finder import GammaAPI15mFinder
@@ -76,6 +77,7 @@ class TradingBotRunner:
         min_cheap_price: float = 0.0,
         health_server_enabled: bool = True,
         db_path: str = "data/trades.db",
+        watchdog_hours: float = 3.0,
     ):
         """
         Initialize the trading bot runner.
@@ -105,6 +107,7 @@ class TradingBotRunner:
         self.min_cheap_price = min_cheap_price
         self.health_server_enabled = health_server_enabled
         self.db_path = db_path
+        self.watchdog_hours = watchdog_hours
 
         # Active traders (track running tasks)
         self.active_traders = {}  # condition_id -> asyncio.Task
@@ -533,8 +536,30 @@ class TradingBotRunner:
 
         self.finder_logger.info("Trading bot shut down cleanly")
 
+    def _create_alert_manager(self) -> "AlertManager":
+        """Create an AlertManager from environment variables."""
+        import os
+        from src.alerts import AlertManager, TelegramAlertSender, SlackAlertSender
+
+        context = {
+            "strategy": self.strategy,
+            "version": self.strategy_version,
+            "mode": self.mode,
+        }
+        telegram = None
+        slack = None
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if bot_token and chat_id:
+            telegram = TelegramAlertSender(bot_token, chat_id, context=context)
+        webhook = os.getenv("SLACK_WEBHOOK_URL")
+        if webhook:
+            slack = SlackAlertSender(webhook, context=context)
+        return AlertManager(telegram=telegram, slack=slack)
+
     async def run(self):
         """Main entry point."""
+        watchdog_task = None
         try:
             # Initialize trade database for dry-run recording
             from pathlib import Path
@@ -542,6 +567,25 @@ class TradingBotRunner:
             db_path.parent.mkdir(parents=True, exist_ok=True)
             self._trade_db = await TradeDatabase.initialize(str(db_path))
             self.finder_logger.info(f"TradeDatabase initialized: {db_path}")
+
+            # Start watchdog background task
+            alert_mgr = self._create_alert_manager()
+            context = {
+                "strategy": self.strategy,
+                "version": self.strategy_version,
+                "mode": self.mode,
+            }
+            watchdog_task = asyncio.create_task(
+                watchdog_loop(
+                    self._trade_db,
+                    alert_mgr,
+                    threshold_hours=self.watchdog_hours,
+                    context=context,
+                )
+            )
+            self.finder_logger.info(
+                f"Watchdog active, threshold: {self.watchdog_hours:g}h"
+            )
 
             await self.poll_and_trade()
         except KeyboardInterrupt:
@@ -551,6 +595,12 @@ class TradingBotRunner:
         except Exception as e:
             self.finder_logger.error(f"Fatal error: {e}", exc_info=True)
         finally:
+            if watchdog_task is not None:
+                watchdog_task.cancel()
+                try:
+                    await watchdog_task
+                except asyncio.CancelledError:
+                    pass
             if self._trade_db:
                 await self._trade_db.close()
             self.finder_logger.info("=" * 80)
@@ -676,6 +726,12 @@ async def main():
         default="data/trades.db",
         help="Path to the trades SQLite database (default: data/trades.db)",
     )
+    parser.add_argument(
+        "--watchdog-hours",
+        type=float,
+        default=3.0,
+        help="Hours without a trade before watchdog alerts (default: 3)",
+    )
 
     args = parser.parse_args()
 
@@ -718,6 +774,8 @@ async def main():
         parser.error("--book-log-every must be >= 0")
     if args.book_log_every_final < 0:
         parser.error("--book-log-every-final must be >= 0")
+    if args.watchdog_hours <= 0:
+        parser.error("--watchdog-hours must be > 0")
 
     is_live = args.mode == "live"
 
@@ -752,6 +810,7 @@ async def main():
         min_cheap_price=args.min_price,
         health_server_enabled=not args.no_health_server,
         db_path=args.db_path,
+        watchdog_hours=args.watchdog_hours,
     )
 
     await runner.run()

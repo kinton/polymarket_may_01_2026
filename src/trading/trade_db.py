@@ -803,6 +803,17 @@ class TradeDatabase:
                 "open_count": 0, "total_pnl": 0, "avg_pnl": 0,
             }
 
+    # -- watchdog ------------------------------------------------------------
+
+    async def get_last_trade_timestamp(self) -> float | None:
+        """Return the timestamp of the most recent trade, or None if no trades exist."""
+        async with self._db.execute(
+            "SELECT MAX(timestamp) FROM trades"
+        ) as cur:
+            row = await cur.fetchone()
+            val = row[0] if row else None
+            return float(val) if val is not None else None
+
     # -- maintenance ---------------------------------------------------------
 
     async def cleanup_old_snapshots(self, days: int = 7) -> int:
