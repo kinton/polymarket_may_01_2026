@@ -630,9 +630,14 @@ class LastSecondTrader:
         if not telegram_bot_token or not telegram_chat_id:
             return AlertDispatcher(alert_manager=None)
 
-        telegram_sender = TelegramAlertSender(telegram_bot_token, telegram_chat_id)
+        alert_context = {
+            "strategy": self.strategy,
+            "version": self.strategy_version,
+            "mode": self.mode,
+        }
+        telegram_sender = TelegramAlertSender(telegram_bot_token, telegram_chat_id, context=alert_context)
         slack_sender = (
-            SlackAlertSender(slack_webhook_url) if slack_webhook_url else None
+            SlackAlertSender(slack_webhook_url, context=alert_context) if slack_webhook_url else None
         )
         alert_manager = AlertManager(telegram=telegram_sender, slack=slack_sender)
 

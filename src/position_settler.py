@@ -648,7 +648,12 @@ class PositionSettler:
             return None
 
         from src.alerts import TelegramAlertSender, AlertManager
-        telegram = TelegramAlertSender(telegram_bot_token, telegram_chat_id)
+        alert_context = {
+            "strategy": "settler",
+            "version": "v1",
+            "mode": "dryrun" if self.dry_run else "live",
+        }
+        telegram = TelegramAlertSender(telegram_bot_token, telegram_chat_id, context=alert_context)
         self._alert_manager = AlertManager(telegram=telegram)
         return self._alert_manager
 

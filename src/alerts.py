@@ -20,6 +20,23 @@ from src.clob_types import ALERT_RATE_LIMIT_PER_MINUTE
 logger = logging.getLogger(__name__)
 
 
+def _format_context_prefix(context: dict[str, str] | None) -> str:
+    """Format strategy context as a message prefix.
+
+    Args:
+        context: Dict with keys: strategy, version, mode
+
+    Returns:
+        Prefix string like "[convergence/v1/live] " or empty string
+    """
+    if not context:
+        return ""
+    strategy = context.get("strategy", "?")
+    version = context.get("version", "?")
+    mode = context.get("mode", "?")
+    return f"[{strategy}/{version}/{mode}] "
+
+
 class AlertLevel(Enum):
     """Alert severity levels."""
 
@@ -57,18 +74,20 @@ class RateLimiter:
 class TelegramAlertSender:
     """Send trading alerts to Telegram via bot API."""
 
-    def __init__(self, bot_token: str, chat_id: str):
+    def __init__(self, bot_token: str, chat_id: str, context: dict[str, str] | None = None):
         """
         Initialize Telegram alert sender.
 
         Args:
             bot_token: Telegram bot token from @BotFather
             chat_id: Chat ID to send messages to
+            context: Strategy context dict with keys: strategy, version, mode
         """
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         self.rate_limiter = RateLimiter()
+        self.context = context
 
     async def send_alert(self, message: str) -> bool:
         """
@@ -83,6 +102,8 @@ class TelegramAlertSender:
         if not await self.rate_limiter.acquire():
             logger.warning("Telegram rate limit exceeded, alert dropped")
             return False
+
+        message = _format_context_prefix(self.context) + message
 
         try:
             payload = {
@@ -270,15 +291,17 @@ class TelegramAlertSender:
 class SlackAlertSender:
     """Send trading alerts to Slack via webhook."""
 
-    def __init__(self, webhook_url: str):
+    def __init__(self, webhook_url: str, context: dict[str, str] | None = None):
         """
         Initialize Slack alert sender.
 
         Args:
             webhook_url: Slack incoming webhook URL
+            context: Strategy context dict with keys: strategy, version, mode
         """
         self.webhook_url = webhook_url
         self.rate_limiter = RateLimiter()
+        self.context = context
 
     async def send_alert(self, message: str) -> bool:
         """
@@ -293,6 +316,8 @@ class SlackAlertSender:
         if not await self.rate_limiter.acquire():
             logger.warning("Slack rate limit exceeded, alert dropped")
             return False
+
+        message = _format_context_prefix(self.context) + message
 
         try:
             payload = {"text": message}
