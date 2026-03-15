@@ -252,27 +252,26 @@ class GammaAPI15mFinder:
             if session_to_close is not None:
                 await session_to_close.close()
 
-    def _matches_tickers(self, event: dict[str, Any], title: str) -> bool:
-        """Check if an event/market matches one of the active tickers."""
-        # Build allowed keywords from active tickers
-        allowed_keywords: list[str] = []
-        for ticker in self.tickers:
-            allowed_keywords.extend(TICKER_MAP.get(ticker, [ticker]))
+    def _matches_tickers(self, event: dict[str, Any], title: str) -> str | None:
+        """Check if an event/market matches one of the active tickers.
 
-        # Check event ticker field
+        Returns the matched ticker symbol (e.g. 'BTC') or None if no match.
+        """
         event_ticker = event.get("ticker", "")
-        if event_ticker:
-            for kw in allowed_keywords:
-                if kw.upper() == event_ticker.upper():
-                    return True
-
-        # Check title
         title_upper = title.upper()
-        for kw in allowed_keywords:
-            if kw.upper() in title_upper:
-                return True
 
-        return False
+        for ticker in self.tickers:
+            keywords = TICKER_MAP.get(ticker, [ticker])
+            for kw in keywords:
+                kw_upper = kw.upper()
+                # Check event ticker slug (e.g. 'btc-updown-5m-...' contains 'btc')
+                if event_ticker and kw_upper in event_ticker.upper():
+                    return ticker
+                # Check title
+                if kw_upper in title_upper:
+                    return ticker
+
+        return None
 
     def filter_markets(
         self, events: list[dict[str, Any]], max_minutes_ahead: int = 20
@@ -404,7 +403,8 @@ class GammaAPI15mFinder:
                         continue
 
                     # Filter by active tickers
-                    if not self._matches_tickers(event, title):
+                    matched_ticker = self._matches_tickers(event, title)
+                    if matched_ticker is None:
                         markets_skipped_ticker += 1
                         continue
 
@@ -422,7 +422,7 @@ class GammaAPI15mFinder:
                             ),
                             "minutes_until_end": round(time_until_end, 1),
                             "title": title,
-                            "ticker": event.get("ticker", "N/A"),
+                            "ticker": matched_ticker,
                             "slug": slug,
                         }
                     )
