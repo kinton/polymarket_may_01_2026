@@ -612,7 +612,7 @@ async def main():
     """Main entry point with command line argument parsing."""
     import warnings
 
-    VALID_TICKERS = ["BTC", "ETH", "SOL", "XRP"]
+    VALID_TICKERS = ["BTC", "ETH", "SOL", "XRP", "BNB", "DOGE"]
 
     parser = argparse.ArgumentParser(
         description="Polymarket 15-minute market trading bot runner"
