@@ -75,6 +75,7 @@ class TradingBotRunner:
         tickers_override: list[str] | None = None,
         min_cheap_price: float = 0.0,
         health_server_enabled: bool = True,
+        db_path: str = "data/trades.db",
     ):
         """
         Initialize the trading bot runner.
@@ -103,6 +104,7 @@ class TradingBotRunner:
         self.tickers_override = tickers_override
         self.min_cheap_price = min_cheap_price
         self.health_server_enabled = health_server_enabled
+        self.db_path = db_path
 
         # Active traders (track running tasks)
         self.active_traders = {}  # condition_id -> asyncio.Task
@@ -536,7 +538,7 @@ class TradingBotRunner:
         try:
             # Initialize trade database for dry-run recording
             from pathlib import Path
-            db_path = Path("data/trades.db")
+            db_path = Path(self.db_path)
             db_path.parent.mkdir(parents=True, exist_ok=True)
             self._trade_db = await TradeDatabase.initialize(str(db_path))
             self.finder_logger.info(f"TradeDatabase initialized: {db_path}")
@@ -668,6 +670,12 @@ async def main():
         default=0.5,
         help="Orderbook log interval in final 5 seconds (default: 0.5)",
     )
+    parser.add_argument(
+        "--db-path",
+        type=str,
+        default="data/trades.db",
+        help="Path to the trades SQLite database (default: data/trades.db)",
+    )
 
     args = parser.parse_args()
 
@@ -743,6 +751,7 @@ async def main():
         tickers_override=tickers_override,
         min_cheap_price=args.min_price,
         health_server_enabled=not args.no_health_server,
+        db_path=args.db_path,
     )
 
     await runner.run()
