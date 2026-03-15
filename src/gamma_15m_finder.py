@@ -37,6 +37,7 @@ TICKER_MAP: dict[str, list[str]] = {
     "BTC": ["Bitcoin", "BTC"],
     "ETH": ["Ethereum", "ETH"],
     "SOL": ["Solana", "SOL"],
+    "XRP": ["XRP"],
 }
 
 
