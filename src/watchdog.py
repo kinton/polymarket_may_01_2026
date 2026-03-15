@@ -68,7 +68,7 @@ async def watchdog_loop(
 
             if hours_since >= threshold_hours and not _alert_fired:
                 msg = (
-                    f"⚠️ WATCHDOG {prefix.strip()}: No trades in {hours_since:.1f}h "
+                    f"⚠️ WATCHDOG: No trades in {hours_since:.1f}h "
                     f"(threshold: {threshold_hours:g}h)\n"
                     f"DB: {db_name}"
                 )

@@ -176,7 +176,7 @@ class TelegramAlertSender:
         Returns:
             True if successful, False otherwise
         """
-        pnl_sign = "" if pnl >= 0 else ""
+        pnl_sign = "+" if pnl >= 0 else ""
         parts = [f"🚨 <b>STOP-LOSS:</b> {market} | PnL: {pnl_sign}{pnl:.2f}%"]
         if entry_price is not None:
             parts.append(f"Entry: ${entry_price:.4f}")
@@ -387,7 +387,7 @@ class SlackAlertSender:
         Returns:
             True if successful, False otherwise
         """
-        pnl_sign = "" if pnl >= 0 else ""
+        pnl_sign = "+" if pnl >= 0 else ""
         parts = [f"🚨 STOP-LOSS: {market} | PnL: {pnl_sign}{pnl:.2f}%"]
         if entry_price is not None:
             parts.append(f"Entry: ${entry_price:.4f}")
