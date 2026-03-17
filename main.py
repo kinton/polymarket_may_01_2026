@@ -123,6 +123,7 @@ class TradingBotRunner:
         health_server_enabled: bool = True,
         watchdog_hours: float = 3.0,
         shutdown_event: asyncio.Event | None = None,
+        market_queue: asyncio.Queue | None = None,
     ):
         sc = strategy_config
         self.dry_run = sc.dry_run
@@ -144,6 +145,9 @@ class TradingBotRunner:
         self.health_server_enabled = health_server_enabled
         self.db_path = sc.db_path
         self.watchdog_hours = watchdog_hours
+
+        # Market queue — fed by SharedFinder (or self if running standalone)
+        self.market_queue: asyncio.Queue = market_queue or asyncio.Queue()
 
         # Active traders (track running tasks)
         self.active_traders: dict[str, asyncio.Task] = {}
@@ -405,22 +409,33 @@ class TradingBotRunner:
             except Exception as exc:
                 self.finder_logger.warning(f"Health check server failed to start: {exc}")
 
-        self.finder_logger.info("Starting market polling loop...")
+        self.finder_logger.info("Starting market processing loop (fed by SharedFinder)...")
 
         while not self._shutdown_event.is_set():
             try:
-                self.finder_logger.info(
-                    f"Polling for active markets... (every {self.poll_interval}s)"
-                )
+                # Wait for a batch of markets from SharedFinder.
+                # Timeout is generous — just a backstop to recheck shutdown.
+                try:
+                    batch = await asyncio.wait_for(
+                        self.market_queue.get(),
+                        timeout=self.poll_interval * 2,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                # None sentinel means SharedFinder has finished (run_once or shutdown)
+                if batch is None:
+                    self.finder_logger.info("No more batches from SharedFinder — exiting loop")
+                    break
+
+                markets: list[Dict[str, Any]] = batch
 
                 if self._health is not None:
                     self._health.record_poll()
                     self._health.set_active_traders(len(self.active_traders))
 
-                markets = await self.find_active_markets()
-
                 if markets:
-                    self.finder_logger.info(f"Found {len(markets)} active market(s)")
+                    self.finder_logger.info(f"Received {len(markets)} market(s) from SharedFinder")
 
                     # Strategy market_filter
                     filtered = []
@@ -465,13 +480,13 @@ class TradingBotRunner:
                             )
                             self.active_traders[cid] = task
 
-                        batch = await launcher.launch(eligible, _start_and_track)
+                        batch_result = await launcher.launch(eligible, _start_and_track)
                         self.finder_logger.info(
-                            f"Parallel launch: {batch.succeeded}/{batch.total} ok "
-                            f"in {batch.elapsed_ms:.0f}ms"
+                            f"Parallel launch: {batch_result.succeeded}/{batch_result.total} ok "
+                            f"in {batch_result.elapsed_ms:.0f}ms"
                         )
                 else:
-                    self.finder_logger.info("No active markets found")
+                    self.finder_logger.info("No markets for this strategy in current batch")
 
                 await self._maybe_resolve_positions()
 
@@ -483,20 +498,6 @@ class TradingBotRunner:
                 if self.run_once:
                     self.finder_logger.info("Run-once mode: exiting after single poll")
                     break
-
-                jitter = random.uniform(0.85, 1.15)
-                sleep_for = max(1, int(self.poll_interval * jitter))
-                self.finder_logger.info(
-                    f"Sleeping {sleep_for}s before next poll (jitter {jitter:.2f}x)"
-                )
-                try:
-                    await asyncio.wait_for(
-                        self._shutdown_event.wait(), timeout=sleep_for
-                    )
-                    self.finder_logger.info("Shutdown requested during sleep — exiting loop")
-                    break
-                except asyncio.TimeoutError:
-                    pass
 
             except Exception as e:
                 self.finder_logger.error(f"Error in poll loop: {e}", exc_info=True)
@@ -585,6 +586,101 @@ class TradingBotRunner:
 
 
 # ---------------------------------------------------------------------------
+# SharedFinder — one API poller for all strategy runners
+# ---------------------------------------------------------------------------
+
+class SharedFinder:
+    """
+    Single Gamma API poller shared across all TradingBotRunner instances.
+
+    Polls once per interval using the union of all runners' universes.
+    Each found market is dispatched to every runner whose universe includes
+    that ticker.  Runners receive a list[dict] batch via their market_queue;
+    an empty list means "no markets this cycle" and None means "done".
+    """
+
+    def __init__(
+        self,
+        runners: list["TradingBotRunner"],
+        shutdown_event: asyncio.Event,
+        logger: logging.Logger,
+    ):
+        self.runners = runners
+        self.shutdown_event = shutdown_event
+        self.logger = logger
+        # Union of all runner universes — fetch everything in one API call
+        self.universe: list[str] = sorted(
+            {ticker for r in runners for ticker in r.universe}
+        )
+        # Use the minimum poll interval so no strategy has to wait longer than needed
+        self.poll_interval: int = min(r.poll_interval for r in runners)
+
+        self.logger.info(
+            f"[SharedFinder] universe={self.universe}, "
+            f"poll_interval={self.poll_interval}s, "
+            f"runners={len(runners)}"
+        )
+
+    async def _poll_once(self) -> list[Dict[str, Any]] | None:
+        """Fetch markets from the API. Returns list (possibly empty) or None on error."""
+        self.logger.info(
+            f"[SharedFinder] Polling for active markets... (every {self.poll_interval}s)"
+        )
+        try:
+            finder = GammaAPI15mFinder(logger=self.logger, tickers=self.universe)
+            markets = await finder.find_active_market()
+            return markets or []
+        except Exception as e:
+            self.logger.error(f"[SharedFinder] Error finding markets: {e}", exc_info=True)
+            return None
+
+    async def _dispatch(self, markets: list[Dict[str, Any]] | None) -> None:
+        """Put each runner's slice of markets into its queue."""
+        for runner in self.runners:
+            if markets is None:
+                runner_batch: list[Dict[str, Any]] = []
+            else:
+                runner_batch = [
+                    m for m in markets if m.get("ticker", "") in runner.universe
+                ]
+            await runner.market_queue.put(runner_batch)
+
+    async def run(self, run_once: bool = False) -> None:
+        """Main poll loop. Runs until shutdown_event is set or run_once=True."""
+        while not self.shutdown_event.is_set():
+            markets = await self._poll_once()
+            if markets:
+                self.logger.info(
+                    f"[SharedFinder] Found {len(markets)} market(s), dispatching..."
+                )
+            else:
+                self.logger.info("[SharedFinder] No active markets found")
+
+            await self._dispatch(markets)
+
+            if run_once:
+                break
+
+            jitter = random.uniform(0.85, 1.15)
+            sleep_for = max(1, int(self.poll_interval * jitter))
+            self.logger.info(
+                f"[SharedFinder] Sleeping {sleep_for}s before next poll (jitter {jitter:.2f}x)"
+            )
+            try:
+                await asyncio.wait_for(
+                    self.shutdown_event.wait(), timeout=sleep_for
+                )
+                self.logger.info("[SharedFinder] Shutdown requested — stopping")
+                break
+            except asyncio.TimeoutError:
+                pass
+
+        # Send None sentinel to all runners so they can exit cleanly
+        for runner in self.runners:
+            await runner.market_queue.put(None)
+
+
+# ---------------------------------------------------------------------------
 # Multi-strategy orchestrator
 # ---------------------------------------------------------------------------
 
@@ -666,11 +762,18 @@ async def main():
         print(f"  [{i+1}] {sc.name}/{sc.version} mode={sc.mode} size={sc.size} "
               f"universe={','.join(sc.universe)} db={sc.db_path}")
 
-    # Run all strategies in parallel
-    if len(runners) == 1:
-        await runners[0].run()
-    else:
-        await asyncio.gather(*(r.run() for r in runners))
+    # One shared finder polls the API once and distributes markets to all runners
+    shared_finder = SharedFinder(
+        runners=runners,
+        shutdown_event=shutdown_event,
+        logger=root_logger,
+    )
+
+    # Run all runners + the shared finder in parallel
+    await asyncio.gather(
+        *(r.run() for r in runners),
+        shared_finder.run(run_once=args.once),
+    )
 
 
 if __name__ == "__main__":
