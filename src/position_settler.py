@@ -41,6 +41,8 @@ from py_clob_client.clob_types import (
 )
 from py_clob_client.order_builder.constants import SELL
 
+from src.trading.trade_db import TradeDatabase
+
 
 def _create_clob_client(logger: logging.Logger) -> ClobClient:
     """Create and configure a CLOB client from environment variables.
@@ -166,9 +168,12 @@ class PositionSettler:
                 self.logger.error("Client not initialized")
                 return []
 
+            proxy = os.getenv("POLYMARKET_PROXY_ADDRESS")
+            address = proxy or self.client.get_address() or ""
+            self.logger.debug(f"Fetching trades for address: {address}")
             trades = await asyncio.to_thread(
                 self.client.get_trades,
-                params=TradeParams(maker_address=self.client.get_address() or ""),
+                params=TradeParams(maker_address=address),
             )
 
             if not trades:
@@ -177,13 +182,21 @@ class PositionSettler:
 
             self.logger.info(f"Found {len(trades)} historical trades")
 
-            # Step 2: Extract unique token_ids from trades (only BUY orders)
-            token_ids = set()
+            # Step 2: Extract unique token_ids, condition_ids, and entry prices from BUY orders
+            token_ids: set[str] = set()
+            token_entry_prices: dict[str, list[float]] = {}
+            token_condition_map: dict[str, str] = {}  # token_id -> condition_id
             for trade in trades:
                 if trade.get("side") == "BUY":
                     token_id = trade.get("asset_id")
                     if token_id:
                         token_ids.add(token_id)
+                        cid = trade.get("market", "")
+                        if cid and token_id not in token_condition_map:
+                            token_condition_map[token_id] = cid
+                        price = float(trade.get("price", 0) or 0)
+                        if price > 0:
+                            token_entry_prices.setdefault(token_id, []).append(price)
 
             self.logger.info(f"Tracking {len(token_ids)} unique tokens from buy orders")
 
@@ -214,12 +227,16 @@ class PositionSettler:
                             )
                             current_price = 0.0
 
+                        prices = token_entry_prices.get(token_id, [])
+                        avg_entry = sum(prices) / len(prices) if prices else 0.0
                         positions.append(
                             {
                                 "token_id": token_id,
+                                "condition_id": token_condition_map.get(token_id, ""),
                                 "balance": balance,
                                 "current_price": current_price,
                                 "estimated_value": balance * current_price,
+                                "entry_price": avg_entry,
                             }
                         )
 
@@ -298,8 +315,15 @@ class PositionSettler:
                 self.logger.info(
                     f"✅ Successfully sold {balance:.2f} tokens @ ${current_price:.4f} (~${balance * current_price:.2f})"
                 )
+                entry_price_val = (
+                    position.get("entry_price")
+                    or await self._lookup_entry_price_from_db(position)
+                    or 0.0
+                )
                 pnl = self.calculate_pnl(
-                    position, entry_price=0.99, exit_price=current_price
+                    position,
+                    entry_price=entry_price_val,
+                    exit_price=current_price,
                 )
                 await self.log_pnl_to_csv(
                     position=position,
@@ -422,6 +446,7 @@ class PositionSettler:
 
         return {
             "tokens": size,
+            "entry_price": round(entry_price, 6),
             "cost": round(cost, 2),
             "exit_value": round(exit_value, 2),
             "profit_loss": round(profit_loss, 2),
@@ -481,7 +506,7 @@ class PositionSettler:
                         or position.get("asset_id", "N/A"),
                         "side": position.get("side", "UNKNOWN"),
                         "tokens_bought": pnl["tokens"],
-                        "entry_price": 0.99,
+                        "entry_price": pnl.get("entry_price", 0.99),
                         "cost": pnl["cost"],
                         "exit_value": pnl["exit_value"],
                         "profit_loss": f"{'+' if pnl['profit_loss'] >= 0 else ''}{pnl['profit_loss']}",
@@ -493,6 +518,33 @@ class PositionSettler:
 
         except Exception as e:
             self.logger.error(f"Error logging P&L to CSV: {e}", exc_info=True)
+
+    async def _lookup_entry_price_from_db(self, position: dict) -> float:
+        """Look up average BUY price from local DB trades table using condition_id.
+
+        Returns 0.0 if condition_id is missing or no trades found.
+        """
+        condition_id = position.get("condition_id", "")
+        if not condition_id:
+            return 0.0
+        try:
+            for db_path in self._get_db_paths():
+                try:
+                    _db = await TradeDatabase.initialize(db_path)
+                    try:
+                        price = await _db.get_avg_entry_price_for_condition(condition_id)
+                        if price > 0:
+                            self.logger.debug(
+                                f"DB entry_price lookup: {condition_id} → {price:.4f} ({db_path})"
+                            )
+                            return price
+                    finally:
+                        await _db.close()
+                except Exception as e:
+                    self.logger.debug(f"DB lookup error for {db_path}: {e}")
+        except Exception as e:
+            self.logger.debug(f"entry_price DB lookup failed: {e}")
+        return 0.0
 
     async def process_positions(self):
         """
@@ -553,6 +605,78 @@ class PositionSettler:
         # Also check dry-run position resolution
         await self.check_dryrun_resolution()
 
+    @staticmethod
+    def _get_db_paths() -> list[str]:
+        """Return list of DB paths to scan.
+
+        Priority:
+        1. SETTLER_DB_PATHS env var (comma-separated)
+        2. Auto-scan data/*.db
+        3. Fallback: data/trades.db
+        """
+        env_paths = os.getenv("SETTLER_DB_PATHS", "")
+        if env_paths:
+            return [p.strip() for p in env_paths.split(",") if p.strip()]
+        data_dir = Path("data")
+        if data_dir.exists():
+            found = sorted(str(p) for p in data_dir.glob("*.db"))
+            if found:
+                return found
+        return ["data/trades.db"]
+
+    async def _check_db_for_dryrun(self, _db: Any) -> None:
+        """Process dry-run resolution for a single TradeDatabase instance."""
+        from src.trading.dry_run_simulator import DryRunSimulator
+
+        open_positions = await _db.get_open_dry_run_positions()
+        if not open_positions:
+            return
+
+        condition_ids = {p["condition_id"] for p in open_positions}
+        self.logger.info(
+            f"Checking resolution for {len(open_positions)} dry-run positions "
+            f"across {len(condition_ids)} markets"
+        )
+
+        resolved_all: list[dict] = []
+
+        if self.client is not None:
+            sim = DryRunSimulator(
+                db=_db,
+                market_name="resolver",
+                condition_id="resolver",
+                dry_run=True,
+            )
+            resolved_all = await sim.resolve_all_markets(self.client)
+            for r in resolved_all:
+                self.logger.info(
+                    f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
+                )
+        else:
+            for cid in condition_ids:
+                outcome = await self.check_market_resolution(cid)
+                if outcome is None:
+                    continue
+
+                winning_side = "YES" if str(outcome) == "0" else "NO"
+                sim = DryRunSimulator(
+                    db=_db, market_name="resolver",
+                    condition_id=cid, dry_run=True,
+                )
+                resolved = await sim.resolve_position(cid, winning_side, winning_side)
+                resolved_all.extend(resolved)
+                for r in resolved:
+                    self.logger.info(
+                        f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
+                    )
+
+        if resolved_all:
+            await self._send_resolution_alerts(resolved_all)
+
+        wins = [r for r in resolved_all if r.get("status") == "resolved_win"]
+        if wins and not self.dry_run:
+            await self._auto_redeem_wins(_db)
+
     async def check_dryrun_resolution(self, db: Optional[Any] = None):
         """Check and resolve any settled dry-run positions.
 
@@ -560,78 +684,24 @@ class PositionSettler:
 
         Args:
             db: TradeDatabase instance. Uses self._trade_db if not provided,
-                or creates a temporary one as last resort.
+                or iterates all paths from SETTLER_DB_PATHS / data/*.db scan.
         """
-        owns_db = False
         try:
-            from src.trading.trade_db import TradeDatabase
-            from src.trading.dry_run_simulator import DryRunSimulator
-
             if db is not None:
-                _db = db
+                await self._check_db_for_dryrun(db)
             elif self._trade_db is not None:
-                _db = self._trade_db
+                await self._check_db_for_dryrun(self._trade_db)
             else:
-                _db = await TradeDatabase.initialize("data/trades.db")
-                owns_db = True
-
-            try:
-                open_positions = await _db.get_open_dry_run_positions()
-                if not open_positions:
-                    return
-
-                condition_ids = {p["condition_id"] for p in open_positions}
-                self.logger.info(
-                    f"Checking resolution for {len(open_positions)} dry-run positions "
-                    f"across {len(condition_ids)} markets"
-                )
-
-                resolved_all: list[dict] = []
-
-                # If we have a CLOB client, use resolve_all_markets for best results
-                if self.client is not None:
-                    sim = DryRunSimulator(
-                        db=_db,
-                        market_name="resolver",
-                        condition_id="resolver",
-                        dry_run=True,
-                    )
-                    resolved_all = await sim.resolve_all_markets(self.client)
-                    for r in resolved_all:
-                        self.logger.info(
-                            f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
+                for db_path in self._get_db_paths():
+                    _db = await TradeDatabase.initialize(db_path)
+                    try:
+                        await self._check_db_for_dryrun(_db)
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error processing DB {db_path}: {e}", exc_info=True
                         )
-                else:
-                    # Without client, check each market individually (limited)
-                    for cid in condition_ids:
-                        outcome = await self.check_market_resolution(cid)
-                        if outcome is None:
-                            continue
-
-                        winning_side = "YES" if str(outcome) == "0" else "NO"
-                        sim = DryRunSimulator(
-                            db=_db, market_name="resolver",
-                            condition_id=cid, dry_run=True,
-                        )
-                        resolved = await sim.resolve_position(cid, winning_side, winning_side)
-                        resolved_all.extend(resolved)
-                        for r in resolved:
-                            self.logger.info(
-                                f"  Resolved dry-run #{r['id']}: {r['status']} PnL=${r['pnl']:.4f}"
-                            )
-
-                # Send resolution notifications
-                if resolved_all:
-                    await self._send_resolution_alerts(resolved_all)
-
-                # Auto-redeem winning positions on-chain
-                wins = [r for r in resolved_all if r.get("status") == "resolved_win"]
-                if wins and not self.dry_run:
-                    await self._auto_redeem_wins(_db)
-
-            finally:
-                if owns_db:
-                    await _db.close()
+                    finally:
+                        await _db.close()
         except Exception as e:
             self.logger.error(f"Error checking dry-run resolution: {e}", exc_info=True)
 
@@ -738,19 +808,12 @@ class PositionSettler:
 
 
 async def resolve_dryrun_positions(settler: PositionSettler):
-    """Resolve all open dry-run positions against market outcomes."""
-    from src.trading.trade_db import TradeDatabase
+    """Resolve all open dry-run positions against market outcomes across all configured DBs."""
     from src.trading.dry_run_simulator import DryRunSimulator
 
     settler.logger.info("Starting dry-run position resolution...")
 
-    db = settler._trade_db
-    owns_db = False
-    if db is None:
-        db = await TradeDatabase.initialize("data/trades.db")
-        owns_db = True
-
-    try:
+    async def _resolve_single_db(db: Any) -> None:
         positions = await db.get_open_dry_run_positions()
         if not positions:
             settler.logger.info("No open dry-run positions to resolve")
@@ -789,9 +852,19 @@ async def resolve_dryrun_positions(settler: PositionSettler):
             )
         else:
             settler.logger.info("No positions were resolved (markets may still be open)")
-    finally:
-        if owns_db:
-            await db.close()
+
+    if settler._trade_db is not None:
+        await _resolve_single_db(settler._trade_db)
+    else:
+        for db_path in PositionSettler._get_db_paths():
+            settler.logger.info(f"Scanning DB: {db_path}")
+            _db = await TradeDatabase.initialize(db_path)
+            try:
+                await _resolve_single_db(_db)
+            except Exception as e:
+                settler.logger.error(f"Error resolving DB {db_path}: {e}", exc_info=True)
+            finally:
+                await _db.close()
 
 
 async def main():

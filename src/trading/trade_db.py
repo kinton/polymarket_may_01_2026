@@ -755,6 +755,20 @@ class TradeDatabase:
         )
         await self._db.commit()
 
+    async def get_avg_entry_price_for_condition(self, condition_id: str) -> float:
+        """Return avg price of BUY trades for a condition_id from trades table.
+
+        Returns 0.0 if no matching trades found.
+        """
+        async with self._db.execute(
+            "SELECT AVG(price) FROM trades WHERE condition_id = ? AND action = 'BUY'",
+            (condition_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+        return 0.0
+
     async def get_open_dry_run_positions(self) -> list[dict]:
         async with self._db.execute(
             "SELECT * FROM dry_run_positions WHERE status = 'open'"
