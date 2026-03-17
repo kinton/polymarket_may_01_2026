@@ -54,21 +54,16 @@ class TestTradingConfig:
         cfg = TradingConfig()
         assert cfg.stop_loss_pct == 0.50
         assert cfg.max_total_trades_per_day == 100
-        assert cfg.convergence_enabled is True
-        assert cfg.convergence_threshold_pct == 0.0005
-        assert cfg.convergence_max_cheap_price == 0.35
 
     def test_env_override(self):
         env = {
             "STOP_LOSS_PCT": "0.20",
             "MAX_TOTAL_TRADES_PER_DAY": "50",
-            "CONVERGENCE_MAX_CHEAP_PRICE": "0.35",
         }
         with patch.dict(os.environ, env):
             cfg = TradingConfig()
             assert cfg.stop_loss_pct == 0.20
             assert cfg.max_total_trades_per_day == 50
-            assert cfg.convergence_max_cheap_price == 0.35
 
     def test_frozen(self):
         cfg = TradingConfig()
@@ -76,9 +71,9 @@ class TestTradingConfig:
             cfg.stop_loss_pct = 0.50  # type: ignore[misc]
 
     def test_reload_config(self):
-        with patch.dict(os.environ, {"CONVERGENCE_THRESHOLD_PCT": "0.001"}):
+        with patch.dict(os.environ, {"STOP_LOSS_PCT": "0.30"}):
             cfg = reload_config()
-            assert cfg.convergence_threshold_pct == 0.001
+            assert cfg.stop_loss_pct == 0.30
 
     def test_api_urls_default(self):
         cfg = TradingConfig()

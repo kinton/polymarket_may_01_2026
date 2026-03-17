@@ -130,11 +130,9 @@ class LastSecondTrader:
         use_orderbook_ws: bool | None = None,
         orderbook_ws_poll_interval: float = 0.1,
         trade_db: Any | None = None,
-        convergence_enabled: bool | None = None,
         strategy: str = "convergence",
         strategy_version: str = "v1",
         mode: str = "test",
-        min_cheap_price: float = 0.0,
     ):
         """
         Initialize the trader.
@@ -159,7 +157,6 @@ class LastSecondTrader:
             self.trade_size = trade_size
             self.title = title
             self.slug = slug
-            self._min_cheap_price_override = min_cheap_price
             self.logger = trader_logger
 
             # Extract short market name for logging
@@ -183,41 +180,16 @@ class LastSecondTrader:
                 logger=trader_logger,
             )
 
-            # Strategy plugin system
-            from src.clob_types import (
-                CONVERGENCE_ENABLED,
-                CONVERGENCE_THRESHOLD_PCT,
-                CONVERGENCE_MIN_SKEW,
-                CONVERGENCE_MAX_CHEAP_PRICE,
-                CONVERGENCE_MIN_CHEAP_PRICE,
-                CONVERGENCE_WINDOW_START_S,
-                CONVERGENCE_WINDOW_END_S,
-                CONVERGENCE_MIN_OBSERVATIONS,
-                CONVERGENCE_MIN_CONVERGENCE_RATE,
-                CONVERGENCE_DISABLE_STOP_LOSS,
-            )
-            _conv_enabled = convergence_enabled if convergence_enabled is not None else CONVERGENCE_ENABLED
-            # CLI --min-price overrides config if non-zero
-            _effective_min_cheap = min_cheap_price if min_cheap_price > 0 else CONVERGENCE_MIN_CHEAP_PRICE
-            if _conv_enabled and oracle_enabled:
+            # Strategy plugin system — strategy owns its own parameters
+            if oracle_enabled:
                 discover_strategies()
                 self.strategy_instance: BaseStrategy | None = load_strategy(
                     name=strategy,
                     version=strategy_version,
-                    threshold_pct=CONVERGENCE_THRESHOLD_PCT,
-                    min_skew=CONVERGENCE_MIN_SKEW,
-                    max_cheap_price=CONVERGENCE_MAX_CHEAP_PRICE,
-                    min_cheap_price=_effective_min_cheap,
-                    window_start_s=CONVERGENCE_WINDOW_START_S,
-                    window_end_s=CONVERGENCE_WINDOW_END_S,
-                    min_observations=CONVERGENCE_MIN_OBSERVATIONS,
-                    min_convergence_rate=CONVERGENCE_MIN_CONVERGENCE_RATE,
                     logger=trader_logger,
                 )
-                self._convergence_disable_stop_loss = CONVERGENCE_DISABLE_STOP_LOSS
             else:
                 self.strategy_instance = None
-                self._convergence_disable_stop_loss = False
             self._strategy_trade = False  # flag: current position is from strategy
 
 
@@ -458,6 +430,8 @@ class LastSecondTrader:
             try:
                 await asyncio.wait_for(self.ws.close(), timeout=5.0)
                 self._log(f"[TRADER] [{self.market_name}] WebSocket closed successfully")
+            except asyncio.CancelledError:
+                self._log(f"[TRADER] [{self.market_name}] WebSocket close cancelled")
             except asyncio.TimeoutError:
                 self._log(f"[TRADER] [{self.market_name}] WebSocket close timeout")
             except Exception as e:
@@ -471,20 +445,6 @@ class LastSecondTrader:
                 self._log(f"[TRADER] [{self.market_name}] CLOB client session closed")
         except Exception as e:
             self._log(f"[TRADER] [{self.market_name}] ERROR closing client session: {e}")
-
-        # Cancel all pending tasks in current event loop
-        try:
-            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-            if tasks:
-                self._log(f"[TRADER] [{self.market_name}] Cancelling {len(tasks)} pending task(s)...")
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                # Wait for tasks to be cancelled
-                await asyncio.gather(*tasks, return_exceptions=True)
-                self._log(f"[TRADER] [{self.market_name}] All tasks cancelled")
-        except Exception as e:
-            self._log(f"[TRADER] [{self.market_name}] ERROR cancelling tasks: {e}")
 
         # [LIFECYCLE] Trader stopped
         self._log(f"[TRADER] [{self.market_name}] Trader stopped ({reason})")

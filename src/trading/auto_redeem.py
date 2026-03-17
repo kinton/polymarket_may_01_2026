@@ -229,13 +229,18 @@ class AutoRedeemer:
                 "value": 0,
             })
 
-            # Estimate gas
+            # Estimate gas — if this fails the tx would revert (wallet holds no tokens)
             try:
                 gas_est = await asyncio.to_thread(self.w3.eth.estimate_gas, tx)
                 tx["gas"] = gas_est + 50000
                 self.log.info("Gas estimate: %d", gas_est)
             except Exception as e:
-                self.log.warning("Gas estimation failed: %s, using 500k", e)
+                self.log.info(
+                    "Gas estimation failed for condition_id=%s — "
+                    "likely no tokens to redeem, skipping tx. Reason: %s",
+                    condition_id, e,
+                )
+                return None
 
             # Sign and send
             signed = self.account.sign_transaction(tx)

@@ -5,15 +5,13 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: polymarket-trading-bot
-    command: python main.py --live --size 1.1 --max-traders 3
+    command: python main.py
     env_file:
       - .env
-    environment:
-      # Default: Bitcoin/Ethereum/Solana 5m/15m "Up or Down" (built-in)
-      # Custom: Add political/economic markets (semicolon-separated)
-      - MARKET_QUERIES=Trump;Election;President;Fed;Will
     volumes:
-      - ./log:/app/log  # Persist logs on host
+      - ./config:/app/config    # Strategy config
+      - ./data:/app/data        # SQLite databases
+      - ./log:/app/log          # Logs
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -33,7 +31,9 @@ services:
     env_file:
       - .env
     volumes:
-      - ./log:/app/log  # Share log directory with trading-bot
+      - ./config:/app/config    # Strategy config (for SETTLER_DB_PATHS / strategy detection)
+      - ./data:/app/data        # Share SQLite databases
+      - ./log:/app/log          # Share logs
     restart: unless-stopped
     logging:
       driver: "json-file"

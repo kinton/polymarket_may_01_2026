@@ -66,8 +66,8 @@ class ConvergenceV1(BaseStrategy):
     name = "convergence"
     version = "v1"
 
-    # Tickers this strategy supports (no SOL — poor win rate)
-    SUPPORTED_TICKERS: tuple[str, ...] = ("BTC", "ETH")
+    # Tickers this strategy supports — broad, for dry-run data collection
+    SUPPORTED_TICKERS: tuple[str, ...] = ("BTC", "ETH", "SOL")
 
     # REMOVED: direction filter within convergence zone is noise.
     # Within 5bp = ~50/50; cheap side payoff dominates regardless of delta sign.
@@ -84,10 +84,10 @@ class ConvergenceV1(BaseStrategy):
 
     def __init__(
         self,
-        threshold_pct: float = 0.0003,    # 3bp convergence
+        threshold_pct: float = 0.0005,    # 5bp convergence
         min_skew: float = 0.75,            # expensive side >= 75c
         max_cheap_price: float = 0.35,     # only buy at 35c or less
-        min_cheap_price: float = 0.14,     # tokens below 14c are unprofitable
+        min_cheap_price: float = 0.0,      # no minimum — collect all data
         max_against_pct: float = DEFAULT_MAX_AGAINST_BP,
         window_start_s: float = 200.0,    # observe from ~3.3 min before close
         window_end_s: float = 20.0,

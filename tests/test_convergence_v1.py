@@ -298,9 +298,10 @@ class TestMarketFilter:
         cs = ConvergenceV1()
         assert cs.market_filter(_make_market_info("ETH")) is True
 
-    def test_rejects_sol_by_default(self):
+    def test_accepts_sol_by_default(self):
+        # v1 is the broad data-collection strategy — SOL included
         cs = ConvergenceV1()
-        assert cs.market_filter(_make_market_info("SOL")) is False
+        assert cs.market_filter(_make_market_info("SOL")) is True
 
     def test_case_insensitive(self):
         cs = ConvergenceV1()

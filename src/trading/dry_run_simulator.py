@@ -391,6 +391,7 @@ class DryRunSimulator:
 
             resolved.append({
                 "id": pos["id"],
+                "market": pos["market_name"],
                 "side": side,
                 "entry_price": entry,
                 "exit_price": exit_price,
@@ -461,6 +462,7 @@ class DryRunSimulator:
 
             voided.append({
                 "id": pos["id"],
+                "market": pos["market_name"],
                 "side": pos["side"],
                 "entry_price": entry,
                 "exit_price": entry,

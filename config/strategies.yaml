@@ -1,0 +1,28 @@
+# Strategy configuration for Polymarket trading bot.
+# Each entry launches a separate TradingBotRunner in the same process (asyncio).
+#
+# Fields:
+#   name            - strategy plugin name (must match strategy's `name` attribute)
+#   version         - strategy plugin version (must match strategy's `version` attribute)
+#   mode            - "test" (dry-run) or "live" (real trades)
+#   size            - trade size in USDC
+#   poll_interval   - how often to poll for markets (seconds)
+#   max_traders     - max concurrent traders per strategy instance
+#   universe        - tickers to search for markets (Finder-level filter)
+
+strategies:
+  - name: convergence
+    version: v1
+    mode: test
+    size: 1.0
+    poll_interval: 90
+    max_traders: 3
+    universe: [BTC, ETH, SOL]
+
+  - name: convergence
+    version: v2
+    mode: live
+    size: 1.0
+    poll_interval: 90
+    max_traders: 3
+    universe: [BTC, ETH]

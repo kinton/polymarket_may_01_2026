@@ -93,16 +93,4 @@ MAX_VOL_PCT = _cfg.max_vol_pct
 MIN_ABS_Z = _cfg.min_abs_z
 MAX_REVERSAL_SLOPE = _cfg.max_reversal_slope
 
-# Convergence strategy constants
-CONVERGENCE_ENABLED = _cfg.convergence_enabled
-CONVERGENCE_THRESHOLD_PCT = _cfg.convergence_threshold_pct
-CONVERGENCE_MIN_SKEW = _cfg.convergence_min_skew
-CONVERGENCE_MAX_CHEAP_PRICE = _cfg.convergence_max_cheap_price
-CONVERGENCE_MIN_CHEAP_PRICE = _cfg.convergence_min_cheap_price
-CONVERGENCE_WINDOW_START_S = _cfg.convergence_window_start_s
-CONVERGENCE_WINDOW_END_S = _cfg.convergence_window_end_s
-CONVERGENCE_MIN_OBSERVATIONS = _cfg.convergence_min_observations
-CONVERGENCE_MIN_CONVERGENCE_RATE = _cfg.convergence_min_convergence_rate
-CONVERGENCE_DISABLE_STOP_LOSS = _cfg.convergence_disable_stop_loss
-
 

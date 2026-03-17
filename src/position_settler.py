@@ -27,6 +27,7 @@ import csv
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -182,12 +183,38 @@ class PositionSettler:
 
             self.logger.info(f"Found {len(trades)} historical trades")
 
-            # Step 2: Extract unique token_ids, condition_ids, and entry prices from BUY orders
+            # Step 2: Extract unique token_ids from recent BUY orders only.
+            # Historical trades for resolved markets generate 404s on balance
+            # queries — skip any trade older than RECENT_TRADE_DAYS.
+            RECENT_TRADE_DAYS = 30
+            recent_cutoff = time.time() - RECENT_TRADE_DAYS * 86400
+
             token_ids: set[str] = set()
             token_entry_prices: dict[str, list[float]] = {}
             token_condition_map: dict[str, str] = {}  # token_id -> condition_id
+            skipped_old = 0
             for trade in trades:
                 if trade.get("side") == "BUY":
+                    # Filter out old trades — try several timestamp field names
+                    trade_ts = trade.get("created_at") or trade.get("timestamp") or ""
+                    if trade_ts:
+                        try:
+                            if isinstance(trade_ts, (int, float)):
+                                ts_epoch = float(trade_ts)
+                                # Handle millisecond timestamps
+                                if ts_epoch > 1e12:
+                                    ts_epoch /= 1000
+                            else:
+                                from datetime import timezone as _tz
+                                ts_epoch = datetime.fromisoformat(
+                                    str(trade_ts).replace("Z", "+00:00")
+                                ).timestamp()
+                            if ts_epoch < recent_cutoff:
+                                skipped_old += 1
+                                continue
+                        except Exception:
+                            pass  # unparseable timestamp — include the trade
+
                     token_id = trade.get("asset_id")
                     if token_id:
                         token_ids.add(token_id)
@@ -198,7 +225,12 @@ class PositionSettler:
                         if price > 0:
                             token_entry_prices.setdefault(token_id, []).append(price)
 
-            self.logger.info(f"Tracking {len(token_ids)} unique tokens from buy orders")
+            if skipped_old:
+                self.logger.info(
+                    f"Skipped {skipped_old} buy trades older than {RECENT_TRADE_DAYS}d "
+                    f"(resolved markets)"
+                )
+            self.logger.info(f"Tracking {len(token_ids)} unique tokens from recent buy orders")
 
             positions = []
             for token_id in token_ids:
