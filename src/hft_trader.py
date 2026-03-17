@@ -55,7 +55,6 @@ from src.alerts import (
 from src.clob_types import (
     CLOB_WS_URL,
     MAX_ENTRY_PRICE,
-    MIN_ORDERBOOK_SIZE_USD,
     MIN_TRADE_USDC,
     PRICE_TIE_EPS,
     TRIGGER_THRESHOLD,
@@ -63,10 +62,8 @@ from src.clob_types import (
 )
 # Lazy-imported in __init__ to avoid circular: CONVERGENCE_MIN_CHEAP_PRICE, etc.
 from src.market_parser import (
-    determine_winning_side,
     extract_best_ask_with_size_from_book,
     extract_best_bid_with_size_from_book,
-    get_winning_token_id,
 )
 from src.updown_prices import EventPageClient, RtdsClient
 from src.trading.alert_dispatcher import AlertDispatcher
@@ -82,7 +79,7 @@ from src.trading.orderbook_ws_adapter import OrderbookWSAdapter
 from src.trading.websocket_client import WebSocketClient
 from src.trading.orderbook_tracker import OrderbookTracker
 from strategies import discover_strategies, load_strategy
-from strategies.base import BaseStrategy, MarketTick, Signal
+from strategies.base import BaseStrategy, MarketTick
 
 try:
     from py_clob_client.client import ClobClient
@@ -880,7 +877,6 @@ class LastSecondTrader:
         Check if trigger conditions are met and execute trade if appropriate.
         """
         async with self._trigger_lock:
-            trigger_start_mono = time.monotonic()
 
             if (
                 self.order_execution.is_executed()

@@ -10,8 +10,6 @@ existing tests and any residual imports continue to work.
 
 from __future__ import annotations
 
-import logging
-import warnings
 from dataclasses import dataclass
 from typing import Any
 

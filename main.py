@@ -518,7 +518,7 @@ class TradingBotRunner:
 
         self.finder_logger.info("Trading bot shut down cleanly")
 
-    def _create_alert_manager(self) -> "AlertManager":
+    def _create_alert_manager(self):
         import os
         from src.alerts import AlertManager, TelegramAlertSender, SlackAlertSender
 

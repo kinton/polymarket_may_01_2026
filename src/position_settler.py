@@ -207,7 +207,6 @@ class PositionSettler:
                                 if ts_epoch > 1e12:
                                     ts_epoch /= 1000
                             else:
-                                from datetime import timezone as _tz
                                 ts_epoch = datetime.fromisoformat(
                                     str(trade_ts).replace("Z", "+00:00")
                                 ).timestamp()

@@ -30,9 +30,7 @@ from __future__ import annotations
 import logging
 import statistics
 from dataclasses import dataclass
-from typing import Any
 
-from src.oracle_tracker import OracleSnapshot
 from src.clob_types import OrderBook
 from strategies.base import BaseStrategy, MarketInfo, MarketTick, Signal
 from strategies import register

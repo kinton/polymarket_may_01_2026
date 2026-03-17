@@ -34,9 +34,7 @@ async def watchdog_loop(
         threshold_hours: Hours without a trade before alerting.
         context: Strategy context dict (strategy/version/mode) for alert prefix.
     """
-    from src.alerts import _format_context_prefix
 
-    prefix = _format_context_prefix(context)
     db_name = Path(db._db_path).name
 
     logger.info("Watchdog active, threshold: %gh", threshold_hours)
