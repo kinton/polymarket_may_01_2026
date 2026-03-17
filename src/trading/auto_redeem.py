@@ -206,12 +206,11 @@ class AutoRedeemer:
             # typeCode=1 means CALL
             call_tuple = (1, target, 0, bytes.fromhex(redeem_data[2:]))
 
-            # Check USDC balance before
-            usdc_before = 0.0
-            if self.proxy_address:
-                usdc_before = await asyncio.to_thread(
-                    self._get_usdc_balance, self.proxy_address
-                )
+            # Check USDC balance before (use proxy address if set, else EOA)
+            balance_addr = self.proxy_address or self.account.address
+            usdc_before = await asyncio.to_thread(
+                self._get_usdc_balance, balance_addr
+            )
 
             nonce = await asyncio.to_thread(
                 self.w3.eth.get_transaction_count, self.account.address
@@ -255,12 +254,10 @@ class AutoRedeemer:
             )
 
             if receipt["status"] == 1:
-                # Check USDC balance after
-                usdc_after = 0.0
-                if self.proxy_address:
-                    usdc_after = await asyncio.to_thread(
-                        self._get_usdc_balance, self.proxy_address
-                    )
+                # Check USDC balance after (same address as before)
+                usdc_after = await asyncio.to_thread(
+                    self._get_usdc_balance, balance_addr
+                )
                 redeemed_amount = usdc_after - usdc_before
 
                 self.log.info(
@@ -293,22 +290,27 @@ async def redeem_resolved_wins(
     db: Any,
     redeemer: AutoRedeemer,
     clob_client: Any | None = None,
+    already_redeemed: set[str] | None = None,
 ) -> list[dict]:
     """Find all resolved_win positions and redeem them on-chain.
 
     Args:
         db: TradeDatabase instance
         redeemer: AutoRedeemer instance
-        clob_client: Optional ClobClient for neg_risk checks
+        clob_client: Optional ClobClient (unused, kept for API compat)
+        already_redeemed: Shared set for cross-DB dedup; mutated in-place.
 
     Returns:
         List of redemption results
     """
-    # Find resolved_win positions that haven't been redeemed yet
+    import requests as _requests
+
+    # One row per condition_id; also fetch side to verify winning token (Fix 1)
     async with db._db.execute(
-        """SELECT DISTINCT condition_id FROM dry_run_positions
+        """SELECT condition_id, MAX(side) as side FROM dry_run_positions
            WHERE status = 'resolved_win'
-           AND close_reason NOT LIKE '%redeemed%'"""
+           AND close_reason NOT LIKE '%redeemed%'
+           GROUP BY condition_id"""
     ) as cur:
         rows = await cur.fetchall()
 
@@ -318,22 +320,41 @@ async def redeem_resolved_wins(
 
     results = []
     for row in rows:
-        condition_id = row[0]
+        condition_id, position_side = row[0], row[1]
 
-        # Check if neg_risk market via CLOB API
+        # Fix 4: skip if already redeemed in this session (cross-DB dedup)
+        if already_redeemed is not None and condition_id in already_redeemed:
+            logger.info(
+                "Skipping already-redeemed condition_id=%s (cross-DB dedup)",
+                condition_id,
+            )
+            continue
+
+        # Fix 1: verify market outcome before spending gas
         is_neg_risk = False
-        if clob_client:
-            try:
-                import requests
-                r = requests.get(
-                    f"https://clob.polymarket.com/markets/{condition_id}",
-                    timeout=5,
-                )
-                if r.ok:
-                    market_data = r.json()
-                    is_neg_risk = bool(market_data.get("neg_risk", False))
-            except Exception:
-                pass
+        try:
+            r = _requests.get(
+                f"https://clob.polymarket.com/markets/{condition_id}",
+                timeout=5,
+            )
+            if r.ok:
+                market_data = r.json()
+                is_neg_risk = bool(market_data.get("neg_risk", False))
+                # If market is resolved and our side is the losing side → skip
+                if market_data.get("closed") and market_data.get("outcome") and position_side:
+                    winning_outcome = market_data["outcome"]
+                    if position_side.upper() != winning_outcome.upper():
+                        logger.info(
+                            "Skipping condition_id=%s: side=%s is loser "
+                            "(market outcome=%s) — no gas spent",
+                            condition_id, position_side, winning_outcome,
+                        )
+                        continue
+        except Exception as e:
+            logger.warning(
+                "Market data fetch failed for %s: %s — proceeding with redeem",
+                condition_id, e,
+            )
 
         result = await redeemer.redeem_position(
             condition_id, is_neg_risk=is_neg_risk
@@ -350,5 +371,7 @@ async def redeem_resolved_wins(
             await db._db.commit()
             results.append(result)
             logger.info("Redeemed condition_id=%s: %s", condition_id, result)
+            if already_redeemed is not None:
+                already_redeemed.add(condition_id)
 
     return results

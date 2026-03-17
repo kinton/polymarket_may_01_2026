@@ -120,6 +120,8 @@ class PositionSettler:
         """
         self.dry_run = dry_run
         self._trade_db = trade_db
+        # Fix 3: cache token_ids that returned 404 or are confirmed losers; token_id -> expiry
+        self._stale_tokens: dict[str, float] = {}
 
         # Logger: use provided or create via centralized config
         if logger is not None:
@@ -233,7 +235,18 @@ class PositionSettler:
             self.logger.info(f"Tracking {len(token_ids)} unique tokens from recent buy orders")
 
             positions = []
+            _stale_ttl = 86400  # 24 h
+            _now = time.time()
             for token_id in token_ids:
+                # Fix 3: skip tokens cached as stale/resolved-loser
+                stale_until = self._stale_tokens.get(token_id, 0)
+                if stale_until > _now:
+                    self.logger.debug(
+                        f"Skipping stale/resolved token {token_id} "
+                        f"(cached for {int((stale_until - _now) / 3600)}h more)"
+                    )
+                    continue
+
                 try:
                     balance_info_raw = await asyncio.to_thread(
                         self.client.get_balance_allowance,
@@ -259,6 +272,18 @@ class PositionSettler:
                             )
                             current_price = 0.0
 
+                        # Fix 3 + Fix 1: price=0 on a resolved market → check if loser
+                        if current_price == 0.0:
+                            condition_id = token_condition_map.get(token_id, "")
+                            losing = await self._is_losing_resolved_token(token_id, condition_id)
+                            if losing:
+                                self.logger.info(
+                                    f"Skipping losing resolved token {token_id} "
+                                    f"(condition {condition_id})"
+                                )
+                                self._stale_tokens[token_id] = _now + _stale_ttl
+                                continue
+
                         prices = token_entry_prices.get(token_id, [])
                         avg_entry = sum(prices) / len(prices) if prices else 0.0
                         positions.append(
@@ -277,7 +302,11 @@ class PositionSettler:
                         )
 
                 except Exception as e:
+                    err_str = str(e)
                     self.logger.warning(f"Failed to check balance for {token_id}: {e}")
+                    # Fix 3: cache 404/not-found errors to avoid repeated queries
+                    if "404" in err_str or "not found" in err_str.lower():
+                        self._stale_tokens[token_id] = _now + _stale_ttl
                     continue
 
             self.logger.info(f"Found {len(positions)} open positions with balance > 0")
@@ -286,6 +315,36 @@ class PositionSettler:
         except Exception as e:
             self.logger.error(f"Error fetching positions: {e}", exc_info=True)
             return []
+
+    async def _is_losing_resolved_token(self, token_id: str, condition_id: str) -> bool:
+        """Return True if token_id is the losing side of a resolved market.
+
+        Calls the Polymarket CLOB REST API. Returns False on any error so
+        we never accidentally discard a winning token.
+        """
+        if not condition_id:
+            return False
+        try:
+            import requests as _req
+            r = await asyncio.to_thread(
+                lambda: _req.get(
+                    f"https://clob.polymarket.com/markets/{condition_id}",
+                    timeout=5,
+                )
+            )
+            if not r.ok:
+                return False
+            data = r.json()
+            if not data.get("closed") or not data.get("outcome"):
+                return False  # market not yet resolved
+            winning_outcome = data["outcome"]
+            for t in data.get("tokens", []):
+                if t.get("outcome", "").lower() == winning_outcome.lower():
+                    # Found the winning token — if it's not ours, we lost
+                    return t.get("token_id") != token_id
+        except Exception as e:
+            self.logger.debug(f"_is_losing_resolved_token check failed for {token_id}: {e}")
+        return False
 
     async def sell_position_if_profitable(
         self, position: dict[str, Any]
@@ -656,7 +715,7 @@ class PositionSettler:
                 return found
         return ["data/trades.db"]
 
-    async def _check_db_for_dryrun(self, _db: Any) -> None:
+    async def _check_db_for_dryrun(self, _db: Any, already_redeemed: set[str] | None = None) -> None:
         """Process dry-run resolution for a single TradeDatabase instance."""
         from src.trading.dry_run_simulator import DryRunSimulator
 
@@ -707,7 +766,7 @@ class PositionSettler:
 
         wins = [r for r in resolved_all if r.get("status") == "resolved_win"]
         if wins and not self.dry_run:
-            await self._auto_redeem_wins(_db)
+            await self._auto_redeem_wins(_db, already_redeemed)
 
     async def check_dryrun_resolution(self, db: Optional[Any] = None):
         """Check and resolve any settled dry-run positions.
@@ -718,16 +777,19 @@ class PositionSettler:
             db: TradeDatabase instance. Uses self._trade_db if not provided,
                 or iterates all paths from SETTLER_DB_PATHS / data/*.db scan.
         """
+        # Fix 4: shared set prevents redeeming the same condition_id twice
+        # across multiple DB files in a single settlement cycle.
+        already_redeemed: set[str] = set()
         try:
             if db is not None:
-                await self._check_db_for_dryrun(db)
+                await self._check_db_for_dryrun(db, already_redeemed)
             elif self._trade_db is not None:
-                await self._check_db_for_dryrun(self._trade_db)
+                await self._check_db_for_dryrun(self._trade_db, already_redeemed)
             else:
                 for db_path in self._get_db_paths():
                     _db = await TradeDatabase.initialize(db_path)
                     try:
-                        await self._check_db_for_dryrun(_db)
+                        await self._check_db_for_dryrun(_db, already_redeemed)
                     except Exception as e:
                         self.logger.error(
                             f"Error processing DB {db_path}: {e}", exc_info=True
@@ -770,10 +832,11 @@ class PositionSettler:
         except Exception as e:
             self.logger.warning(f"Resolution alert error: {e}")
 
-    async def _auto_redeem_wins(self, db: Any) -> None:
+    async def _auto_redeem_wins(self, db: Any, already_redeemed: set[str] | None = None) -> None:
         """Attempt on-chain redemption of winning positions.
 
         Only runs in live mode (not dry_run). Requires PRIVATE_KEY in env.
+        already_redeemed is mutated in-place for cross-DB dedup (Fix 4).
         """
         try:
             from src.trading.auto_redeem import AutoRedeemer, redeem_resolved_wins
@@ -792,7 +855,7 @@ class PositionSettler:
                 logger_=self.logger,
             )
 
-            results = await redeem_resolved_wins(db, redeemer, self.client)
+            results = await redeem_resolved_wins(db, redeemer, self.client, already_redeemed)
             if results:
                 self.logger.info(
                     f"Auto-redeemed {len(results)} winning position(s)"
