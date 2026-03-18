@@ -35,6 +35,8 @@ from src.watchdog import watchdog_loop
 from src.gamma_15m_finder import GammaAPI15mFinder
 from src.hft_trader import LastSecondTrader
 from src.market_feed import MarketFeed
+from src.market_orchestrator import MarketOrchestrator
+from src.strategy_registry import StrategyRegistration, StrategyRegistry
 from src.trading.dry_run_simulator import DryRunSimulator
 from strategies import discover_strategies, load_strategy
 from strategies.base import MarketInfo
@@ -957,38 +959,52 @@ async def main():
     # Register full signal handlers (SIGINT + SIGTERM → graceful shutdown)
     _register_signal_handlers(loop, shutdown_event, root_logger)
 
-    # Only first runner gets health server.
-    # All runners share one trader registry so strategies for the same market
-    # share a single WebSocket connection (1 WS per market, N strategy slots).
-    shared_traders: dict = {}
-    runners = []
-    for i, sc in enumerate(strategy_configs):
-        runner = TradingBotRunner(
-            strategy_config=sc,
-            run_once=args.once,
-            health_server_enabled=(i == 0),
-            shutdown_event=shutdown_event,
-            shared_traders=shared_traders,
+    # Discover strategy plugins (must be called before MarketOrchestrator.run())
+    n_discovered = discover_strategies()
+    root_logger.info(f"Discovered {n_discovered} strategy plugin(s)")
+
+    # Build StrategyRegistry from loaded configs
+    registry = StrategyRegistry()
+    for sc in strategy_configs:
+        # Use universe from YAML config as the ticker list
+        reg = StrategyRegistration(
+            name=sc.name,
+            version=sc.version,
+            mode=sc.mode,
+            size=sc.size,
+            tickers=sc.universe,
+            dry_run=sc.dry_run,
         )
-        runners.append(runner)
-        print(f"  [{i+1}] {sc.name}/{sc.version} mode={sc.mode} size={sc.size} "
+        registry.register(reg)
+        print(f"  Registered {sc.name}/{sc.version} mode={sc.mode} size={sc.size} "
               f"universe={','.join(sc.universe)} db={sc.db_path}")
+
+    # Feed config (shared across all strategies)
+    feed_config = MarketFeedConfig()
+
+    # Determine poll interval from configs (use smallest non-zero)
+    poll_intervals = [sc.poll_interval for sc in strategy_configs if sc.poll_interval > 0]
+    poll_interval = min(poll_intervals) if poll_intervals else 90
 
     # Send startup notification to Telegram
     await _send_startup_notification(strategy_configs)
 
-    # One shared finder polls the API once and distributes markets to all runners
-    shared_finder = SharedFinder(
-        runners=runners,
+    # Health server — start once (equivalent to first runner's health server)
+    health_server = HealthCheckServer()
+    asyncio.create_task(health_server.start())
+
+    # MarketOrchestrator — single orchestration point (replaces SharedFinder + TradingBotRunner)
+    orchestrator = MarketOrchestrator(
+        registry=registry,
+        strategy_configs=strategy_configs,
+        feed_config=feed_config,
+        poll_interval=poll_interval,
         shutdown_event=shutdown_event,
+        run_once=args.once,
         logger=root_logger,
     )
 
-    # Run all runners + the shared finder in parallel
-    await asyncio.gather(
-        *(r.run() for r in runners),
-        shared_finder.run(run_once=args.once),
-    )
+    await orchestrator.run()
 
 
 if __name__ == "__main__":
