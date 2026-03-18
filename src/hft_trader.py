@@ -188,8 +188,7 @@ class LastSecondTrader:
             else:
                 self.strategy_instance = None
             self._strategy_trade = False  # flag: current position is from strategy
-
-
+            self._market_close_recorded = False  # idempotency guard for _record_market_close
 
             # Shutdown flag
             self._shutting_down = False
@@ -1414,11 +1413,14 @@ class LastSecondTrader:
 
     async def _record_market_close(self) -> None:
         """Record a final skip decision when market closes without a trade."""
+        if self._market_close_recorded:
+            return
         self._log(f"[{self.market_name}] _record_market_close called (executed={self.order_execution.is_executed()}, sim={self.dry_run_sim is not None})")
         if self.order_execution.is_executed():
             return
         if not self.dry_run_sim:
             return
+        self._market_close_recorded = True
         winning_ask = self._get_winning_ask()
         summary = self._build_market_summary()
         self._log(f"[{self.market_name}] Recording market_closed_no_trigger (no trade executed) | {summary}")
@@ -1459,7 +1461,7 @@ class LastSecondTrader:
                         stale_msg = "".join(
                             [
                                 f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] ",
-                                f"[{self.market_name}] WS stale ({now_ts - self.last_ws_update_ts:.1f}s). ",
+                                f"[{self.market_name}] WS stale ({now_ts - last_update:.1f}s). ",
                                 f"Time: {time_remaining:.2f}s",
                             ]
                         )

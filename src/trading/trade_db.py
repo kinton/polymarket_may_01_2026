@@ -761,7 +761,7 @@ class TradeDatabase:
         Returns 0.0 if no matching trades found.
         """
         async with self._db.execute(
-            "SELECT AVG(price) FROM trades WHERE condition_id = ? AND action = 'BUY'",
+            "SELECT AVG(price) FROM trades WHERE condition_id = ? AND action = 'buy'",
             (condition_id,),
         ) as cur:
             row = await cur.fetchone()

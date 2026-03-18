@@ -352,6 +352,22 @@ class TradingBotRunner:
                     f"Restart dedup: pre-loaded {len(rows)} condition_id(s) into "
                     f"monitored_markets from DB (last 1h buys)"
                 )
+            # Also pre-populate monitored_tickers from recent buys
+            try:
+                async with self._trade_db._db.execute(
+                    "SELECT DISTINCT market_name FROM trades WHERE timestamp > ? AND action = 'buy'",
+                    (cutoff,),
+                ) as cur2:
+                    ticker_rows = await cur2.fetchall()
+                if ticker_rows:
+                    for tr in ticker_rows:
+                        self.monitored_tickers.add(tr[0])
+                    self.finder_logger.info(
+                        f"Restart dedup: pre-loaded {len(ticker_rows)} ticker(s) into "
+                        f"monitored_tickers"
+                    )
+            except Exception as e2:
+                self.finder_logger.warning(f"Could not pre-load monitored_tickers: {e2}")
         except Exception as e:
             self.finder_logger.warning(f"Could not pre-load monitored_markets from DB: {e}")
 

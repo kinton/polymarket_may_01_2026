@@ -332,7 +332,8 @@ async def redeem_resolved_wins(
         # Fix 1: verify market outcome before spending gas
         is_neg_risk = False
         try:
-            r = _requests.get(
+            r = await asyncio.to_thread(
+                _requests.get,
                 f"https://clob.polymarket.com/markets/{condition_id}",
                 timeout=5,
             )
