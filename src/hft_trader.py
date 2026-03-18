@@ -67,6 +67,8 @@ from src.market_parser import (
 )
 from src.updown_prices import EventPageClient, RtdsClient
 from src.trading.alert_dispatcher import AlertDispatcher
+from src.trading.market_feed_config import MarketFeedConfig
+from src.market_feed import MarketFeed
 from src.trading.oracle_guard_manager import OracleGuardManager
 from src.trading.order_execution_manager import OrderExecutionManager
 from src.trading.position_manager import PositionManager
@@ -80,6 +82,7 @@ from src.trading.websocket_client import WebSocketClient
 from src.trading.orderbook_tracker import OrderbookTracker
 from strategies import discover_strategies, load_strategy
 from strategies.base import BaseStrategy, MarketTick
+from src.strategy_runner import StrategyRunner
 
 try:
     from py_clob_client.client import ClobClient
@@ -138,20 +141,23 @@ class LastSecondTrader:
         title: str | None = None,
         slug: str | None = None,
         trader_logger: logging.Logger | None = None,
-        oracle_enabled: bool = False,
-        oracle_guard_enabled: bool = True,
-        oracle_min_points: int = 4,
-        oracle_window_s: float = 60.0,
-        book_log_every_s: float = 1.0,
-        book_log_every_s_final: float = 0.5,
+        feed_config: MarketFeedConfig | None = None,
+        feed: MarketFeed | None = None,
         replay_dir: str | None = None,
         replay_book_throttle_s: float = 0.5,
-        use_orderbook_ws: bool | None = None,
-        orderbook_ws_poll_interval: float = 0.1,
         trade_db: Any | None = None,
         strategy: str = "convergence",
         strategy_version: str = "v1",
         mode: str = "test",
+        # Legacy individual kwargs (kept for backward compat, ignored if feed_config provided)
+        oracle_enabled: bool | None = None,
+        oracle_guard_enabled: bool | None = None,
+        oracle_min_points: int | None = None,
+        oracle_window_s: float | None = None,
+        book_log_every_s: float | None = None,
+        book_log_every_s_final: float | None = None,
+        use_orderbook_ws: bool | None = None,
+        orderbook_ws_poll_interval: float | None = None,
     ):
         """
         Initialize the trader.
@@ -178,29 +184,56 @@ class LastSecondTrader:
             self.slug = slug
             self.logger = trader_logger
 
+            # Resolve feed configuration: prefer explicit MarketFeedConfig; fall back
+            # to individual kwargs for backward compat with existing call sites.
+            if feed_config is not None:
+                self.feed_config = feed_config
+            else:
+                self.feed_config = MarketFeedConfig(
+                    oracle_enabled=True if oracle_enabled is None else oracle_enabled,
+                    oracle_guard_enabled=True if oracle_guard_enabled is None else oracle_guard_enabled,
+                    oracle_min_points=4 if oracle_min_points is None else oracle_min_points,
+                    oracle_window_s=60.0 if oracle_window_s is None else oracle_window_s,
+                    use_level2_ws=False if use_orderbook_ws is None else use_orderbook_ws,
+                    orderbook_ws_poll_interval=0.1 if orderbook_ws_poll_interval is None else orderbook_ws_poll_interval,
+                    book_log_every_s=1.0 if book_log_every_s is None else book_log_every_s,
+                    book_log_every_s_final=0.5 if book_log_every_s_final is None else book_log_every_s_final,
+                )
+
             # Extract short market name for logging
             self.market_name = self._extract_market_name(title)
 
-            # Market state
-            self.orderbook = OrderBook()
+            # Store optional shared feed reference (Phase 1+)
+            self._feed: MarketFeed | None = feed
+
+            if feed is not None:
+                # Feed-driven mode: share the feed's orderbook and oracle.
+                # No own WS or oracle price loop needed — feed owns them.
+                self.orderbook = feed.orderbook
+                self.oracle_guard = feed.oracle_guard
+                self._ws_client: WebSocketClient | None = None
+            else:
+                # Legacy standalone mode: own WS + own oracle
+                self.orderbook = OrderBook()
+                self._ws_client = WebSocketClient(
+                    token_id_yes=token_id_yes,
+                    token_id_no=token_id_no,
+                    market_name=self.market_name,
+                    logger=trader_logger,
+                )
+
             self.winning_side: str | None = None
 
-            # Modular components
+            # Orderbook tracker (always created; uses shared or own orderbook)
             self._ob_tracker = OrderbookTracker(
                 orderbook=self.orderbook,
                 token_id_yes=token_id_yes,
                 token_id_no=token_id_no,
                 tie_epsilon=self.PRICE_TIE_EPS,
             )
-            self._ws_client = WebSocketClient(
-                token_id_yes=token_id_yes,
-                token_id_no=token_id_no,
-                market_name=self.market_name,
-                logger=trader_logger,
-            )
 
             # Strategy plugin system — strategy owns its own parameters
-            if oracle_enabled:
+            if self.feed_config.oracle_enabled:
                 discover_strategies()
                 self.strategy_instance: BaseStrategy | None = load_strategy(
                     name=strategy,
@@ -215,9 +248,9 @@ class LastSecondTrader:
             # Shutdown flag
             self._shutting_down = False
 
-            # Log throttling
-            self.book_log_every_s = max(0.0, float(book_log_every_s))
-            self.book_log_every_s_final = max(0.0, float(book_log_every_s_final))
+            # Log throttling (exposed as attrs for backward compat)
+            self.book_log_every_s = max(0.0, self.feed_config.book_log_every_s)
+            self.book_log_every_s_final = max(0.0, self.feed_config.book_log_every_s_final)
             self._last_book_log_ts = 0.0
             self._last_logged_winner: str | None = None
 
@@ -240,17 +273,22 @@ class LastSecondTrader:
             load_dotenv()
             self.client = self._init_clob_client()
 
-            # Oracle guard manager
-            end_iso = self.end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-            self.oracle_guard = OracleGuardManager(
-                title=title or "Unknown",
-                market_name=self.market_name,
-                end_time=end_iso,
-                enabled=oracle_enabled,
-                guard_enabled=oracle_guard_enabled,
-                min_points=oracle_min_points,
-                window_s=oracle_window_s,
-            )
+            # Oracle guard manager — only create a standalone guard when there
+            # is no shared feed.  Feed-driven traders already have
+            # self.oracle_guard = feed.oracle_guard (set above) and must NOT
+            # replace it with a fresh empty guard, or quality_ok_for_convergence()
+            # will always fail (no data points) and record_trade() is never reached.
+            if feed is None:
+                end_iso = self.end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                self.oracle_guard = OracleGuardManager(
+                    title=title or "Unknown",
+                    market_name=self.market_name,
+                    end_time=end_iso,
+                    enabled=self.feed_config.oracle_enabled,
+                    guard_enabled=self.feed_config.oracle_guard_enabled,
+                    min_points=self.feed_config.oracle_min_points,
+                    window_s=self.feed_config.oracle_window_s,
+                )
 
             # Position, stop-loss, and risk managers
             self.position_manager = PositionManager(
@@ -330,21 +368,25 @@ class LastSecondTrader:
             else:
                 self.dry_run_sim = None
 
-            # OrderbookWS adapter (optional, enabled via USE_ORDERBOOK_WS env or param)
-            if use_orderbook_ws is None:
-                use_orderbook_ws = os.getenv("USE_ORDERBOOK_WS", "").strip().lower() in ("1", "true", "yes")
-            self.use_orderbook_ws = use_orderbook_ws
+            # OrderbookWS adapter (optional, enabled via USE_ORDERBOOK_WS env or feed_config)
+            use_l2 = self.feed_config.use_level2_ws or (
+                os.getenv("USE_ORDERBOOK_WS", "").strip().lower() in ("1", "true", "yes")
+            )
+            self.use_orderbook_ws = use_l2
             self._orderbook_ws_adapter: OrderbookWSAdapter | None = None
-            if self.use_orderbook_ws:
+            if use_l2:
                 ws_client = OrderbookWS()
                 self._orderbook_ws_adapter = OrderbookWSAdapter(
                     ws=ws_client,
                     orderbook=self.orderbook,
                     token_id_yes=self.token_id_yes,
                     token_id_no=self.token_id_no,
-                    poll_interval=orderbook_ws_poll_interval,
+                    poll_interval=self.feed_config.orderbook_ws_poll_interval,
                 )
-                self._log(f"[{self.market_name}] OrderbookWS adapter enabled (poll={orderbook_ws_poll_interval}s)")
+                self._log(
+                    f"[{self.market_name}] OrderbookWS adapter enabled "
+                    f"(poll={self.feed_config.orderbook_ws_poll_interval}s)"
+                )
 
             # Log init
             mode = "DRY RUN" if self.dry_run else "🔴 LIVE 🔴"
@@ -372,20 +414,24 @@ class LastSecondTrader:
             # The primary slot wraps this trader's own strategy/OEM/sim so that
             # check_trigger() can iterate uniformly over all slots.
             # Extra runners inject additional slots via add_strategy_slot().
-            if oracle_enabled and self.strategy_instance is not None:
-                _primary = StrategySlot(
+            if self.feed_config.oracle_enabled and self.strategy_instance is not None:
+                _primary = StrategyRunner(
+                    strategy_name=strategy,
+                    strategy_version=strategy_version,
                     strategy_instance=self.strategy_instance,
                     order_execution=self.order_execution,
                     dry_run_sim=self.dry_run_sim,
                     dry_run=self.dry_run,
                     mode=self.mode,
-                    strategy_name=strategy,
-                    strategy_version=strategy_version,
-                    recorded_skip_guards=self._recorded_skip_guards,  # alias same set
+                    market_name=self.market_name,
+                    logger=trader_logger,
                 )
-                self.strategies: list[StrategySlot] = [_primary]
+                # Share the same recorded_skip_guards set so trader-level
+                # dedup and slot-level dedup stay in sync.
+                _primary.recorded_skip_guards = self._recorded_skip_guards
+                self.strategies: list[StrategyRunner] = [_primary]
             else:
-                self.strategies: list[StrategySlot] = []
+                self.strategies: list[StrategyRunner] = []
 
             # [LIFECYCLE] Trader initialized successfully
             self._log(f"[TRADER] [{self.market_name}] Trader initialized")
@@ -926,23 +972,23 @@ class LastSecondTrader:
         """
         Check if trigger conditions are met and execute trade if appropriate.
 
-        Iterates over all StrategySlots sharing this trader's WS/orderbook/oracle.
-        Each slot is evaluated independently — one WS tick, N strategy decisions.
+        Iterates over all StrategyRunners sharing this trader's WS/orderbook/oracle.
+        Each runner is evaluated independently — one WS tick, N strategy decisions.
         """
         async with self._trigger_lock:
             if time_remaining <= 0:
                 return
 
-            # Global daily-limits check: if breached, block ALL slots.
+            # Global daily-limits check: if breached, block ALL runners.
             if not self.risk_manager.check_daily_limits():
-                for slot in list(self.strategies):
-                    if slot.dry_run_sim and "daily_loss_limit" not in slot.recorded_skip_guards:
-                        slot.recorded_skip_guards.add("daily_loss_limit")
-                        await slot.dry_run_sim.record_skip(
+                for runner in list(self.strategies):
+                    if runner.dry_run_sim and "daily_loss_limit" not in runner.recorded_skip_guards:
+                        runner.recorded_skip_guards.add("daily_loss_limit")
+                        await runner.dry_run_sim.record_skip(
                             reason="daily_loss_limit",
                             time_remaining=time_remaining,
                         )
-                    slot.order_execution.mark_executed()
+                    runner.order_execution.mark_executed()
                 # Backward compat: also handle legacy (no-slot) path.
                 if not self.strategies:
                     if self.dry_run_sim and "daily_loss_limit" not in self._recorded_skip_guards:
@@ -954,7 +1000,7 @@ class LastSecondTrader:
                     self.order_execution.mark_executed()
                 return
 
-            # No oracle / no strategy slots → nothing to do.
+            # No oracle / no strategy runners → nothing to do.
             if not self.strategies or not self.oracle_guard.enabled:
                 self._market_stats["ticks_total"] += 1
                 return
@@ -965,128 +1011,29 @@ class LastSecondTrader:
                 orderbook=self.orderbook,
             )
 
-            any_slot_pending = False
+            any_runner_pending = False
 
-            for slot in list(self.strategies):  # snapshot — safe if slots added mid-loop
-                if slot.order_execution.is_executed() or slot.order_execution.is_in_progress():
+            for runner in list(self.strategies):  # snapshot — safe if runners added mid-loop
+                if runner.order_execution.is_executed() or runner.order_execution.is_in_progress():
                     continue
 
-                # Per-slot attempt limit.
-                if slot.order_execution.get_attempts() >= slot.order_execution.get_max_attempts():
-                    if "max_attempts" not in slot.recorded_skip_guards:
-                        slot.recorded_skip_guards.add("max_attempts")
-                        self._log(
-                            f"⚠️  [{self.market_name}] Max order attempts "
-                            f"({slot.order_execution.get_max_attempts()}) reached "
-                            f"({slot.strategy_name}/{slot.strategy_version})"
-                        )
-                        if slot.dry_run_sim:
-                            await slot.dry_run_sim.record_skip(
-                                reason="max_attempts",
-                                time_remaining=time_remaining,
-                            )
-                    continue
+                any_runner_pending = True
 
-                # Per-slot retry cooldown (2 s between attempts).
-                current_time = time.time()
-                if (
-                    slot.order_execution.get_attempts() > 0
-                    and (current_time - slot.order_execution.get_last_attempt_time()) < 2.0
-                ):
-                    any_slot_pending = True
-                    continue
-
-                any_slot_pending = True
-
-                signal = slot.strategy_instance.get_signal(tick)
-                if signal is None:
-                    continue
-
-                # Oracle freshness check (staleness + min_points only).
-                # NOTE: z-score check intentionally skipped — convergence
-                # strategy WANTS low |z| (price near target). The standard
-                # quality_ok() filter is designed for directional trading
-                # (high |z| = strong signal) and would wrongly block the
-                # best convergence opportunities.
-                oracle_ok, block_reason, block_detail = (
-                    self.oracle_guard.quality_ok_for_convergence()
-                )
-                if not oracle_ok:
-                    strategy_name = slot.strategy_instance.name
-                    self._log(
-                        f"⛔ [{self.market_name}] {strategy_name.upper()}/{slot.strategy_version} blocked: "
-                        f"oracle_quality={block_reason} ({block_detail})"
-                    )
-                    if slot.dry_run_sim and block_reason not in slot.recorded_skip_guards:
-                        slot.recorded_skip_guards.add(block_reason)
-                        await slot.dry_run_sim.record_skip(
-                            reason=block_reason,
-                            reason_detail=block_detail,
-                            time_remaining=time_remaining,
-                            oracle_snap=self.oracle_guard.snapshot,
-                        )
-                    continue
-
-                meta = signal.metadata
-                strategy_name = slot.strategy_instance.name
-                self._log(
-                    f"🎯 [{self.market_name}] {strategy_name.upper()}/{slot.strategy_version} TRIGGER! "
-                    f"{signal.side} ({meta.get('side_label', '')}) @ ${signal.price:.4f} | "
-                    f"delta_pct={meta.get('delta_pct', 0) * 100:+.4f}% | "
-                    f"skew={meta.get('expensive_price', 0):.2f}/{signal.price:.2f} | "
-                    f"obs={meta.get('observations', 0)} | "
-                    f"conv_rate={meta.get('convergence_rate', 0):.0%} | "
-                    f"side_cons={meta.get('side_consistency', 0):.0%} | "
-                    f"t={time_remaining:.1f}s"
+                fired = await runner.on_tick(
+                    tick,
+                    self.oracle_guard,
+                    self.risk_manager,
+                    self._get_ask_for_side,
+                    self.trade_size,
+                    self._log,
                 )
 
-                side = signal.side
-                winning_ask = self._get_ask_for_side(side)
-                if winning_ask is not None and winning_ask > MAX_ENTRY_PRICE:
-                    self._log(
-                        f"[{self.market_name}] Price {winning_ask:.4f} above max entry "
-                        f"{MAX_ENTRY_PRICE} — skipping {slot.strategy_name}/{slot.strategy_version}"
-                    )
-                    continue
+                # Set _strategy_trade flag if this runner fired an execution attempt.
+                # This suppresses the legacy stop-loss check for manual positions.
+                if fired:
+                    self._strategy_trade = True
 
-                self._strategy_trade = True  # shared flag: suppresses legacy stop-loss check
-                _was_executed = slot.order_execution.is_executed()
-                await slot.order_execution.execute_order_for(side, winning_ask)
-
-                # Record buy for replay recorder (shared; uses primary strategy label).
-                if self.event_recorder is not None and not _was_executed and slot.order_execution.is_executed():
-                    self.event_recorder.record_trade(
-                        action="buy",
-                        side=side,
-                        price=winning_ask or 0.0,
-                        size=self.trade_size,
-                        success=True,
-                        reason=strategy_name,
-                    )
-
-                # Record buy AFTER confirming execution to avoid phantom
-                # positions when the FOK order is killed (live mode).
-                # In dry_run mode execute_order_for() always succeeds.
-                # In live mode, OEM already recorded the trade; only call
-                # record_buy() for dry-run so we don't write to trades twice.
-                if (
-                    slot.dry_run_sim
-                    and slot.dry_run
-                    and not _was_executed
-                    and slot.order_execution.is_executed()
-                ):
-                    await slot.dry_run_sim.record_buy(
-                        side=signal.side,
-                        price=signal.price,
-                        amount=self.trade_size,
-                        confidence=meta.get("confidence", 0.0),
-                        time_remaining=time_remaining,
-                        reason=meta.get("reason", strategy_name),
-                        oracle_snap=self.oracle_guard.snapshot,
-                        disable_stop_loss=signal.disable_stop_loss,
-                    )
-
-            if any_slot_pending:
+            if any_runner_pending:
                 self._market_stats["ticks_total"] += 1
 
 
@@ -1178,18 +1125,18 @@ class LastSecondTrader:
     # Multi-strategy slot management
     # ------------------------------------------------------------------
 
-    def add_strategy_slot(self, slot: StrategySlot) -> None:
-        """Add an extra strategy slot to share this trader's WS/orderbook/oracle.
+    def add_strategy_slot(self, slot: StrategyRunner) -> None:
+        """Add an extra strategy runner to share this trader's WS/orderbook/oracle.
 
         Called by a second TradingBotRunner that wants its strategy to observe
         the same market without opening a second WebSocket connection.
-        The slot's strategy accumulator is reset so it starts fresh.
+        The runner's strategy accumulator is reset so it starts fresh.
         """
         if slot.strategy_instance is not None:
             slot.strategy_instance.reset()
         self.strategies.append(slot)
         self._log(
-            f"[{self.market_name}] StrategySlot added: "
+            f"[{self.market_name}] StrategyRunner added: "
             f"{slot.strategy_name}/{slot.strategy_version} "
             f"(dry_run={slot.dry_run})"
         )
@@ -1208,8 +1155,8 @@ class LastSecondTrader:
         trade_size: float,
         trade_db: Any | None,
         logger: logging.Logger | None,
-    ) -> StrategySlot:
-        """Factory: build a StrategySlot for injection into an existing trader.
+    ) -> StrategyRunner:
+        """Factory: build a StrategyRunner for injection into an existing trader.
 
         Initialises a fresh strategy instance, order-execution manager, and
         (optionally) a dry-run simulator.  The CLOB client is only created for
@@ -1281,14 +1228,16 @@ class LastSecondTrader:
                 mode=mode,
             )
 
-        return StrategySlot(
+        return StrategyRunner(
+            strategy_name=strategy,
+            strategy_version=strategy_version,
             strategy_instance=strategy_inst,
             order_execution=oem,
             dry_run_sim=sim,
             dry_run=dry_run,
             mode=mode,
-            strategy_name=strategy,
-            strategy_version=strategy_version,
+            market_name=market_name,
+            logger=logger,
         )
 
     async def listen_to_market(self):
@@ -1309,6 +1258,24 @@ class LastSecondTrader:
         # Backward compat: also reset if strategy_instance set but no slots.
         if not self.strategies and self.strategy_instance is not None:
             self.strategy_instance.reset()
+
+        # ------------------------------------------------------------------
+        # Feed-driven mode: delegate WS + oracle to the injected MarketFeed.
+        # Subscribe our _on_feed_tick callback and wait for market close.
+        # ------------------------------------------------------------------
+        if self._feed is not None:
+            self._feed.subscribe(self._on_feed_tick)
+            try:
+                while self.get_time_remaining() > 0:
+                    await asyncio.sleep(1.0)
+                await self._record_market_close()
+            finally:
+                self._feed.unsubscribe(self._on_feed_tick)
+                if self.oracle_guard.enabled:
+                    self.oracle_guard.log_block_summary(self.logger)
+                self._log("✓ Trader shut down cleanly (feed-driven)")
+            return
+
         try:
             if self._orderbook_ws_adapter is not None:
                 # Use OrderbookWS adapter — it handles connect, subscribe, reconnect
@@ -1719,6 +1686,39 @@ class LastSecondTrader:
                         self._last_stale_log_ts = now_ts
 
             await asyncio.sleep(1.0)
+
+    async def _on_feed_tick(self, tick: MarketTick) -> None:
+        """Called by MarketFeed on each WS update and heartbeat (feed-driven mode).
+
+        Replaces ``process_market_update`` + ``_trigger_check_loop`` when the
+        trader is constructed with an external ``MarketFeed``.
+        """
+        time_remaining = tick.time_remaining
+        if time_remaining <= 0:
+            return
+        try:
+            await self.check_trigger(time_remaining)
+
+            if self.position_manager.is_open and not self._strategy_trade:
+                current_price = self._get_ask_for_side(
+                    self.position_manager.position_side or ""
+                )
+                if current_price is not None:
+                    await self.stop_loss_manager.check_and_execute(current_price)
+
+            _yes_price = self._get_ask_for_side("YES")
+            _no_price = self._get_ask_for_side("NO")
+            for _slot in list(self.strategies):
+                if _slot.dry_run_sim:
+                    await _slot.dry_run_sim.check_virtual_positions(
+                        yes_price=_yes_price, no_price=_no_price
+                    )
+            if not self.strategies and self.dry_run_sim:
+                await self.dry_run_sim.check_virtual_positions(
+                    yes_price=_yes_price, no_price=_no_price
+                )
+        except Exception as e:
+            self._log(f"[{self.market_name}] Error in _on_feed_tick: {e}")
 
     # Backward-compatibility properties for order execution state
     @property

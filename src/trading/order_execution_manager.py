@@ -152,6 +152,14 @@ class OrderExecutionManager:
         else:
             print(message)
 
+    def _log_error(self, message: str) -> None:
+        """Log error with full traceback to console or logger."""
+        if self.logger:
+            self.logger.error(message, exc_info=True)
+        else:
+            import traceback
+            print(f"{message}\n{traceback.format_exc()}")
+
     async def execute_order_for(
         self,
         side: str,
@@ -317,6 +325,12 @@ class OrderExecutionManager:
             if self.risk_manager:
                 self.risk_manager.track_daily_pnl(amount)
 
+            # Mark executed BEFORE DB recording so that a recording failure
+            # never leaves order_executed=False on a live order that already
+            # hit the blockchain.  A retry on a matched order would create a
+            # duplicate trade.
+            self.order_executed = True
+
             # Record BUY in SQLite
             if self.trade_db is not None:
                 try:
@@ -333,10 +347,12 @@ class OrderExecutionManager:
                         dry_run=False,
                         order_status="filled",
                     )
+                    self._log(f"[{self.market_name}] ✅ BUY recorded to DB")
                 except Exception as e:
-                    self._log(f"[{self.market_name}] Error recording buy to DB: {e}")
+                    self._log_error(f"[{self.market_name}] ❌ Error recording buy to DB: {e}")
+            else:
+                self._log(f"[{self.market_name}] ⚠️ trade_db is None — BUY NOT recorded to DB!")
 
-            self.order_executed = True
             return True
 
         except CircuitOpenError as e:

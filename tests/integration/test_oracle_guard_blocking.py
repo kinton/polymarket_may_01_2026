@@ -46,8 +46,6 @@ async def test_convergence_blocked_when_oracle_not_converged(integration_trader)
 @pytest.mark.asyncio
 async def test_convergence_fires_when_oracle_converged(integration_trader):
     """Trade fires when oracle converged and enough evidence accumulated."""
-    from src.hft_trader import StrategySlot
-
     strategy = ConvergenceV1(
         threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30,
         window_start_s=180.0, window_end_s=20.0, min_observations=3,
@@ -67,14 +65,15 @@ async def test_convergence_fires_when_oracle_converged(integration_trader):
         integration_trader.strategies[0].strategy_instance = strategy
         integration_trader.strategies[0].order_execution.execute_order_for = AsyncMock()
     else:
-        slot = StrategySlot(
+        from src.strategy_runner import StrategyRunner
+        slot = StrategyRunner(
+            strategy_name="convergence_v1",
+            strategy_version="v1",
             strategy_instance=strategy,
             order_execution=integration_trader.order_execution,
             dry_run_sim=integration_trader.dry_run_sim,
             dry_run=integration_trader.dry_run,
             mode="test",
-            strategy_name="convergence_v1",
-            strategy_version="v1",
         )
         slot.order_execution.execute_order_for = AsyncMock()
         integration_trader.strategies.append(slot)

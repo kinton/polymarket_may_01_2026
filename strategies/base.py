@@ -25,6 +25,7 @@ class MarketInfo:
     minutes_until_end: float
     token_id_yes: str
     token_id_no: str
+    slug: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,19 @@ class BaseStrategy(ABC):
     def configure(self, **kwargs: Any) -> None:
         """Optional: override runtime parameters (e.g. from CLI)."""
         pass
+
+    @classmethod
+    def tickers(cls) -> list[str]:
+        """Tickers this strategy wants to trade.
+
+        Default implementation: derive from market_filter() via SUPPORTED_TICKERS
+        if present, otherwise return empty list (caller must configure via YAML).
+        Override in subclasses that declare a static universe.
+        """
+        supported = getattr(cls, "SUPPORTED_TICKERS", None)
+        if supported:
+            return list(supported)
+        return []
 
     def get_signal(self, tick: MarketTick) -> Signal | None:
         """Convenience: observe + decide in one call.

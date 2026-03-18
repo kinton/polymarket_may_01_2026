@@ -18,7 +18,7 @@ import random
 import signal
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -26,6 +26,7 @@ import yaml
 
 from src.logging_config import setup_bot_loggers
 from src.healthcheck import HealthCheckServer
+from src.trading.market_feed_config import MarketFeedConfig
 from src.trading.parallel_launcher import ParallelLauncher
 from src.trading.trade_db import TradeDatabase
 from src.watchdog import watchdog_loop
@@ -33,6 +34,7 @@ from src.watchdog import watchdog_loop
 # Import our modules
 from src.gamma_15m_finder import GammaAPI15mFinder
 from src.hft_trader import LastSecondTrader
+from src.market_feed import MarketFeed
 from src.trading.dry_run_simulator import DryRunSimulator
 from strategies import discover_strategies, load_strategy
 from strategies.base import MarketInfo
@@ -114,12 +116,7 @@ class TradingBotRunner:
         strategy_config: StrategyConfig,
         *,
         run_once: bool = False,
-        oracle_enabled: bool = True,
-        oracle_guard_enabled: bool = True,
-        oracle_min_points: int = 4,
-        oracle_window_s: float = 60.0,
-        book_log_every_s: float = 1.0,
-        book_log_every_s_final: float = 0.5,
+        feed_config: MarketFeedConfig | None = None,
         health_server_enabled: bool = True,
         watchdog_hours: float = 3.0,
         shutdown_event: asyncio.Event | None = None,
@@ -132,12 +129,14 @@ class TradingBotRunner:
         self.poll_interval = sc.poll_interval
         self.run_once = run_once
         self.max_traders = sc.max_traders
-        self.book_log_every_s = book_log_every_s
-        self.book_log_every_s_final = book_log_every_s_final
-        self.oracle_enabled = bool(oracle_enabled)
-        self.oracle_guard_enabled = bool(oracle_guard_enabled)
-        self.oracle_min_points = int(oracle_min_points)
-        self.oracle_window_s = float(oracle_window_s)
+        self.feed_config: MarketFeedConfig = feed_config or MarketFeedConfig()
+        # Expose individual feed params for backward compat with existing call sites
+        self.book_log_every_s = self.feed_config.book_log_every_s
+        self.book_log_every_s_final = self.feed_config.book_log_every_s_final
+        self.oracle_enabled = self.feed_config.oracle_enabled
+        self.oracle_guard_enabled = self.feed_config.oracle_guard_enabled
+        self.oracle_min_points = self.feed_config.oracle_min_points
+        self.oracle_window_s = self.feed_config.oracle_window_s
         self.strategy = sc.name
         self.strategy_version = sc.version
         self.mode = sc.mode
@@ -268,41 +267,45 @@ class TradingBotRunner:
         self.monitored_markets.add(condition_id)
 
         # ----------------------------------------------------------------
-        # Shared-trader fast path: another runner already owns the WS for
-        # this market → inject our strategy as an extra slot instead of
+        # Shared-feed fast path: another runner already owns the MarketFeed
+        # for this market → subscribe our own trader to that feed instead of
         # opening a second WebSocket connection.
         # ----------------------------------------------------------------
-        existing_trader = self._shared_traders.get(condition_id)
-        if existing_trader is not None:
+        existing_feed = self._shared_traders.get(condition_id)
+        if existing_feed is not None:
             self.trader_logger.info(
-                f"[SharedTrader] Injecting {self.strategy}/{self.strategy_version} "
-                f"slot into existing trader for {condition_id}"
+                f"[SharedFeed] Subscribing {self.strategy}/{self.strategy_version} "
+                f"trader to existing feed for {condition_id}"
             )
             try:
-                slot = LastSecondTrader.build_slot(
+                end_time_utc_str = end_time_utc or ""
+                end_time = datetime.fromisoformat(
+                    end_time_utc_str.replace(" UTC", "+00:00")
+                )
+                trader = LastSecondTrader(
                     condition_id=condition_id,
                     token_id_yes=token_id_yes or "",
                     token_id_no=token_id_no or "",
-                    market_name=existing_trader.market_name,
+                    end_time=end_time,
+                    dry_run=self.dry_run,
+                    trade_size=self.trade_size,
+                    title=title,
+                    slug=market.get("slug"),
+                    trader_logger=self.trader_logger,
+                    feed_config=self.feed_config,
+                    feed=existing_feed,
+                    trade_db=self._trade_db,
                     strategy=self.strategy,
                     strategy_version=self.strategy_version,
-                    dry_run=self.dry_run,
                     mode=self.mode,
-                    trade_size=self.trade_size,
-                    trade_db=self._trade_db,
-                    logger=self.trader_logger,
                 )
-                existing_trader.add_strategy_slot(slot)
+                await trader.run()
             except Exception as exc:
                 self.trader_logger.error(
-                    f"[SharedTrader] Failed to inject slot for {condition_id}: {exc}",
+                    f"[SharedFeed] Trader failed for {condition_id}: {exc}",
                     exc_info=True,
                 )
             finally:
-                # Block until the owner runner removes the trader from the registry
-                # so that this market stays in active_traders for the correct duration.
-                while condition_id in self._shared_traders:
-                    await asyncio.sleep(1.0)
                 if condition_id in self.active_traders:
                     del self.active_traders[condition_id]
                 ticker = market.get("ticker", "")
@@ -345,6 +348,28 @@ class TradingBotRunner:
                 and token_id_no != "N/A"
             )
 
+            # Build MarketInfo for the feed
+            minutes_until_end = (
+                end_time - datetime.now(timezone.utc)
+            ).total_seconds() / 60.0
+            market_info = MarketInfo(
+                condition_id=condition_id,
+                ticker=market.get("ticker", ""),
+                title=title or "",
+                end_time_utc=end_time_utc,
+                minutes_until_end=minutes_until_end,
+                token_id_yes=token_id_yes,
+                token_id_no=token_id_no,
+                slug=market.get("slug") or "",
+            )
+
+            # Create the shared MarketFeed (owns WS + oracle for this market)
+            feed = MarketFeed(
+                market=market_info,
+                feed_config=self.feed_config,
+                logger=self.trader_logger,
+            )
+
             trader = LastSecondTrader(
                 condition_id=condition_id,
                 token_id_yes=token_id_yes,
@@ -352,26 +377,22 @@ class TradingBotRunner:
                 end_time=end_time,
                 dry_run=self.dry_run,
                 trade_size=self.trade_size,
-                title=market.get("title"),
+                title=title,
                 slug=market.get("slug"),
                 trader_logger=self.trader_logger,
-                oracle_enabled=self.oracle_enabled,
-                oracle_guard_enabled=self.oracle_guard_enabled,
-                oracle_min_points=self.oracle_min_points,
-                oracle_window_s=self.oracle_window_s,
-                book_log_every_s=self.book_log_every_s,
-                book_log_every_s_final=self.book_log_every_s_final,
+                feed_config=self.feed_config,
+                feed=feed,
                 trade_db=self._trade_db,
                 strategy=self.strategy,
                 strategy_version=self.strategy_version,
                 mode=self.mode,
             )
 
-            # Register in the shared registry BEFORE awaiting run() so that
-            # other runners can discover this trader and inject their slots.
-            self._shared_traders[condition_id] = trader
+            # Register the FEED in the shared registry BEFORE awaiting run()
+            # so that other runners can subscribe their own traders to it.
+            self._shared_traders[condition_id] = feed
             self._traders[condition_id] = trader
-            await trader.run()
+            await asyncio.gather(feed.run(), trader.run())
             self.trader_logger.info(f"Trader finished for market {condition_id}")
 
         except Exception as e:
