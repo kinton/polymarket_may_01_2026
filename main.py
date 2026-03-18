@@ -124,6 +124,7 @@ class TradingBotRunner:
         watchdog_hours: float = 3.0,
         shutdown_event: asyncio.Event | None = None,
         market_queue: asyncio.Queue | None = None,
+        shared_traders: dict | None = None,
     ):
         sc = strategy_config
         self.dry_run = sc.dry_run
@@ -145,6 +146,13 @@ class TradingBotRunner:
         self.health_server_enabled = health_server_enabled
         self.db_path = sc.db_path
         self.watchdog_hours = watchdog_hours
+
+        # Shared trader registry: condition_id → LastSecondTrader.
+        # Runners that share this dict will inject strategy slots into an
+        # already-running trader instead of opening a second WebSocket.
+        # Passing None (default) gives this runner its own empty dict, which
+        # preserves the original single-strategy behaviour.
+        self._shared_traders: dict = shared_traders if shared_traders is not None else {}
 
         # Market queue — fed by SharedFinder (or self if running standalone)
         self.market_queue: asyncio.Queue = market_queue or asyncio.Queue()
@@ -259,6 +267,53 @@ class TradingBotRunner:
 
         self.monitored_markets.add(condition_id)
 
+        # ----------------------------------------------------------------
+        # Shared-trader fast path: another runner already owns the WS for
+        # this market → inject our strategy as an extra slot instead of
+        # opening a second WebSocket connection.
+        # ----------------------------------------------------------------
+        existing_trader = self._shared_traders.get(condition_id)
+        if existing_trader is not None:
+            self.trader_logger.info(
+                f"[SharedTrader] Injecting {self.strategy}/{self.strategy_version} "
+                f"slot into existing trader for {condition_id}"
+            )
+            try:
+                slot = LastSecondTrader.build_slot(
+                    condition_id=condition_id,
+                    token_id_yes=token_id_yes or "",
+                    token_id_no=token_id_no or "",
+                    market_name=existing_trader.market_name,
+                    strategy=self.strategy,
+                    strategy_version=self.strategy_version,
+                    dry_run=self.dry_run,
+                    mode=self.mode,
+                    trade_size=self.trade_size,
+                    trade_db=self._trade_db,
+                    logger=self.trader_logger,
+                )
+                existing_trader.add_strategy_slot(slot)
+            except Exception as exc:
+                self.trader_logger.error(
+                    f"[SharedTrader] Failed to inject slot for {condition_id}: {exc}",
+                    exc_info=True,
+                )
+            finally:
+                # Block until the owner runner removes the trader from the registry
+                # so that this market stays in active_traders for the correct duration.
+                while condition_id in self._shared_traders:
+                    await asyncio.sleep(1.0)
+                if condition_id in self.active_traders:
+                    del self.active_traders[condition_id]
+                ticker = market.get("ticker", "")
+                if ticker:
+                    self.monitored_tickers.discard(ticker)
+            return
+
+        # ----------------------------------------------------------------
+        # Normal path: we are the first runner for this market — create the
+        # trader, register it in the shared registry, and run it.
+        # ----------------------------------------------------------------
         self.trader_logger.info("=" * 80)
         self.trader_logger.info(f"Starting trader for market: {title}")
         self.trader_logger.info(f"Condition ID: {condition_id}")
@@ -312,6 +367,9 @@ class TradingBotRunner:
                 mode=self.mode,
             )
 
+            # Register in the shared registry BEFORE awaiting run() so that
+            # other runners can discover this trader and inject their slots.
+            self._shared_traders[condition_id] = trader
             self._traders[condition_id] = trader
             await trader.run()
             self.trader_logger.info(f"Trader finished for market {condition_id}")
@@ -324,6 +382,8 @@ class TradingBotRunner:
             if condition_id in self.active_traders:
                 del self.active_traders[condition_id]
             self._traders.pop(condition_id, None)
+            # Remove from shared registry — unblocks any runners waiting on this market.
+            self._shared_traders.pop(condition_id, None)
             # Release the ticker slot so a future market for the same ticker can run
             ticker = market.get("ticker", "")
             if ticker:
@@ -813,7 +873,10 @@ async def main():
     root_logger = logging.getLogger("main")
     _register_signal_handlers(loop, shutdown_event, root_logger)
 
-    # Only first runner gets health server
+    # Only first runner gets health server.
+    # All runners share one trader registry so strategies for the same market
+    # share a single WebSocket connection (1 WS per market, N strategy slots).
+    shared_traders: dict = {}
     runners = []
     for i, sc in enumerate(strategy_configs):
         runner = TradingBotRunner(
@@ -821,6 +884,7 @@ async def main():
             run_once=args.once,
             health_server_enabled=(i == 0),
             shutdown_event=shutdown_event,
+            shared_traders=shared_traders,
         )
         runners.append(runner)
         print(f"  [{i+1}] {sc.name}/{sc.version} mode={sc.mode} size={sc.size} "

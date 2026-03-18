@@ -78,15 +78,35 @@ async def test_convergence_triggers_when_evidence_sufficient(integration_trader)
     integration_trader.orderbook = ob
     integration_trader._update_winning_side()
     integration_trader.execute_order = AsyncMock()
+    # Update the primary strategy slot to use our test strategy
+    if integration_trader.strategies:
+        integration_trader.strategies[0].strategy_instance = strategy
+        integration_trader.strategies[0].order_execution.execute_order_for = AsyncMock()
+    else:
+        # No slots yet — create one from the trader's own attrs
+        from src.hft_trader import StrategySlot
+        slot = StrategySlot(
+            strategy_instance=strategy,
+            order_execution=integration_trader.order_execution,
+            dry_run_sim=integration_trader.dry_run_sim,
+            dry_run=integration_trader.dry_run,
+            mode="test",
+            strategy_name="convergence_v1",
+            strategy_version="v1",
+        )
+        slot.order_execution.execute_order_for = AsyncMock()
+        integration_trader.strategies.append(slot)
 
     # First 4 ticks: not enough observations yet
     for t in [170.0, 150.0, 130.0, 110.0]:
         await integration_trader.check_trigger(time_remaining=t)
-    integration_trader.execute_order.assert_not_called()
+    for slot in integration_trader.strategies:
+        slot.order_execution.execute_order_for.assert_not_called()
 
     # 5th tick: should trigger (min_observations=5 met)
     await integration_trader.check_trigger(time_remaining=90.0)
-    integration_trader.execute_order.assert_called_once()
+    any_executed = any(slot.order_execution.execute_order_for.called for slot in integration_trader.strategies)
+    assert any_executed, "Expected at least one strategy slot to execute"
     assert integration_trader._strategy_trade is True
 
 

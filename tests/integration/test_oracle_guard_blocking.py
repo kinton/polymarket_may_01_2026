@@ -46,10 +46,13 @@ async def test_convergence_blocked_when_oracle_not_converged(integration_trader)
 @pytest.mark.asyncio
 async def test_convergence_fires_when_oracle_converged(integration_trader):
     """Trade fires when oracle converged and enough evidence accumulated."""
-    integration_trader.strategy_instance = ConvergenceV1(
+    from src.hft_trader import StrategySlot
+
+    strategy = ConvergenceV1(
         threshold_pct=0.0002, min_skew=0.75, max_cheap_price=0.30,
         window_start_s=180.0, window_end_s=20.0, min_observations=3,
     )
+    integration_trader.strategy_instance = strategy
     integration_trader.oracle_guard.enabled = True
     integration_trader.oracle_guard.snapshot = OracleSnapshot(
         ts_ms=1000000, price=100.0, n_points=10,
@@ -59,12 +62,28 @@ async def test_convergence_fires_when_oracle_converged(integration_trader):
     integration_trader.oracle_guard.last_update_ts = time.time()
     integration_trader.orderbook = _skewed_orderbook()
     integration_trader._update_winning_side()
-    integration_trader.execute_order = AsyncMock()
+
+    if integration_trader.strategies:
+        integration_trader.strategies[0].strategy_instance = strategy
+        integration_trader.strategies[0].order_execution.execute_order_for = AsyncMock()
+    else:
+        slot = StrategySlot(
+            strategy_instance=strategy,
+            order_execution=integration_trader.order_execution,
+            dry_run_sim=integration_trader.dry_run_sim,
+            dry_run=integration_trader.dry_run,
+            mode="test",
+            strategy_name="convergence_v1",
+            strategy_version="v1",
+        )
+        slot.order_execution.execute_order_for = AsyncMock()
+        integration_trader.strategies.append(slot)
 
     # Feed enough ticks for min_observations=3
     for t in [170.0, 130.0, 90.0]:
         await integration_trader.check_trigger(time_remaining=t)
-    integration_trader.execute_order.assert_called_once()
+    any_executed = any(slot.order_execution.execute_order_for.called for slot in integration_trader.strategies)
+    assert any_executed, "Expected at least one strategy slot to execute"
     assert integration_trader._strategy_trade is True
 
 
