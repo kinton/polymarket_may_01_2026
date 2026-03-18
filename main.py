@@ -152,6 +152,8 @@ class TradingBotRunner:
         # Active traders (track running tasks)
         self.active_traders: dict[str, asyncio.Task] = {}
         self.monitored_markets: set[str] = set()
+        # Per-ticker lock: prevents multiple simultaneous traders for same ticker
+        self.monitored_tickers: set[str] = set()
 
         # Graceful shutdown state — shared across all runners
         self._shutdown_event = shutdown_event or asyncio.Event()
@@ -219,6 +221,13 @@ class TradingBotRunner:
         seconds_until_end = minutes_until_end * 60
 
         if condition_id in self.monitored_markets:
+            return False
+
+        ticker = market.get("ticker", "")
+        if ticker and ticker in self.monitored_tickers:
+            self.finder_logger.debug(
+                f"Skipping market {condition_id} — ticker {ticker!r} already has an active trader"
+            )
             return False
 
         if seconds_until_end < self.TRADER_START_WINDOW_MIN:
@@ -315,6 +324,10 @@ class TradingBotRunner:
             if condition_id in self.active_traders:
                 del self.active_traders[condition_id]
             self._traders.pop(condition_id, None)
+            # Release the ticker slot so a future market for the same ticker can run
+            ticker = market.get("ticker", "")
+            if ticker:
+                self.monitored_tickers.discard(ticker)
 
     async def _preload_monitored_markets(self) -> None:
         """Pre-populate monitored_markets from DB on startup to prevent duplicate traders.
@@ -436,6 +449,10 @@ class TradingBotRunner:
 
                 if markets:
                     self.finder_logger.info(f"Received {len(markets)} market(s) from SharedFinder")
+                    self.finder_logger.debug(
+                        f"Batch condition_ids: {[m.get('condition_id') for m in markets]} | "
+                        f"monitored={self.monitored_markets} | monitored_tickers={self.monitored_tickers}"
+                    )
 
                     # Strategy market_filter
                     filtered = []
@@ -461,14 +478,35 @@ class TradingBotRunner:
                             f"Strategy market_filter: {len(filtered)}/{len(markets)} markets accepted"
                         )
 
-                    # Deduplicate by condition_id within the batch before checking
+                    # Deduplicate within the batch:
+                    # 1. by condition_id — prevent same market twice in one batch
+                    # 2. by ticker     — prevent two different markets for the same
+                    #                    ticker (e.g. two simultaneous BTC markets)
                     _seen_cids: set[str] = set()
+                    _seen_tickers: set[str] = set()
                     eligible = []
                     for m in filtered:
                         cid = m.get("condition_id")
-                        if cid and cid not in _seen_cids and self.should_start_trader(m):
-                            _seen_cids.add(cid)
-                            eligible.append(m)
+                        ticker = m.get("ticker", "")
+                        if not cid:
+                            continue
+                        if cid in _seen_cids:
+                            self.finder_logger.debug(
+                                f"Batch dedup: skipping duplicate condition_id {cid}"
+                            )
+                            continue
+                        if ticker and ticker in _seen_tickers:
+                            self.finder_logger.debug(
+                                f"Batch dedup: skipping second {ticker!r} market {cid} "
+                                f"(already queued {_seen_tickers})"
+                            )
+                            continue
+                        if not self.should_start_trader(m):
+                            continue
+                        _seen_cids.add(cid)
+                        if ticker:
+                            _seen_tickers.add(ticker)
+                        eligible.append(m)
 
                     if eligible:
                         self.finder_logger.info(
@@ -482,9 +520,16 @@ class TradingBotRunner:
 
                         async def _start_and_track(market: Dict[str, Any]) -> None:
                             cid = market.get("condition_id")
+                            ticker = market.get("ticker", "")
                             # Eagerly mark as monitored so the next poll cycle cannot
                             # start a second trader before the background task runs.
                             self.monitored_markets.add(cid)
+                            if ticker:
+                                self.monitored_tickers.add(ticker)
+                            self.finder_logger.debug(
+                                f"Launching trader: cid={cid} ticker={ticker!r} | "
+                                f"monitored_tickers now={self.monitored_tickers}"
+                            )
                             task = asyncio.create_task(
                                 self.start_trader_for_market(market)
                             )
@@ -646,13 +691,19 @@ class SharedFinder:
 
     async def _dispatch(self, markets: list[Dict[str, Any]] | None) -> None:
         """Put each runner's slice of markets into its queue."""
-        for runner in self.runners:
+        for idx, runner in enumerate(self.runners):
             if markets is None:
                 runner_batch: list[Dict[str, Any]] = []
             else:
                 runner_batch = [
                     m for m in markets if m.get("ticker", "") in runner.universe
                 ]
+            self.logger.debug(
+                f"[SharedFinder] dispatch runner[{idx}] "
+                f"strategy={runner.strategy}/{runner.strategy_version} "
+                f"batch_size={len(runner_batch)} "
+                f"condition_ids={[m.get('condition_id') for m in runner_batch]}"
+            )
             await runner.market_queue.put(runner_batch)
 
     async def run(self, run_once: bool = False) -> None:
