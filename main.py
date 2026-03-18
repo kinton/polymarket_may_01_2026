@@ -842,6 +842,22 @@ def _register_signal_handlers(
     logger.info("Signal handlers registered (SIGINT, SIGTERM)")
 
 
+def _register_sigint_only(
+    loop: asyncio.AbstractEventLoop,
+    cancel_event: asyncio.Event,
+    logger: logging.Logger,
+) -> None:
+    """Register SIGINT-only handler for the startup countdown.
+
+    During the countdown we want Ctrl+C to abort but SIGTERM (sent by Docker
+    on restart) must NOT abort — it will be handled properly after countdown.
+    """
+    loop.add_signal_handler(
+        signal.SIGINT,
+        functools.partial(_handle_signal, signal.SIGINT, cancel_event, logger),
+    )
+
+
 def _handle_signal(
     sig: signal.Signals,
     shutdown_event: asyncio.Event,
@@ -849,6 +865,39 @@ def _handle_signal(
 ) -> None:
     logger.warning(f"Received {sig.name} — initiating graceful shutdown...")
     shutdown_event.set()
+
+
+async def _send_startup_notification(strategy_configs: list[StrategyConfig]) -> None:
+    """Send a Telegram startup notification if bot token/chat id are configured."""
+    import os
+    import aiohttp
+
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        return
+
+    lines = ["🤖 *Polymarket bot started*\n"]
+    for sc in strategy_configs:
+        mode_emoji = "🔴" if sc.mode == "live" else "🧪"
+        lines.append(
+            f"{mode_emoji} `{sc.name}/{sc.version}` | mode=`{sc.mode}` | "
+            f"universe=`{','.join(sc.universe)}` | size=`${sc.size}`"
+        )
+    text = "\n".join(lines)
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logging.getLogger("main").warning(
+                        f"Startup notification failed: HTTP {resp.status} — {body[:200]}"
+                    )
+    except Exception as e:
+        logging.getLogger("main").warning(f"Startup notification error: {e}")
 
 
 async def main():
@@ -884,14 +933,28 @@ async def main():
         print("This bot will execute REAL trades with REAL money!")
         print("Press Ctrl+C within 5 seconds to cancel...")
         print("=" * 80 + "\n")
-        await asyncio.sleep(5)
 
     # Shared shutdown event across all runners
     shutdown_event = asyncio.Event()
-
-    # Register signal handlers once
     loop = asyncio.get_running_loop()
     root_logger = logging.getLogger("main")
+
+    if has_live:
+        # During the 5-second countdown only SIGINT (Ctrl+C) should abort.
+        # SIGTERM arrives during Docker restarts and must NOT cancel the bot —
+        # we will register the full SIGTERM handler after the countdown.
+        _cancel_event = asyncio.Event()
+        _register_sigint_only(loop, _cancel_event, root_logger)
+        try:
+            await asyncio.wait_for(_cancel_event.wait(), timeout=5)
+            root_logger.info("Startup cancelled by SIGINT during countdown")
+            return  # Ctrl+C during countdown
+        except asyncio.TimeoutError:
+            pass
+        # Unregister the temporary SIGINT handler before registering both
+        loop.remove_signal_handler(signal.SIGINT)
+
+    # Register full signal handlers (SIGINT + SIGTERM → graceful shutdown)
     _register_signal_handlers(loop, shutdown_event, root_logger)
 
     # Only first runner gets health server.
@@ -910,6 +973,9 @@ async def main():
         runners.append(runner)
         print(f"  [{i+1}] {sc.name}/{sc.version} mode={sc.mode} size={sc.size} "
               f"universe={','.join(sc.universe)} db={sc.db_path}")
+
+    # Send startup notification to Telegram
+    await _send_startup_notification(strategy_configs)
 
     # One shared finder polls the API once and distributes markets to all runners
     shared_finder = SharedFinder(
