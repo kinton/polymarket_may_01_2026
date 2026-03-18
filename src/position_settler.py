@@ -761,7 +761,8 @@ class PositionSettler:
                     )
 
         if resolved_all:
-            await self._send_resolution_alerts(resolved_all)
+            db_path = getattr(_db, "_db_path", None)
+            await self._send_resolution_alerts(resolved_all, db_path=db_path)
 
         wins = [r for r in resolved_all if r.get("status") == "resolved_win"]
         if wins and not self.dry_run:
@@ -798,31 +799,42 @@ class PositionSettler:
         except Exception as e:
             self.logger.error(f"Error checking dry-run resolution: {e}", exc_info=True)
 
-    def _get_alert_manager(self):
-        """Lazily create AlertManager for notifications."""
-        if hasattr(self, "_alert_manager"):
-            return self._alert_manager
-
-        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-        if not telegram_bot_token or not telegram_chat_id:
-            self._alert_manager = None
-            return None
-
-        from src.alerts import TelegramAlertSender, AlertManager
-        alert_context = {
+    def _parse_db_context(self, db_path: str | None) -> dict:
+        """Parse strategy/version/mode from DB filename (format: {strategy}-{version}-{mode}.db)."""
+        if db_path:
+            stem = Path(db_path).stem  # e.g. "convergence-v1-live"
+            parts = stem.split("-", 2)
+            if len(parts) == 3:
+                return {"strategy": parts[0], "version": parts[1], "mode": parts[2]}
+        return {
             "strategy": "settler",
             "version": "v1",
             "mode": "dryrun" if self.dry_run else "live",
         }
-        telegram = TelegramAlertSender(telegram_bot_token, telegram_chat_id, context=alert_context)
-        self._alert_manager = AlertManager(telegram=telegram)
+
+    def _get_alert_manager(self):
+        """Lazily create AlertManager for notifications (fallback, no db context)."""
+        if hasattr(self, "_alert_manager"):
+            return self._alert_manager
+        self._alert_manager = self._create_alert_manager_for_context(
+            self._parse_db_context(None)
+        )
         return self._alert_manager
 
-    async def _send_resolution_alerts(self, resolved: list[dict]) -> None:
+    def _create_alert_manager_for_context(self, context: dict):
+        """Create a new AlertManager with the given context dict."""
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not telegram_bot_token or not telegram_chat_id:
+            return None
+        from src.alerts import TelegramAlertSender, AlertManager
+        telegram = TelegramAlertSender(telegram_bot_token, telegram_chat_id, context=context)
+        return AlertManager(telegram=telegram)
+
+    async def _send_resolution_alerts(self, resolved: list[dict], db_path: str | None = None) -> None:
         """Send Telegram alerts for each resolved position."""
-        alert_mgr = self._get_alert_manager()
+        context = self._parse_db_context(db_path)
+        alert_mgr = self._create_alert_manager_for_context(context)
         if not alert_mgr:
             return
         try:

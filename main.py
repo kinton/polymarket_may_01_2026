@@ -461,7 +461,14 @@ class TradingBotRunner:
                             f"Strategy market_filter: {len(filtered)}/{len(markets)} markets accepted"
                         )
 
-                    eligible = [m for m in filtered if self.should_start_trader(m)]
+                    # Deduplicate by condition_id within the batch before checking
+                    _seen_cids: set[str] = set()
+                    eligible = []
+                    for m in filtered:
+                        cid = m.get("condition_id")
+                        if cid and cid not in _seen_cids and self.should_start_trader(m):
+                            _seen_cids.add(cid)
+                            eligible.append(m)
 
                     if eligible:
                         self.finder_logger.info(
@@ -475,6 +482,9 @@ class TradingBotRunner:
 
                         async def _start_and_track(market: Dict[str, Any]) -> None:
                             cid = market.get("condition_id")
+                            # Eagerly mark as monitored so the next poll cycle cannot
+                            # start a second trader before the background task runs.
+                            self.monitored_markets.add(cid)
                             task = asyncio.create_task(
                                 self.start_trader_for_market(market)
                             )
