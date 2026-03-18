@@ -978,7 +978,9 @@ class LastSecondTrader:
                     # positions when the FOK order is killed (live mode).
                     # In dry_run mode execute_order() always succeeds, so the
                     # condition is always True there too.
-                    if self.dry_run_sim and not _was_executed and self.order_execution.is_executed():
+                    # In live mode, OEM already recorded the trade; only call
+                    # record_buy() for dry-run so we don't write to trades twice.
+                    if self.dry_run_sim and self.dry_run and not _was_executed and self.order_execution.is_executed():
                         await self.dry_run_sim.record_buy(
                             side=signal.side,
                             price=signal.price,
