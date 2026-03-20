@@ -151,15 +151,18 @@ class TelegramAlertSender:
         entry_price = trade_data.get("entry_price", 0.0)
         amount = trade_data.get("amount", 0.0)
         pnl = trade_data.get("pnl", None)
+        end_time = trade_data.get("end_time", None)
 
         pnl_str = ""
         if pnl is not None:
             pnl_sign = "+" if pnl >= 0 else ""
             pnl_str = f" | PnL: {pnl_sign}{pnl:.2f}%"
 
+        closes_str = f" | Closes: {end_time}" if end_time else ""
+
         message = (
             f"🚀 <b>Trade executed:</b> {market} ({side}) @ ${entry_price:.4f} | "
-            f"Size: ${amount:.2f}{pnl_str}"
+            f"Size: ${amount:.2f}{pnl_str}{closes_str}"
         )
         return await self.send_alert(message)
 
@@ -271,18 +274,23 @@ class TelegramAlertSender:
 
         Args:
             data: Dict with keys: condition_id, redeemed_amount,
-                  usdc_balance, tx_hash
+                  usdc_balance, tx_hash, position_cost (optional)
         """
         amount = data.get("redeemed_amount", 0.0)
         balance = data.get("usdc_balance", 0.0)
         tx_hash = data.get("tx_hash", "")
         tx_link = f"https://polygonscan.com/tx/0x{tx_hash}" if tx_hash else ""
 
-        message = (
-            f"💰 <b>Winnings redeemed!</b>\n"
-            f"Amount: +${amount:.2f} USDC\n"
-            f"Balance: ${balance:.2f} USDC"
-        )
+        if amount > 0.01:
+            message = (
+                f"💰 <b>Winnings redeemed!</b> +${amount:.2f} USDC\n"
+                f"Balance: ${balance:.2f} USDC"
+            )
+        else:
+            position_cost = data.get("position_cost", 0.0)
+            size_str = f" | Size: ${position_cost:.2f} lost" if position_cost > 0.01 else ""
+            message = f"📉 <b>Position expired worthless</b>{size_str}"
+
         if tx_link:
             message += f"\n<a href=\"{tx_link}\">View TX</a>"
         return await self.send_alert(message)
@@ -362,15 +370,18 @@ class SlackAlertSender:
         entry_price = trade_data.get("entry_price", 0.0)
         amount = trade_data.get("amount", 0.0)
         pnl = trade_data.get("pnl", None)
+        end_time = trade_data.get("end_time", None)
 
         pnl_str = ""
         if pnl is not None:
             pnl_sign = "+" if pnl >= 0 else ""
             pnl_str = f" | PnL: {pnl_sign}{pnl:.2f}%"
 
+        closes_str = f" | Closes: {end_time}" if end_time else ""
+
         message = (
             f"🚀 Trade executed: {market} ({side}) @ ${entry_price:.4f} | "
-            f"Size: ${amount:.2f}{pnl_str}"
+            f"Size: ${amount:.2f}{pnl_str}{closes_str}"
         )
         return await self.send_alert(message)
 

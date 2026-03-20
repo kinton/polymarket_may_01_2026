@@ -21,7 +21,6 @@ import asyncio
 import json
 import os
 import sys
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -602,7 +601,7 @@ def print_result(result: BacktestResult) -> None:
 
     # PnL curve stats
     if result.trades:
-        print(f"\n📈 PnL curve:")
+        print("\n📈 PnL curve:")
         running = 0.0
         checkpoints = [len(result.trades) * p // 4 for p in range(1, 5)]
         for i, t in enumerate(result.trades):

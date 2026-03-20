@@ -8,7 +8,7 @@ Verifies:
 - No trade with insufficient observations
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 import time
 import pytest
 

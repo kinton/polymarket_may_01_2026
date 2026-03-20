@@ -28,6 +28,7 @@ LEVEL_EMOJI = {
 
 DEFAULT_RATE_LIMIT_SECONDS = 300  # 5 minutes
 ALERT_HISTORY_PATH = Path("log/alert_history.json")
+LAST_SENT_PATH = Path("log/alert_last_sent.json")
 
 
 class AlertDispatcher:
@@ -50,14 +51,17 @@ class AlertDispatcher:
         rate_limit_seconds: float = DEFAULT_RATE_LIMIT_SECONDS,
         history_path: Path = ALERT_HISTORY_PATH,
         trade_db: Any | None = None,
+        last_sent_path: Path = LAST_SENT_PATH,
     ):
         self.alert_manager = alert_manager
         self.rate_limit_seconds = rate_limit_seconds
         self.history_path = history_path
+        self.last_sent_path = last_sent_path
         self._trade_db = trade_db
         self._last_sent: dict[str, float] = {}
         self._history: list[dict] = []
         self._load_history()
+        self._load_last_sent()
 
     def _load_history(self) -> None:
         """Load alert history from file."""
@@ -67,6 +71,30 @@ class AlertDispatcher:
                     self._history = json.load(f)
             except (json.JSONDecodeError, OSError):
                 self._history = []
+
+    def _load_last_sent(self) -> None:
+        """Load persistent rate-limit timestamps (survives restarts)."""
+        if self.last_sent_path.exists():
+            try:
+                with open(self.last_sent_path) as f:
+                    self._last_sent = json.load(f)
+                # Prune stale entries older than rate_limit_seconds
+                now = time.time()
+                self._last_sent = {
+                    k: v for k, v in self._last_sent.items()
+                    if (now - v) < self.rate_limit_seconds
+                }
+            except (json.JSONDecodeError, OSError):
+                self._last_sent = {}
+
+    def _persist_last_sent(self) -> None:
+        """Persist rate-limit timestamps to disk."""
+        try:
+            self.last_sent_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.last_sent_path, "w") as f:
+                json.dump(self._last_sent, f)
+        except OSError:
+            pass
 
     def _save_history(self) -> None:
         """Save alert history to file."""
@@ -124,8 +152,9 @@ class AlertDispatcher:
         return (time.time() - last) < self.rate_limit_seconds
 
     def _mark_sent(self, key: str) -> None:
-        """Mark an alert key as sent."""
+        """Mark an alert key as sent (in-memory + disk)."""
         self._last_sent[key] = time.time()
+        self._persist_last_sent()
 
     def is_enabled(self) -> bool:
         """Check if alerts are enabled."""
@@ -164,6 +193,7 @@ class AlertDispatcher:
         amount: float,
         pnl: float | None = None,
         level: AlertLevel = AlertLevel.INFO,
+        end_time: object | None = None,
     ) -> None:
         """Send a trade execution alert."""
         alert_manager = self.alert_manager
@@ -182,6 +212,13 @@ class AlertDispatcher:
         }
         if pnl is not None:
             trade_data["pnl"] = pnl
+        if end_time is not None:
+            try:
+                trade_data["end_time"] = end_time.strftime("%H:%M UTC")
+            except AttributeError:
+                import datetime as _dt
+                dt = _dt.datetime.fromtimestamp(float(end_time), tz=_dt.timezone.utc)
+                trade_data["end_time"] = dt.strftime("%H:%M UTC")
 
         await alert_manager.send_trade_alert(trade_data)
         self._mark_sent(key)

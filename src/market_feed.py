@@ -23,7 +23,7 @@ from typing import Awaitable, Callable
 
 import aiohttp
 
-from src.clob_types import CLOB_WS_URL, PRICE_TIE_EPS, OrderBook
+from src.clob_types import PRICE_TIE_EPS, OrderBook
 from src.market_parser import (
     extract_best_ask_with_size_from_book,
     extract_best_bid_with_size_from_book,

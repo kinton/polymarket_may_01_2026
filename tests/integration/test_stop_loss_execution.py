@@ -13,7 +13,6 @@ import pytest
 from unittest.mock import AsyncMock
 
 from src.clob_types import (
-    STOP_LOSS_ABSOLUTE,
     STOP_LOSS_PCT,
 )
 

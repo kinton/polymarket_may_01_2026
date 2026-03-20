@@ -869,6 +869,176 @@ def _handle_signal(
     shutdown_event.set()
 
 
+async def _fetch_usdc_balance() -> float | None:
+    """Fetch USDC balance of the proxy wallet from Polygon via Web3."""
+    import os
+    from web3 import Web3
+    from web3.middleware import ExtraDataToPOAMiddleware
+    from src.trading.auto_redeem import USDC_ADDRESS, USDC_BALANCE_ABI, DEFAULT_RPC
+
+    proxy_address = os.getenv("POLYMARKET_PROXY_ADDRESS")
+    private_key = os.getenv("PRIVATE_KEY")
+    if not proxy_address and not private_key:
+        return None
+
+    def _query() -> float:
+        rpc = os.getenv("POLYGON_RPC_URL", DEFAULT_RPC)
+        w3 = Web3(Web3.HTTPProvider(rpc))
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        if proxy_address:
+            addr = Web3.to_checksum_address(proxy_address)
+        else:
+            addr = w3.eth.account.from_key(private_key).address
+        usdc = w3.eth.contract(
+            address=Web3.to_checksum_address(USDC_ADDRESS),
+            abi=USDC_BALANCE_ABI,
+        )
+        raw = usdc.functions.balanceOf(addr).call()
+        return raw / 1e6
+
+    return await asyncio.to_thread(_query)
+
+
+async def _build_hourly_status(
+    strategy_configs: list[StrategyConfig],
+    orchestrator: "MarketOrchestrator",
+    start_time: float,
+    last_poll_time: float,
+) -> str:
+    """Build the hourly status message text."""
+    uptime_s = int(time.time() - start_time)
+    hours, rem = divmod(uptime_s, 3600)
+    minutes = rem // 60
+    uptime_str = f"{hours}h {minutes}m"
+
+    poll_ago_s = int(time.time() - last_poll_time)
+    poll_str = f"{poll_ago_s} sec ago" if poll_ago_s < 120 else f"{poll_ago_s // 60} min ago"
+
+    lines = [
+        "⚡ Polymarket Bot — Hourly Status",
+        "",
+        f"🤖 Uptime: {uptime_str}",
+        "📊 Strategies:",
+    ]
+    for sc in strategy_configs:
+        lines.append(
+            f"  • {sc.name}/{sc.version} ({sc.mode}) — universe: {','.join(sc.universe)}"
+        )
+
+    # Last 24h trades from the first live strategy DB
+    cutoff = time.time() - 86400
+    live_configs = [sc for sc in strategy_configs if sc.mode == "live"]
+    if live_configs:
+        sc = live_configs[0]
+        label = f"{sc.version}/live"
+        lines.append(f"\n📈 Last 24h trades ({label}):")
+        db = orchestrator._trade_dbs.get(sc.db_path)
+        if db:
+            try:
+                trades = await db.get_trades(limit=20)
+                recent = [t for t in trades if t.get("timestamp", 0) >= cutoff]
+                if recent:
+                    for t in recent[:5]:
+                        market = t.get("market_name", "?")
+                        side = t.get("side", "?")
+                        price = t.get("price", 0)
+                        action = t.get("action", "")
+                        pnl = t.get("pnl")
+                        sell_price = t.get("amount")  # for sells this holds exit price
+                        if action == "sell" and pnl is not None:
+                            status_str = f"closed (sell @ {price:.2f})"
+                        else:
+                            status_str = t.get("status") or "open"
+                        ts = t.get("timestamp", 0)
+                        from datetime import datetime, timezone
+                        dt_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M UTC") if ts else "?"
+                        lines.append(f"  • {market} {side} @ {price:.2f} → {status_str} ({dt_str})")
+                else:
+                    lines.append("  (none in last 24h)")
+            except Exception as e:
+                lines.append(f"  (error reading trades: {e})")
+        else:
+            lines.append("  (db not available)")
+
+    n_active = len(orchestrator.active_tasks)
+    if n_active:
+        lines.append(f"\n🔄 Active traders: {n_active}")
+    else:
+        lines.append("\n💤 No active traders right now")
+
+    lines.append(f"\n🔍 Last poll: {poll_str}")
+
+    try:
+        balance = await _fetch_usdc_balance()
+        if balance is not None:
+            lines.append(f"💰 Balance: ${balance:.2f} USDC")
+        else:
+            lines.append("💰 Balance: unavailable")
+    except Exception:
+        lines.append("💰 Balance: unavailable")
+
+    return "\n".join(lines)
+
+
+async def _hourly_status_loop(
+    strategy_configs: list[StrategyConfig],
+    orchestrator: "MarketOrchestrator",
+    shutdown_event: asyncio.Event,
+    start_time: float,
+) -> None:
+    """Send an hourly Telegram status report. First report fires after 60 minutes."""
+    import os
+    import aiohttp
+
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        return
+
+    log = logging.getLogger("main")
+    last_poll_cycle = orchestrator._poll_cycle
+    last_poll_time = time.time()
+    tick = 60  # check shutdown every minute
+    elapsed_since_last_report = 0
+
+    while not shutdown_event.is_set():
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=tick)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+        # Track when the last poll actually fired
+        if orchestrator._poll_cycle != last_poll_cycle:
+            last_poll_cycle = orchestrator._poll_cycle
+            last_poll_time = time.time()
+
+        elapsed_since_last_report += tick
+        if elapsed_since_last_report < 3600:
+            continue
+
+        elapsed_since_last_report = 0
+        try:
+            msg = await _build_hourly_status(
+                strategy_configs, orchestrator, start_time, last_poll_time
+            )
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {"chat_id": chat_id, "text": msg}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, json=payload, timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        log.warning(
+                            f"Hourly status notification failed: HTTP {resp.status} — {body[:200]}"
+                        )
+                    else:
+                        log.info("Hourly status notification sent")
+        except Exception as e:
+            log.warning(f"Hourly status notification error: {e}")
+
+
 async def _send_startup_notification(strategy_configs: list[StrategyConfig]) -> None:
     """Send a Telegram startup notification if bot token/chat id are configured."""
     import os
@@ -986,12 +1156,7 @@ async def main():
     poll_intervals = [sc.poll_interval for sc in strategy_configs if sc.poll_interval > 0]
     poll_interval = min(poll_intervals) if poll_intervals else 90
 
-    # Send startup notification to Telegram
-    await _send_startup_notification(strategy_configs)
-
-    # Health server — start once (equivalent to first runner's health server)
-    health_server = HealthCheckServer()
-    asyncio.create_task(health_server.start())
+    start_time = time.time()
 
     # MarketOrchestrator — single orchestration point (replaces SharedFinder + TradingBotRunner)
     orchestrator = MarketOrchestrator(
@@ -1001,7 +1166,17 @@ async def main():
         poll_interval=poll_interval,
         shutdown_event=shutdown_event,
         run_once=args.once,
-        logger=root_logger,
+        logger=None,  # Use orchestrator's own file logger (finder.log)
+    )
+
+    # Startup notification — non-blocking, best-effort
+    asyncio.get_event_loop().call_soon(
+        lambda: asyncio.ensure_future(_send_startup_notification(strategy_configs))
+    )
+
+    # Hourly status loop — fires first report after 60 minutes
+    asyncio.create_task(
+        _hourly_status_loop(strategy_configs, orchestrator, shutdown_event, start_time)
     )
 
     await orchestrator.run()

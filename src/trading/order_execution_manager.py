@@ -70,6 +70,7 @@ class OrderExecutionManager:
         rate_limiter: RateLimiter | None = None,
         circuit_breaker: CircuitBreaker | None = None,
         trade_db: Any | None = None,
+        end_time: Any | None = None,
     ):
         """
         Initialize the order execution manager.
@@ -87,6 +88,7 @@ class OrderExecutionManager:
             alert_dispatcher: Alert dispatcher instance
             risk_manager: Risk manager instance
             circuit_breaker: Circuit breaker instance for API protection
+            end_time: Market end time (datetime) for trade alerts
         """
         self.client = client
         self.market_name = market_name
@@ -108,6 +110,7 @@ class OrderExecutionManager:
             name=f"polymarket-{market_name}",
         )
         self.trade_db = trade_db
+        self.end_time = end_time
 
         # Order state
         self.order_executed = False
@@ -203,6 +206,14 @@ class OrderExecutionManager:
             price = self._order_price if self._order_price is not None else price
 
         if self.dry_run:
+            # Guard: if already executed (e.g. restored from disk on restart),
+            # skip re-entry logic and alert entirely.
+            if self.order_executed:
+                self._log(
+                    f"[{self.market_name}] ⏭️  DRY RUN: order already executed — skipping re-entry & alert"
+                )
+                return True
+
             self._log(f"🔷 [{self.market_name}] DRY RUN - WOULD BUY:")
             self._log(f"  Side: {side}, Amount: ${amount}, Max Price: ${price}")
             ask_str = f"{winning_ask:.4f}" if winning_ask is not None else "-"
@@ -228,13 +239,37 @@ class OrderExecutionManager:
 
                 if self.alert_dispatcher and self.alert_dispatcher.is_enabled():
                     await self.alert_dispatcher.send_trade_alert(
-                        self.market_name, side, winning_ask, amount
+                        self.market_name, side, winning_ask, amount,
+                        end_time=self.end_time,
                     )
 
             if self.risk_manager:
                 self.risk_manager.track_daily_pnl(amount)
 
             self.order_executed = True
+
+            # Record dry-run BUY in SQLite for restart dedup
+            if self.trade_db is not None:
+                try:
+                    await self.trade_db.record_trade(
+                        market_name=self.market_name,
+                        condition_id=self.condition_id or "",
+                        action="buy",
+                        side=side,
+                        price=winning_ask if winning_ask is not None else (price or 0.0),
+                        amount=amount,
+                        pnl=None,
+                        pnl_pct=None,
+                        reason="entry",
+                        dry_run=True,
+                        order_status="simulated",
+                    )
+                    self._log(f"[{self.market_name}] ✅ DRY RUN BUY recorded to DB (dedup)")
+                except Exception as e:
+                    self._log_error(f"[{self.market_name}] ❌ Error recording dry-run buy to DB: {e}")
+            else:
+                self._log(f"[{self.market_name}] ⚠️ trade_db is None — DRY RUN BUY NOT recorded (dedup disabled)")
+
             return True
 
         if (
@@ -319,7 +354,8 @@ class OrderExecutionManager:
 
                 if self.alert_dispatcher and self.alert_dispatcher.is_enabled():
                     await self.alert_dispatcher.send_trade_alert(
-                        self.market_name, side, winning_ask, amount
+                        self.market_name, side, winning_ask, amount,
+                        end_time=self.end_time,
                     )
 
             if self.risk_manager:

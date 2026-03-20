@@ -4,7 +4,6 @@ Mirrors test_convergence_strategy.py but uses the new plugin types
 (MarketTick, Signal) directly — validates that the port is correct.
 """
 
-import pytest
 
 from strategies.convergence_v1 import ConvergenceV1
 from strategies.base import MarketInfo, MarketTick, Signal

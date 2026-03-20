@@ -304,9 +304,11 @@ async def redeem_resolved_wins(
     """
     import requests as _requests
 
-    # One row per condition_id; also fetch side to verify winning token (Fix 1)
+    # One row per condition_id; also fetch side and position cost
     async with db._db.execute(
-        """SELECT condition_id, MAX(side) as side FROM dry_run_positions
+        """SELECT condition_id, MAX(side) as side,
+                  SUM(entry_price * amount) as position_cost
+           FROM dry_run_positions
            WHERE status = 'resolved_win'
            AND close_reason NOT LIKE '%redeemed%'
            GROUP BY condition_id"""
@@ -319,7 +321,7 @@ async def redeem_resolved_wins(
 
     results = []
     for row in rows:
-        condition_id, position_side = row[0], row[1]
+        condition_id, position_side, position_cost = row[0], row[1], float(row[2] or 0)
 
         # Fix 4: skip if already redeemed in this session (cross-DB dedup)
         if already_redeemed is not None and condition_id in already_redeemed:
@@ -361,6 +363,8 @@ async def redeem_resolved_wins(
         )
 
         if result and result.get("status") in ("success", "dry_run"):
+            # Attach position cost so the alert can show size lost if amount == $0
+            result["position_cost"] = position_cost
             # Mark as redeemed in close_reason
             await db._db.execute(
                 """UPDATE dry_run_positions

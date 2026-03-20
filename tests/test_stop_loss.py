@@ -19,9 +19,12 @@ from src.hft_trader import LastSecondTrader
 
 
 @pytest.fixture
-def trader():
+def trader(tmp_path):
     """Create a trader instance for testing."""
+    import os
     end_time = datetime.now(timezone.utc).replace(microsecond=0)
+    # Use a temp directory so the trader never picks up real persisted positions from disk
+    os.environ["POSITION_PERSIST_DIR"] = str(tmp_path / "positions")
     trader = LastSecondTrader(
         condition_id="test_condition",
         token_id_yes="token_yes",

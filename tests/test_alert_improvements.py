@@ -27,7 +27,8 @@ def make_dispatcher(
     am.send_daily_report_summary = AsyncMock()
 
     history_path = tmp_path / "alert_history.json"
-    dispatcher = AlertDispatcher(am, rate_limit_seconds=rate_limit, history_path=history_path)
+    last_sent_path = tmp_path / "alert_last_sent.json"
+    dispatcher = AlertDispatcher(am, rate_limit_seconds=rate_limit, history_path=history_path, last_sent_path=last_sent_path)
     return dispatcher, am
 
 

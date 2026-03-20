@@ -246,14 +246,40 @@ class PositionSettler:
                     )
                     continue
 
+                # Small delay between requests to avoid rate limiting
+                await asyncio.sleep(0.5)
+
+                # Retry with exponential backoff on 429
+                balance_info_raw = None
+                for attempt in range(3):
+                    try:
+                        balance_info_raw = await asyncio.to_thread(
+                            self.client.get_balance_allowance,
+                            params=BalanceAllowanceParams(
+                                asset_type=AssetType.CONDITIONAL,  # type: ignore
+                                token_id=token_id,
+                            ),
+                        )
+                        break
+                    except Exception as e:
+                        if "429" in str(e):
+                            if attempt < 2:
+                                self.logger.warning(
+                                    f"Rate limited (429) for {token_id}, "
+                                    f"retry {attempt + 1}/3 in 10s"
+                                )
+                                await asyncio.sleep(10)
+                            else:
+                                self.logger.warning(
+                                    f"Rate limited (429) for {token_id} after 3 attempts, skipping"
+                                )
+                                balance_info_raw = None
+                        else:
+                            raise
+
                 try:
-                    balance_info_raw = await asyncio.to_thread(
-                        self.client.get_balance_allowance,
-                        params=BalanceAllowanceParams(
-                            asset_type=AssetType.CONDITIONAL,  # type: ignore
-                            token_id=token_id,
-                        ),
-                    )
+                    if balance_info_raw is None:
+                        continue
                     balance_info: dict[str, Any] = balance_info_raw  # type: ignore
 
                     balance = float(balance_info.get("balance", 0))

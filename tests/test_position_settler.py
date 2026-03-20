@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import time
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from src.position_settler import PositionSettler
 
@@ -45,7 +41,6 @@ class TestMakerAddress:
         captured = {}
 
         def fake_get_trades(params):
-            from py_clob_client.clob_types import TradeParams
             captured["maker_address"] = params.maker_address
             return []
 

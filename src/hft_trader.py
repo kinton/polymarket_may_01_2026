@@ -91,28 +91,6 @@ except ImportError:
     exit(1)
 
 
-from dataclasses import dataclass, field as _dc_field
-
-
-@dataclass
-class StrategySlot:
-    """Per-strategy execution context for a multi-strategy LastSecondTrader.
-
-    One slot per strategy; all slots in a trader share the same WebSocket,
-    orderbook, and oracle. Each slot owns its own order execution manager,
-    dry-run simulator, and skip-guard state.
-    """
-
-    strategy_instance: BaseStrategy
-    order_execution: Any
-    dry_run_sim: Any              # DryRunSimulator | None
-    dry_run: bool
-    mode: str
-    strategy_name: str
-    strategy_version: str
-    recorded_skip_guards: set = _dc_field(default_factory=set)
-
-
 class LastSecondTrader:
     """
     High-frequency trader that monitors market data via WebSocket
@@ -293,7 +271,7 @@ class LastSecondTrader:
             # Position, stop-loss, and risk managers
             self.position_manager = PositionManager(
                 logger=self.logger,
-                condition_id=condition_id,
+                condition_id=None if self.dry_run else condition_id,
             )
             # Restore position from disk if crash recovery data exists
             if self.position_manager.restore():
@@ -331,7 +309,15 @@ class LastSecondTrader:
                 alert_dispatcher=None,  # Will be set after init
                 risk_manager=self.risk_manager,
                 trade_db=self._trade_db,
+                end_time=self.end_time,
             )
+
+            # Sync order_executed with restored position — prevents re-entry alert on restart
+            if self.position_manager.is_open:
+                self.order_execution.order_executed = True
+                self._log(
+                    f"[{self.market_name}] ♻️ order_executed=True synced from restored position"
+                )
 
             # Alert dispatcher
             self.alert_dispatcher = self._init_alert_dispatcher()
@@ -915,7 +901,6 @@ class LastSecondTrader:
             # Check virtual dry-run positions for simulated stop-loss/take-profit.
             # Pass side-specific prices so each position is checked against its
             # own side's ask (not blindly the winning side's price).
-            # Iterate over all slots so every strategy's virtual positions are checked.
             _yes_price = self._get_ask_for_side("YES")
             _no_price = self._get_ask_for_side("NO")
             for _slot in list(self.strategies):
@@ -924,12 +909,6 @@ class LastSecondTrader:
                         yes_price=_yes_price,
                         no_price=_no_price,
                     )
-            # Backward compat: also check legacy sim when no slots configured.
-            if not self.strategies and self.dry_run_sim:
-                await self.dry_run_sim.check_virtual_positions(
-                    yes_price=_yes_price,
-                    no_price=_no_price,
-                )
 
         except Exception as e:
             self._log(f"Error processing market update: {e}")
@@ -989,15 +968,6 @@ class LastSecondTrader:
                             time_remaining=time_remaining,
                         )
                     runner.order_execution.mark_executed()
-                # Backward compat: also handle legacy (no-slot) path.
-                if not self.strategies:
-                    if self.dry_run_sim and "daily_loss_limit" not in self._recorded_skip_guards:
-                        self._recorded_skip_guards.add("daily_loss_limit")
-                        await self.dry_run_sim.record_skip(
-                            reason="daily_loss_limit",
-                            time_remaining=time_remaining,
-                        )
-                    self.order_execution.mark_executed()
                 return
 
             # No oracle / no strategy runners → nothing to do.
@@ -1121,125 +1091,6 @@ class LastSecondTrader:
                 reason=reason,
             )
 
-    # ------------------------------------------------------------------
-    # Multi-strategy slot management
-    # ------------------------------------------------------------------
-
-    def add_strategy_slot(self, slot: StrategyRunner) -> None:
-        """Add an extra strategy runner to share this trader's WS/orderbook/oracle.
-
-        Called by a second TradingBotRunner that wants its strategy to observe
-        the same market without opening a second WebSocket connection.
-        The runner's strategy accumulator is reset so it starts fresh.
-        """
-        if slot.strategy_instance is not None:
-            slot.strategy_instance.reset()
-        self.strategies.append(slot)
-        self._log(
-            f"[{self.market_name}] StrategyRunner added: "
-            f"{slot.strategy_name}/{slot.strategy_version} "
-            f"(dry_run={slot.dry_run})"
-        )
-
-    @staticmethod
-    def build_slot(
-        *,
-        condition_id: str,
-        token_id_yes: str,
-        token_id_no: str,
-        market_name: str,
-        strategy: str,
-        strategy_version: str,
-        dry_run: bool,
-        mode: str,
-        trade_size: float,
-        trade_db: Any | None,
-        logger: logging.Logger | None,
-    ) -> StrategyRunner:
-        """Factory: build a StrategyRunner for injection into an existing trader.
-
-        Initialises a fresh strategy instance, order-execution manager, and
-        (optionally) a dry-run simulator.  The CLOB client is only created for
-        live-mode slots.
-        """
-        import os as _os
-        from src.trading.order_execution_manager import OrderExecutionManager as _OEM
-        from src.trading.position_manager import PositionManager as _PM
-        from src.trading.risk_manager import RiskManager as _RM
-        from src.trading.dry_run_simulator import DryRunSimulator as _DRS
-
-        strategy_inst = load_strategy(name=strategy, version=strategy_version, logger=logger)
-        strategy_inst.reset()
-
-        position_mgr = _PM(logger=logger, condition_id=condition_id)
-
-        # Initialise CLOB client only for live-mode slots (dry-run doesn't need it).
-        client = None
-        if not dry_run:
-            try:
-                from dotenv import load_dotenv as _lde
-                _lde()
-                private_key = _os.getenv("PRIVATE_KEY")
-                chain_id = int(_os.getenv("POLYGON_CHAIN_ID", "137"))
-                host = _os.getenv("CLOB_HOST", "https://clob.polymarket.com")
-                funder = _os.getenv("POLYMARKET_PROXY_ADDRESS")
-                if private_key:
-                    from py_clob_client.client import ClobClient as _CC
-                    sig_type = 2 if funder else 0
-                    client = _CC(
-                        host=host, key=private_key, chain_id=chain_id,
-                        signature_type=sig_type, funder=funder or "",
-                    )
-                    client.set_api_creds(client.create_or_derive_api_creds())
-            except Exception:
-                pass  # best-effort; OEM will fail gracefully without a client
-
-        risk_mgr = _RM(
-            client=client,
-            market_name=market_name,
-            trade_size=trade_size,
-            logger=logger,
-        )
-
-        oem = _OEM(
-            client=client,
-            market_name=market_name,
-            condition_id=condition_id,
-            token_id_yes=token_id_yes,
-            token_id_no=token_id_no,
-            dry_run=dry_run,
-            trade_size=trade_size,
-            logger=logger,
-            position_manager=position_mgr,
-            alert_dispatcher=None,
-            risk_manager=risk_mgr,
-            trade_db=trade_db,
-        )
-
-        sim: Any = None
-        if trade_db is not None:
-            sim = _DRS(
-                db=trade_db,
-                market_name=market_name,
-                condition_id=condition_id,
-                dry_run=dry_run,
-                strategy=strategy,
-                strategy_version=strategy_version,
-                mode=mode,
-            )
-
-        return StrategyRunner(
-            strategy_name=strategy,
-            strategy_version=strategy_version,
-            strategy_instance=strategy_inst,
-            order_execution=oem,
-            dry_run_sim=sim,
-            dry_run=dry_run,
-            mode=mode,
-            market_name=market_name,
-            logger=logger,
-        )
-
     async def listen_to_market(self):
         """Listen to WebSocket and process market updates until market closes."""
         self._ws_client.ws = self.ws  # sync ws reference
@@ -1251,13 +1102,10 @@ class LastSecondTrader:
 
     async def run(self):
         """Main entry point: Connect and start trading."""
-        # Reset strategy accumulators for all slots (and primary instance).
-        for _slot in self.strategies:
-            if _slot.strategy_instance is not None:
-                _slot.strategy_instance.reset()
-        # Backward compat: also reset if strategy_instance set but no slots.
-        if not self.strategies and self.strategy_instance is not None:
-            self.strategy_instance.reset()
+        # Reset strategy accumulators for all runners.
+        for runner in self.strategies:
+            if runner.strategy_instance is not None:
+                runner.strategy_instance.reset()
 
         # ------------------------------------------------------------------
         # Feed-driven mode: delegate WS + oracle to the injected MarketFeed.
@@ -1613,34 +1461,16 @@ class LastSecondTrader:
         winning_ask = self._get_winning_ask()
         summary = self._build_market_summary()
 
-        if self.strategies:
-            # Multi-strategy path: record close for each unexecuted slot.
-            for slot in list(self.strategies):
-                if slot.order_execution.is_executed():
-                    continue
-                if not slot.dry_run_sim:
-                    continue
-                self._log(
-                    f"[{self.market_name}] Recording market_closed_no_trigger "
-                    f"({slot.strategy_name}/{slot.strategy_version}) | {summary}"
-                )
-                await slot.dry_run_sim.record_skip(
-                    reason="market_closed_no_trigger",
-                    reason_detail=summary,
-                    side=self.winning_side,
-                    price=winning_ask,
-                    confidence=None,
-                    time_remaining=0.0,
-                    oracle_snap=self.oracle_guard.snapshot if self.oracle_guard.enabled else None,
-                )
-        else:
-            # Legacy single-strategy path (oracle disabled / no slots).
-            if self.order_execution.is_executed():
-                return
-            if not self.dry_run_sim:
-                return
-            self._log(f"[{self.market_name}] Recording market_closed_no_trigger (no trade executed) | {summary}")
-            await self.dry_run_sim.record_skip(
+        for slot in list(self.strategies):
+            if slot.order_execution.is_executed():
+                continue
+            if not slot.dry_run_sim:
+                continue
+            self._log(
+                f"[{self.market_name}] Recording market_closed_no_trigger "
+                f"({slot.strategy_name}/{slot.strategy_version}) | {summary}"
+            )
+            await slot.dry_run_sim.record_skip(
                 reason="market_closed_no_trigger",
                 reason_detail=summary,
                 side=self.winning_side,
@@ -1713,10 +1543,6 @@ class LastSecondTrader:
                     await _slot.dry_run_sim.check_virtual_positions(
                         yes_price=_yes_price, no_price=_no_price
                     )
-            if not self.strategies and self.dry_run_sim:
-                await self.dry_run_sim.check_virtual_positions(
-                    yes_price=_yes_price, no_price=_no_price
-                )
         except Exception as e:
             self._log(f"[{self.market_name}] Error in _on_feed_tick: {e}")
 

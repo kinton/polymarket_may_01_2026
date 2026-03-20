@@ -18,7 +18,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from src.gamma_15m_finder import GammaAPI15mFinder
 from src.hft_trader import LastSecondTrader
@@ -26,7 +26,6 @@ from src.logging_config import setup_bot_loggers
 from src.market_feed import MarketFeed
 from src.strategy_registry import StrategyRegistration, StrategyRegistry
 from src.trading.market_feed_config import MarketFeedConfig
-from src.trading.parallel_launcher import ParallelLauncher
 from src.trading.trade_db import TradeDatabase
 from strategies import load_strategy
 from strategies.base import MarketInfo
@@ -80,6 +79,10 @@ class MarketOrchestrator:
         self.active_tasks: dict[str, asyncio.Task] = {}
         self.monitored_markets: set[str] = set()
         self.monitored_tickers: set[str] = set()
+        # Ticker-level dedup that survives restarts: market_name → expiry timestamp.
+        # Populated from DB on startup so a new 15-min window for the same ticker
+        # doesn't fire a duplicate alert immediately after a docker restart.
+        self._preloaded_tickers_expiry: dict[str, float] = {}
 
         self._poll_cycle = 0
 
@@ -165,22 +168,55 @@ class MarketOrchestrator:
                 pass
 
     async def _preload_monitored_markets(self) -> None:
-        """Pre-populate monitored_markets from all DBs to prevent duplicate traders on restart."""
-        cutoff = time.time() - 3600
+        """Pre-populate monitored_markets/tickers from DB to prevent duplicate alerts on restart.
+
+        Two layers of dedup:
+        1. condition_id (1-hour window): blocks the exact same 15-min market from restarting.
+        2. market_name/ticker (2× window): blocks the NEXT 15-min window for a ticker that
+           was traded recently.  New 15-min BTC markets have new condition_ids, so they
+           escape layer-1; this layer catches them.  Expiry is stored per-ticker so the
+           block lifts automatically once the window passes.
+        """
+        now = time.time()
+        condition_cutoff = now - 3600
+        # 2× TRADER_START_WINDOW_MAX covers the current + next 15-min window
+        ticker_cutoff = now - self.TRADER_START_WINDOW_MAX * 2
         for db in self._trade_dbs.values():
             try:
+                # Layer 1: same condition_id
                 async with db._db.execute(
                     "SELECT DISTINCT condition_id FROM trades WHERE timestamp > ? AND action = 'buy'",
-                    (cutoff,),
+                    (condition_cutoff,),
                 ) as cur:
                     rows = await cur.fetchall()
                 for row in rows:
                     self.monitored_markets.add(row[0])
+
+                # Layer 2: same ticker (market_name) — survives condition_id rotation
+                async with db._db.execute(
+                    "SELECT market_name, MAX(timestamp) as last_ts"
+                    " FROM trades WHERE timestamp > ? AND action = 'buy'"
+                    " GROUP BY market_name",
+                    (ticker_cutoff,),
+                ) as cur:
+                    rows = await cur.fetchall()
+                for row in rows:
+                    name, last_ts = row[0], row[1]
+                    if name and last_ts:
+                        expiry = last_ts + self.TRADER_START_WINDOW_MAX * 2
+                        # Keep the latest expiry if the same ticker appears in multiple DBs
+                        if expiry > self._preloaded_tickers_expiry.get(name, 0):
+                            self._preloaded_tickers_expiry[name] = expiry
             except Exception as e:
                 self._finder_logger.warning(f"[Orchestrator] Could not preload markets from DB: {e}")
         if self.monitored_markets:
             self._finder_logger.info(
                 f"[Orchestrator] Restart dedup: {len(self.monitored_markets)} condition_id(s) pre-loaded"
+            )
+        if self._preloaded_tickers_expiry:
+            remaining = {k: f"{max(0, v - now):.0f}s" for k, v in self._preloaded_tickers_expiry.items()}
+            self._finder_logger.info(
+                f"[Orchestrator] Restart dedup: ticker block(s) pre-loaded: {remaining}"
             )
 
     async def _poll_once(self) -> list[Dict[str, Any]]:
@@ -208,6 +244,16 @@ class MarketOrchestrator:
         if ticker and ticker in self.monitored_tickers:
             self._finder_logger.info(
                 f"[Orchestrator] Skipping {condition_id}: ticker {ticker!r} already active"
+            )
+            return False
+
+        # Ticker dedup from DB preload: block a new condition_id for this ticker
+        # if it was traded recently (within 2× the market window on the previous run).
+        expiry = self._preloaded_tickers_expiry.get(ticker, 0)
+        if expiry > time.time():
+            self._finder_logger.info(
+                f"[Orchestrator] Skipping {condition_id}: ticker {ticker!r} recently traded "
+                f"(restart dedup expires in {expiry - time.time():.0f}s)"
             )
             return False
 
@@ -275,10 +321,8 @@ class MarketOrchestrator:
             f"[Orchestrator] Launching {len(eligible_markets)} market(s) in parallel"
         )
 
-        launcher = ParallelLauncher(max_concurrency=self.max_concurrent, timeout=None)
-
-        async def _start_and_track(item: tuple) -> None:
-            market, regs = item
+        launched = 0
+        for market, regs in eligible_markets:
             cid = market.get("condition_id")
             ticker = market.get("ticker", "")
             self.monitored_markets.add(cid)
@@ -286,11 +330,10 @@ class MarketOrchestrator:
                 self.monitored_tickers.add(ticker)
             task = asyncio.create_task(self._run_market(market, regs))
             self.active_tasks[cid] = task
+            launched += 1
 
-        batch_result = await launcher.launch(eligible_markets, _start_and_track)
         self._finder_logger.info(
-            f"[Orchestrator] Launched {batch_result.succeeded}/{batch_result.total} "
-            f"in {batch_result.elapsed_ms:.0f}ms"
+            f"[Orchestrator] Launched {launched}/{len(eligible_markets)} market(s)"
         )
 
     def _strategy_accepts_market(

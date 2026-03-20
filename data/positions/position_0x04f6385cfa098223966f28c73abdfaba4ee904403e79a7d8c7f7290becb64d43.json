@@ -1,9 +1,0 @@
-{
-  "condition_id": "0x04f6385cfa098223966f28c73abdfaba4ee904403e79a7d8c7f7290becb64d43",
-  "timestamp": 1773723437.995759,
-  "timestamp_iso": "2026-03-17T04:57:17Z",
-  "entry_price": 0.02,
-  "position_side": "YES",
-  "position_open": true,
-  "trailing_stop_price": 0.01
-}

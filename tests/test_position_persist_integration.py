@@ -59,18 +59,23 @@ def _make_trader(
 # ---------------------------------------------------------------------------
 
 class TestPositionPersistActivation:
-    """Test that PositionManager in hft_trader has persistence enabled."""
+    """Test persistence is disabled for dry-run traders and enabled for live."""
 
-    def test_trader_position_manager_has_persister(self):
-        """Trader passes condition_id to PositionManager, enabling persistence."""
+    def test_dry_run_trader_has_no_persister(self):
+        """Dry-run trader passes condition_id=None to PositionManager — no disk I/O."""
         trader = _make_trader()
-        assert trader.position_manager._persister is not None
-        assert trader.position_manager._persister.condition_id == "0xabc123"
+        assert trader.position_manager._persister is None
 
     def test_position_manager_without_condition_id_has_no_persister(self):
         """PositionManager without condition_id has no persister."""
         pm = PositionManager(logger=None)
         assert pm._persister is None
+
+    def test_position_manager_with_condition_id_has_persister(self, tmp_path):
+        """PositionManager with condition_id creates a persister."""
+        pm = PositionManager(logger=None, condition_id="0xabc123", persist_dir=str(tmp_path))
+        assert pm._persister is not None
+        assert pm._persister.condition_id == "0xabc123"
 
 
 # ---------------------------------------------------------------------------
@@ -78,69 +83,59 @@ class TestPositionPersistActivation:
 # ---------------------------------------------------------------------------
 
 class TestCrashRecovery:
-    """Test open → persist → restore cycle simulating crash recovery."""
+    """Test open → persist → restore cycle via PositionManager (live-mode behavior)."""
+
+    def _make_pm(self, condition_id: str, persist_dir: str) -> PositionManager:
+        """Create a live-mode PositionManager with persistence."""
+        return PositionManager(logger=None, condition_id=condition_id, persist_dir=persist_dir)
 
     def test_open_persist_restore(self, tmp_path):
-        """Position opened in one trader can be restored in a new one."""
+        """Position opened in one manager can be restored in a new one."""
         condition_id = "0xcrash_test"
 
-        # Trader 1: open position
-        t1 = _make_trader(condition_id=condition_id, persist_dir=str(tmp_path))
-        t1.position_manager.open_position(
-            entry_price=0.95,
-            side="YES",
-            trailing_stop_price=0.90,
-        )
-        # Verify file exists
+        pm1 = self._make_pm(condition_id, str(tmp_path))
+        pm1.open_position(entry_price=0.95, side="YES", trailing_stop_price=0.90)
+
         files = list(tmp_path.glob("position_*.json"))
         assert len(files) == 1
 
-        # Trader 2: simulate restart — new trader, same condition_id
-        t2 = _make_trader(condition_id=condition_id, persist_dir=str(tmp_path))
-        assert t2.position_manager.is_open is True
-        assert t2.position_manager.position_side == "YES"
-        assert t2.position_manager.entry_price == 0.95
-        assert t2.position_manager.trailing_stop_price == 0.90
+        pm2 = self._make_pm(condition_id, str(tmp_path))
+        pm2.restore()
+        assert pm2.is_open is True
+        assert pm2.position_side == "YES"
+        assert pm2.entry_price == 0.95
+        assert pm2.trailing_stop_price == 0.90
 
     def test_close_removes_persist_file(self, tmp_path):
         """Closing a position removes the persist file."""
         condition_id = "0xclose_test"
 
-        t1 = _make_trader(condition_id=condition_id, persist_dir=str(tmp_path))
-        t1.position_manager.open_position(
-            entry_price=0.92,
-            side="NO",
-            trailing_stop_price=0.88,
-        )
+        pm1 = self._make_pm(condition_id, str(tmp_path))
+        pm1.open_position(entry_price=0.92, side="NO", trailing_stop_price=0.88)
         assert list(tmp_path.glob("position_*.json"))
 
-        t1.position_manager.close_position()
+        pm1.close_position()
         assert not list(tmp_path.glob("position_*.json"))
 
-        # New trader should NOT restore anything
-        t2 = _make_trader(condition_id=condition_id, persist_dir=str(tmp_path))
-        assert t2.position_manager.is_open is False
+        pm2 = self._make_pm(condition_id, str(tmp_path))
+        pm2.restore()
+        assert pm2.is_open is False
 
     def test_trailing_stop_update_persisted(self, tmp_path):
         """Trailing stop updates are persisted to disk."""
         condition_id = "0xtrailing"
 
-        t1 = _make_trader(condition_id=condition_id, persist_dir=str(tmp_path))
-        t1.position_manager.open_position(
-            entry_price=0.94,
-            side="YES",
-            trailing_stop_price=0.89,
-        )
-        t1.position_manager.update_trailing_stop(0.91)
+        pm1 = self._make_pm(condition_id, str(tmp_path))
+        pm1.open_position(entry_price=0.94, side="YES", trailing_stop_price=0.89)
+        pm1.update_trailing_stop(0.91)
 
-        # Read file directly
         files = list(tmp_path.glob("position_*.json"))
         data = json.loads(files[0].read_text())
         assert data["trailing_stop_price"] == 0.91
 
-        # Restore in new trader
-        t2 = _make_trader(condition_id=condition_id, persist_dir=str(tmp_path))
-        assert t2.position_manager.trailing_stop_price == 0.91
+        pm2 = self._make_pm(condition_id, str(tmp_path))
+        pm2.restore()
+        assert pm2.trailing_stop_price == 0.91
 
 
 # ---------------------------------------------------------------------------
@@ -148,32 +143,19 @@ class TestCrashRecovery:
 # ---------------------------------------------------------------------------
 
 class TestGracefulShutdownPersist:
-    """Test that graceful_shutdown persists position state."""
+    """Test graceful_shutdown persistence behavior for dry-run vs live."""
 
     @pytest.mark.asyncio
-    async def test_shutdown_persists_open_position(self, tmp_path):
-        """Graceful shutdown calls _persist on open position."""
-        condition_id = "0xshutdown"
-        trader = _make_trader(condition_id=condition_id, persist_dir=str(tmp_path))
+    async def test_dry_run_shutdown_never_writes_files(self, tmp_path):
+        """Dry-run trader graceful_shutdown writes no position files."""
+        trader = _make_trader(condition_id="0xshutdown", persist_dir=str(tmp_path))
         trader.position_manager.open_position(
             entry_price=0.96,
             side="YES",
             trailing_stop_price=0.91,
         )
-
-        # Remove the file to test that shutdown re-persists
-        for f in tmp_path.glob("position_*.json"):
-            f.unlink()
-        assert not list(tmp_path.glob("position_*.json"))
-
         await trader.graceful_shutdown(reason="test")
-
-        # File should be recreated
-        files = list(tmp_path.glob("position_*.json"))
-        assert len(files) == 1
-        data = json.loads(files[0].read_text())
-        assert data["entry_price"] == 0.96
-        assert data["position_side"] == "YES"
+        assert not list(tmp_path.glob("position_*.json"))
 
     @pytest.mark.asyncio
     async def test_shutdown_no_persist_when_no_position(self, tmp_path):

@@ -27,7 +27,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: polymarket-position-settler
-    command: python -m src.position_settler --daemon --live --interval 300
+    command: python -m src.position_settler --daemon --live --interval 600
     env_file:
       - .env
     volumes:

@@ -296,17 +296,21 @@ class ConvergenceV1(BaseStrategy):
         current_delta = oracle_snapshot.delta_pct if oracle_snapshot and oracle_snapshot.delta_pct is not None else median_delta
 
         # Block the trade if oracle has drifted outside the convergence zone at decision time.
+        # Directional check: only skip if the price is moving AWAY from the target, not toward it.
         if oracle_snapshot is not None and oracle_snapshot.delta_pct is not None:
-            current_abs_delta_pct = abs(oracle_snapshot.delta_pct)
-            if current_abs_delta_pct > self.threshold_pct:
+            d = oracle_snapshot.delta_pct
+            if dominant_side == "YES" and d < -self.threshold_pct:
+                # price too far below target, YES unlikely to win
                 self._log(
-                    f"SKIP: oracle outside zone at decision time -- "
-                    f"current delta_pct={current_abs_delta_pct * 100:.4f}% > threshold={self.threshold_pct * 100:.4f}% "
-                    f"(delta_usd={oracle_snapshot.delta:+.4f}, z={oracle_snapshot.zscore:.3f})"
-                    if oracle_snapshot.zscore is not None else
-                    f"SKIP: oracle outside zone at decision time -- "
-                    f"current delta_pct={current_abs_delta_pct * 100:.4f}% > threshold={self.threshold_pct * 100:.4f}% "
-                    f"(delta_usd={oracle_snapshot.delta:+.4f})"
+                    f"SKIP: YES but delta_pct={d * 100:.4f}% < -{self.threshold_pct * 100:.4f}% "
+                    f"(price too far below target)"
+                )
+                return None
+            if dominant_side == "NO" and d > self.threshold_pct:
+                # price too far above target, NO unlikely to win
+                self._log(
+                    f"SKIP: NO but delta_pct={d * 100:.4f}% > {self.threshold_pct * 100:.4f}% "
+                    f"(price too far above target)"
                 )
                 return None
 
