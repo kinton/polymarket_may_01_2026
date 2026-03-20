@@ -971,11 +971,41 @@ async def _build_hourly_status(
     try:
         balance = await _fetch_usdc_balance()
         if balance is not None:
-            lines.append(f"💰 Balance: ${balance:.2f} USDC")
+            lines.append(f"💰 USDC: ${balance:.2f} (free)")
         else:
-            lines.append("💰 Balance: unavailable")
+            lines.append("💰 USDC: unavailable")
     except Exception:
-        lines.append("💰 Balance: unavailable")
+        lines.append("💰 USDC: unavailable")
+
+    # Open positions value from live DB
+    live_configs = [sc for sc in strategy_configs if sc.mode == "live"]
+    if live_configs:
+        live_db = live_configs[0].db_path
+        try:
+            import sqlite3
+
+            def _query_positions() -> float | None:
+                if not Path(live_db).exists():
+                    return None
+                con = sqlite3.connect(live_db, timeout=5)
+                try:
+                    row = con.execute(
+                        'SELECT SUM(price * amount) FROM trades '
+                        'WHERE action="buy" AND condition_id NOT IN ('
+                        '  SELECT condition_id FROM trades WHERE action="sell"'
+                        ')'
+                    ).fetchone()
+                    return row[0] if row and row[0] is not None else 0.0
+                finally:
+                    con.close()
+
+            pos_value = await asyncio.to_thread(_query_positions)
+            if pos_value is not None:
+                lines.append(f"📊 Positions: ${pos_value:.2f} (open)")
+            else:
+                lines.append("📊 Positions: db not found")
+        except Exception:
+            lines.append("📊 Positions: unavailable")
 
     return "\n".join(lines)
 
