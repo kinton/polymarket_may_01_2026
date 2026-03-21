@@ -371,6 +371,82 @@ class PositionSettler:
             self.logger.debug(f"_is_losing_resolved_token check failed for {token_id}: {e}")
         return False
 
+    async def _is_winning_resolved_token(self, token_id: str, condition_id: str) -> bool:
+        """Return True if token_id is the WINNING side of a resolved market."""
+        if not condition_id:
+            return False
+        try:
+            import requests as _req
+            r = await asyncio.to_thread(
+                lambda: _req.get(
+                    f"https://clob.polymarket.com/markets/{condition_id}", timeout=5
+                )
+            )
+            if not r.ok:
+                return False
+            data = r.json()
+            if not data.get("closed") or not data.get("outcome"):
+                return False
+            winning_outcome = data["outcome"]
+            for t in data.get("tokens", []):
+                if t.get("outcome", "").lower() == winning_outcome.lower():
+                    return t.get("token_id") == token_id
+        except Exception as e:
+            self.logger.debug(f"_is_winning_resolved_token failed for {token_id}: {e}")
+        return False
+
+    async def _redeem_live_winning_position(self, position: dict[str, Any]) -> dict | None:
+        """Redeem a winning live position on-chain via AutoRedeemer."""
+        condition_id = position.get("condition_id", "")
+        if self.dry_run:
+            self.logger.info(f"DRY RUN: Would redeem live position {condition_id}")
+            return {"status": "dry_run", "condition_id": condition_id}
+        try:
+            from src.trading.auto_redeem import AutoRedeemer
+            private_key = os.getenv("PRIVATE_KEY")
+            proxy_address = os.getenv("POLYMARKET_PROXY_ADDRESS")
+            if not private_key:
+                self.logger.warning("Cannot redeem: PRIVATE_KEY not set")
+                return None
+
+            redeemer = AutoRedeemer(
+                private_key=private_key, proxy_address=proxy_address,
+                dry_run=False, logger_=self.logger,
+            )
+
+            # Detect neg_risk
+            is_neg_risk = False
+            try:
+                import requests as _req
+                r = await asyncio.to_thread(
+                    lambda: _req.get(
+                        f"https://clob.polymarket.com/markets/{condition_id}", timeout=5
+                    )
+                )
+                if r.ok:
+                    is_neg_risk = bool(r.json().get("neg_risk", False))
+            except Exception:
+                pass
+
+            result = await redeemer.redeem_position(condition_id, is_neg_risk=is_neg_risk)
+
+            if result and result.get("status") == "success":
+                await self._record_sell_trade(position, exit_price=1.0, reason="redeemed")
+                entry_price = float(position.get("entry_price") or 0.0)
+                pnl = self.calculate_pnl(position, entry_price=entry_price, exit_price=1.0)
+                await self.log_pnl_to_csv(
+                    position=position, pnl=pnl,
+                    condition_id=condition_id,
+                    market_title=position.get("market_title", "N/A"),
+                )
+                await self._close_position_in_db(condition_id, reason="redeemed")
+                self.logger.info(f"Live position redeemed: {condition_id}")
+                return result
+            return None
+        except Exception as e:
+            self.logger.error(f"Error redeeming live position {condition_id}: {e}", exc_info=True)
+            return None
+
     async def sell_position_if_profitable(
         self, position: dict[str, Any]
     ) -> dict[str, Any] | None:
@@ -447,6 +523,8 @@ class PositionSettler:
                     condition_id=position.get("condition_id", "N/A"),
                     market_title=position.get("market_title", "N/A"),
                 )
+                await self._record_sell_trade(position, exit_price=current_price, reason="settler_sell")
+                await self._close_position_in_db(position.get("condition_id", ""), reason="settler_sell")
                 return result
             else:
                 self.logger.warning(f"Failed to sell position: {result}")
@@ -662,6 +740,52 @@ class PositionSettler:
             self.logger.debug(f"entry_price DB lookup failed: {e}")
         return 0.0
 
+    async def _record_sell_trade(
+        self, position: dict[str, Any], exit_price: float, reason: str
+    ) -> None:
+        """Record a SELL trade in all matching TradeDatabase instances."""
+        condition_id = position.get("condition_id", "")
+        if not condition_id:
+            return
+        balance = float(position.get("balance", position.get("size", 0)))
+        entry_price = float(position.get("entry_price") or 0)
+        pnl_value = (exit_price - entry_price) * balance if entry_price > 0 else 0.0
+        pnl_pct = ((exit_price - entry_price) / entry_price * 100) if entry_price > 0 else 0.0
+
+        for db_path in self._get_db_paths():
+            try:
+                _db = await TradeDatabase.initialize(db_path)
+                try:
+                    await _db.record_trade(
+                        market_name=position.get("market_title", "N/A"),
+                        condition_id=condition_id,
+                        action="sell",
+                        side=position.get("side", "YES"),
+                        price=exit_price,
+                        amount=balance,
+                        pnl=pnl_value,
+                        pnl_pct=pnl_pct,
+                        reason=reason,
+                        dry_run=self.dry_run,
+                        order_status="filled",
+                    )
+                finally:
+                    await _db.close()
+            except Exception as e:
+                self.logger.warning(f"Failed to record sell in {db_path}: {e}")
+
+    async def _close_position_in_db(self, condition_id: str, reason: str) -> None:
+        """Mark a position as closed in all matching TradeDatabase instances."""
+        for db_path in self._get_db_paths():
+            try:
+                _db = await TradeDatabase.initialize(db_path)
+                try:
+                    await _db.close_position(condition_id, reason=reason)
+                finally:
+                    await _db.close()
+            except Exception as e:
+                self.logger.debug(f"close_position in {db_path}: {e}")
+
     async def process_positions(self):
         """
         Main processing loop:
@@ -688,6 +812,7 @@ class PositionSettler:
                 token_id = position.get("token_id")
                 balance = position.get("balance", 0)
                 current_price = position.get("current_price", 0)
+                condition_id = position.get("condition_id", "")
 
                 if not token_id or balance <= 0:
                     self.logger.warning(f"Invalid position data: {position}")
@@ -697,11 +822,32 @@ class PositionSettler:
                     f"Position {processed + 1}/{len(positions)}: {balance:.2f} tokens @ ${current_price:.4f}"
                 )
 
-                sell_result = await self.sell_position_if_profitable(position)
-
-                if sell_result:
-                    sold += 1
-                    self.logger.info("✅ Position sold profitably")
+                if current_price >= 0.999:
+                    # Near-certain win — sell on orderbook
+                    sell_result = await self.sell_position_if_profitable(position)
+                    if sell_result:
+                        sold += 1
+                        self.logger.info("✅ Position sold profitably")
+                    else:
+                        held += 1
+                        self.logger.info(
+                            f"📊 Holding position (price ${current_price:.4f} < $0.999 threshold)"
+                        )
+                elif current_price == 0.0 and condition_id:
+                    # No orderbook — market likely resolved. Check if we won.
+                    is_winner = await self._is_winning_resolved_token(token_id, condition_id)
+                    if is_winner:
+                        redeem_result = await self._redeem_live_winning_position(position)
+                        if redeem_result:
+                            sold += 1
+                            self.logger.info("✅ Winning resolved position redeemed")
+                        else:
+                            held += 1
+                    else:
+                        held += 1
+                        self.logger.info(
+                            f"📊 Holding position (price ${current_price:.4f} < $0.999 threshold)"
+                        )
                 else:
                     held += 1
                     self.logger.info(

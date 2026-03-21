@@ -2,7 +2,7 @@
 Convergence Trading Strategy v2 — live trading with strict filters.
 
 Inherits all logic from ConvergenceV1. Differences:
-  - SUPPORTED_TICKERS: BTC, ETH only (no SOL — historically poor win rate)
+  - SUPPORTED_TICKERS: BTC only (ETH removed — 10-17% winrate, negative EV)
   - min_cheap_price: 0.14 (tokens below 14c are statistically unprofitable)
   - All other parameters identical to v1 defaults
 
@@ -32,8 +32,8 @@ class ConvergenceV2(ConvergenceV1):
     name = "convergence"
     version = "v2"
 
-    # BTC and ETH only — SOL excluded (poor win rate in live conditions)
-    SUPPORTED_TICKERS: tuple[str, ...] = ("BTC", "ETH")
+    # BTC only — ETH removed (10-17% winrate, negative EV at -$0.07/trade)
+    SUPPORTED_TICKERS: tuple[str, ...] = ("BTC",)
 
     def __init__(
         self,
