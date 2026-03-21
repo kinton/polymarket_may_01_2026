@@ -122,6 +122,8 @@ class PositionSettler:
         self._trade_db = trade_db
         # Fix 3: cache token_ids that returned 404 or are confirmed losers; token_id -> expiry
         self._stale_tokens: dict[str, float] = {}
+        # Timestamp of last hourly forced redeem sweep
+        self._last_redeem_all_ts: float = 0.0
 
         # Logger: use provided or create via centralized config
         if logger is not None:
@@ -1088,6 +1090,93 @@ class PositionSettler:
         except Exception as e:
             self.logger.error(f"Auto-redeem error: {e}", exc_info=True)
 
+    async def redeem_all_live_positions(self) -> None:
+        """Attempt CTF redeem for every open live position (hourly forced sweep).
+
+        Tries to redeem regardless of price. Skips positions where gas estimation
+        fails (market not yet resolved). Logs all outcomes.
+        """
+        if self.dry_run:
+            self.logger.info("DRY RUN: Skipping hourly forced redeem sweep")
+            return
+
+        private_key = os.getenv("PRIVATE_KEY")
+        if not private_key:
+            self.logger.warning("Cannot run redeem sweep: PRIVATE_KEY not set")
+            return
+
+        self.logger.info("=== Hourly forced redeem sweep starting ===")
+        positions = await self.get_open_positions()
+
+        if not positions:
+            self.logger.info("Redeem sweep: no open positions found")
+            return
+
+        self.logger.info(f"Redeem sweep: attempting {len(positions)} position(s)")
+
+        from src.trading.auto_redeem import AutoRedeemer
+        import requests as _req
+
+        proxy_address = os.getenv("POLYMARKET_PROXY_ADDRESS")
+        redeemer = AutoRedeemer(
+            private_key=private_key,
+            proxy_address=proxy_address,
+            dry_run=False,
+            logger_=self.logger,
+        )
+
+        redeemed = 0
+        skipped = 0
+        failed = 0
+
+        for position in positions:
+            condition_id = position.get("condition_id", "")
+            if not condition_id:
+                self.logger.debug("Redeem sweep: skipping position with no condition_id")
+                skipped += 1
+                continue
+
+            is_neg_risk = False
+            try:
+                r = await asyncio.to_thread(
+                    lambda cid=condition_id: _req.get(
+                        f"https://clob.polymarket.com/markets/{cid}", timeout=5
+                    )
+                )
+                if r.ok:
+                    is_neg_risk = bool(r.json().get("neg_risk", False))
+            except Exception:
+                pass
+
+            try:
+                result = await redeemer.redeem_position(condition_id, is_neg_risk=is_neg_risk)
+                if result is None:
+                    self.logger.info(
+                        f"Redeem sweep: {condition_id[:20]}... not redeemable "
+                        f"(gas estimation failed — market likely not resolved yet)"
+                    )
+                    skipped += 1
+                elif result.get("status") == "success":
+                    self.logger.info(
+                        f"Redeem sweep: redeemed {condition_id[:20]}... "
+                        f"${result.get('redeemed_amount', 0):.2f} USDC"
+                    )
+                    await self._record_sell_trade(position, exit_price=1.0, reason="hourly_redeem_sweep")
+                    await self._close_position_in_db(condition_id, reason="hourly_redeem_sweep")
+                    redeemed += 1
+                else:
+                    self.logger.warning(
+                        f"Redeem sweep: unexpected result for {condition_id}: {result}"
+                    )
+                    failed += 1
+            except Exception as e:
+                self.logger.warning(f"Redeem sweep: error for {condition_id}: {e}")
+                failed += 1
+
+        self.logger.info(
+            f"=== Redeem sweep done: redeemed={redeemed}, skipped={skipped}, failed={failed} ==="
+        )
+
     async def run(self, interval: int = 300):
         """
         Run settler in daemon mode.
@@ -1097,9 +1186,16 @@ class PositionSettler:
         """
         self.logger.info("Position settler started")
 
+        REDEEM_ALL_INTERVAL = 3600  # 1 hour
+
         try:
             while True:
                 await self.process_positions()
+
+                now = time.time()
+                if now - self._last_redeem_all_ts >= REDEEM_ALL_INTERVAL:
+                    await self.redeem_all_live_positions()
+                    self._last_redeem_all_ts = time.time()
 
                 self.logger.info(f"Sleeping {interval}s until next check...")
                 await asyncio.sleep(interval)
