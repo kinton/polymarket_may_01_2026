@@ -754,12 +754,37 @@ class PositionSettler:
         pnl_value = (exit_price - entry_price) * balance if entry_price > 0 else 0.0
         pnl_pct = ((exit_price - entry_price) / entry_price * 100) if entry_price > 0 else 0.0
 
+        # Bug 1 fix: resolve market_name from position dict or DB lookup
+        market_name = (
+            position.get("market_name")
+            or position.get("market_title")
+            or ""
+        )
+
         for db_path in self._get_db_paths():
             try:
                 _db = await TradeDatabase.initialize(db_path)
                 try:
+                    # If market_name still missing, look up from the buy trade in DB
+                    resolved_name = market_name
+                    if not resolved_name:
+                        try:
+                            trades = await _db.get_trades(limit=1)
+                            # Search for a buy trade with matching condition_id
+                            async with _db._db.execute(
+                                "SELECT market_name FROM trades WHERE condition_id = ? AND action = 'buy' LIMIT 1",
+                                (condition_id,),
+                            ) as cur:
+                                row = await cur.fetchone()
+                                if row and row[0]:
+                                    resolved_name = row[0]
+                        except Exception:
+                            pass
+                    if not resolved_name:
+                        resolved_name = "N/A"
+
                     await _db.record_trade(
-                        market_name=position.get("market_title", "N/A"),
+                        market_name=resolved_name,
                         condition_id=condition_id,
                         action="sell",
                         side=position.get("side", "YES"),
@@ -1128,11 +1153,18 @@ class PositionSettler:
         redeemed = 0
         skipped = 0
         failed = 0
+        already_redeemed: set[str] = set()  # Bug 2 fix: dedup by condition_id
 
         for position in positions:
             condition_id = position.get("condition_id", "")
             if not condition_id:
                 self.logger.debug("Redeem sweep: skipping position with no condition_id")
+                skipped += 1
+                continue
+
+            # Bug 2 fix: skip if already processed in this sweep
+            if condition_id in already_redeemed:
+                self.logger.debug(f"Redeem sweep: skipping duplicate condition_id {condition_id[:20]}...")
                 skipped += 1
                 continue
 
@@ -1163,6 +1195,7 @@ class PositionSettler:
                     )
                     await self._record_sell_trade(position, exit_price=1.0, reason="hourly_redeem_sweep")
                     await self._close_position_in_db(condition_id, reason="hourly_redeem_sweep")
+                    already_redeemed.add(condition_id)
                     redeemed += 1
                 else:
                     self.logger.warning(

@@ -85,7 +85,7 @@ class ConvergenceV1(BaseStrategy):
         threshold_pct: float = 0.0005,    # 5bp convergence
         min_skew: float = 0.75,            # expensive side >= 75c
         max_cheap_price: float = 0.35,     # only buy at 35c or less
-        min_cheap_price: float = 0.0,      # no minimum — collect all data
+        min_cheap_price: float = 0.10,     # filter out <10c entries that skew data
         max_against_pct: float = DEFAULT_MAX_AGAINST_BP,
         window_start_s: float = 200.0,    # observe from ~3.3 min before close
         window_end_s: float = 20.0,
