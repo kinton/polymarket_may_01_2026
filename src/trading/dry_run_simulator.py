@@ -311,6 +311,10 @@ class DryRunSimulator:
                         (new_trailing, pos["id"]),
                     )
                     await self._db._db.commit()
+                # Track max price seen during observation window
+                existing_max = pos.get("max_price")
+                if existing_max is None or pos_price > existing_max:
+                    await self._db.update_dry_run_max_price(pos["id"], pos_price)
 
         return closed
 

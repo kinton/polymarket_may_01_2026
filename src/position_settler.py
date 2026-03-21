@@ -774,6 +774,35 @@ class PositionSettler:
             except Exception as e:
                 self.logger.warning(f"Failed to record sell in {db_path}: {e}")
 
+    async def _update_max_price(self, position_id: int, new_max: float) -> None:
+        """Update max_price for a dry_run_position by id across all DBs."""
+        for db_path in self._get_db_paths():
+            try:
+                _db = await TradeDatabase.initialize(db_path)
+                try:
+                    await _db.update_dry_run_max_price(position_id, new_max)
+                finally:
+                    await _db.close()
+            except Exception as e:
+                self.logger.debug(f"max_price update in {db_path}: {e}")
+
+    async def _update_max_price_for_condition(self, condition_id: str, current_price: float) -> None:
+        """Update max_price for all open dry_run_positions matching condition_id."""
+        for db_path in self._get_db_paths():
+            try:
+                _db = await TradeDatabase.initialize(db_path)
+                try:
+                    positions = await _db.get_open_dry_run_positions()
+                    for pos in positions:
+                        if pos["condition_id"] == condition_id:
+                            existing_max = pos.get("max_price")
+                            if existing_max is None or current_price > existing_max:
+                                await _db.update_dry_run_max_price(pos["id"], current_price)
+                finally:
+                    await _db.close()
+            except Exception as e:
+                self.logger.debug(f"max_price condition update in {db_path}: {e}")
+
     async def _close_position_in_db(self, condition_id: str, reason: str) -> None:
         """Mark a position as closed in all matching TradeDatabase instances."""
         for db_path in self._get_db_paths():
@@ -821,6 +850,10 @@ class PositionSettler:
                 self.logger.info(
                     f"Position {processed + 1}/{len(positions)}: {balance:.2f} tokens @ ${current_price:.4f}"
                 )
+
+                # Track max price seen for any matching dry_run_positions
+                if current_price > 0 and condition_id:
+                    await self._update_max_price_for_condition(condition_id, current_price)
 
                 if current_price >= 0.999:
                     # Near-certain win — sell on orderbook

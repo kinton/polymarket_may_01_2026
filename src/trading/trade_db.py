@@ -246,12 +246,22 @@ async def _apply_v4(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def _apply_v5(db: aiosqlite.Connection) -> None:
+    """Add max_price column to dry_run_positions."""
+    try:
+        await db.execute("ALTER TABLE dry_run_positions ADD COLUMN max_price REAL")
+        await db.commit()
+    except Exception:
+        pass  # column may already exist
+
+
 # List of (version, coroutine_factory).  Each is applied once, in order.
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, _apply_v1),
     (2, _apply_v2),
     (3, _apply_v3),
     (4, _apply_v4),
+    (5, _apply_v5),
 ]
 
 
@@ -752,6 +762,13 @@ class TradeDatabase:
                    closed_at=?
                WHERE id=?""",
             (exit_price, status, close_reason, pnl, pnl_pct, closed_at, position_id),
+        )
+        await self._db.commit()
+
+    async def update_dry_run_max_price(self, position_id: int, new_max: float) -> None:
+        await self._db.execute(
+            "UPDATE dry_run_positions SET max_price=? WHERE id=? AND (max_price IS NULL OR max_price < ?)",
+            (new_max, position_id, new_max),
         )
         await self._db.commit()
 
